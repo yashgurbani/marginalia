@@ -15,6 +15,7 @@ Runtime mode observed: connector-backed Git writes plus isolated local validatio
 | 09:31 | `9a4869c542c60b33fdfb7c1d4378dd80fac807bd` | Added bounded `vault.js`, `figure.js`, and `graph.js` helpers. |
 | 09:47 | `8d8ba3c9838fd33dc1eac85e4dce121edebdd095` | Wired math, local search, connection validation/cards, Vault tab, and optional graph into the existing renderer/tools contract. |
 | final | PR head containing this file | Durable report, validation evidence, hashes, diagnostics, and demo script. |
+| continuation | PR head after browser acceptance | Corrected SVG namespace handling and native-tab ARIA restoration. Exact pages, live CDNs, blocked-CDN fallbacks, folder/drop, search, provenance, graph, and source immutability passed in Edge. |
 
 ## Required loop record
 
@@ -30,4 +31,4 @@ Runtime mode observed: connector-backed Git writes plus isolated local validatio
 
 ## Status
 
-All Must implementation items are present on the branch. The Should graph item is implemented with a deterministic list fallback. Browser confirmation of the exact static test pages and the two pinned CDN loads remains an integration-owner gate before merge.
+All Must implementation items and the Should graph item pass real-browser acceptance. The branch is ready for the normal PR merge path.
