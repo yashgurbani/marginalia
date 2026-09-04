@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #f7f7f8; color: #1d1d1f; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    a { color: #4a5fa8; } a:hover { color: #34437a; }
+    .lbl { font-size: 12px; color: #6b6b70; }
+    .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #3a3a3f; }
+    .serif { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; }
+  </style>
+</helmet>
+<div style="width: 1120px; min-height: 820px; background: #f7f7f8; padding: 48px 56px; display: flex; flex-direction: column; gap: 40px; box-sizing: border-box;">
+  <div>
+    <div style="font-size: 22px; font-weight: 600; margin: 0 0 6px 0;">Tokens</div>
+    <div class="lbl" style="max-width: 72ch;">Light by default: a reader is read at a desk in daylight. Neutral at chroma 0. Three hues only, one per role: reader teal, agent violet, link blue. Dark scheme swaps lightness and keeps hues.</div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 20px;">
+    <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 64px; background: #f7f7f8; border: 1px solid #e3e3e6;"></div><div class="lbl">bg</div><div class="mono">oklch(97.5% 0 0)</div></div>
+    <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 64px; background: #1d1d1f;"></div><div class="lbl">ink</div><div class="mono">oklch(22% 0.005 280)</div></div>
+    <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 64px; background: #6b6b70;"></div><div class="lbl">quiet · 4.9:1</div><div class="mono">oklch(52% 0.008 280)</div></div>
+    <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 64px; background: #2f8f89;"></div><div class="lbl">reader (You)</div><div class="mono">oklch(58% 0.09 190)</div></div>
+    <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 64px; background: #7a5fc9;"></div><div class="lbl">agent</div><div class="mono">oklch(58% 0.14 300)</div></div>
+    <div style="display: flex; flex-direction: column; gap: 8px;"><div style="height: 64px; background: #eef7f6;"></div><div class="lbl">reader tint</div><div class="mono">oklch(96% 0.015 190)</div></div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 48px;">
+    <div style="display: flex; flex-direction: column; gap: 14px;">
+      <div class="lbl">Type. Body serif from the system; UI in the system sans. One column, 64ch.</div>
+      <div class="serif" style="font-size: 30px; line-height: 1.2;">Title 30/36 regular</div>
+      <div class="serif" style="font-size: 20px; line-height: 1.3; font-weight: 600;">Section 20/26 semibold</div>
+      <div class="serif" style="font-size: 18px; line-height: 1.62;">Body 18/29. Iowan Old Style, Palatino Linotype, Georgia. Paragraph gap 18px.</div>
+      <div class="serif" style="font-size: 16px; line-height: 1.5; font-style: italic; color: #6b6b70;">Fold line 16/24 italic quiet</div>
+      <div style="font-size: 13.5px; line-height: 1.5; color: #3a3a3f;">Margin 13.5/20 sans, ink-2</div>
+      <div style="font-size: 12px; color: #8a8a90;">Reason and chrome 12/16 quiet-2</div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 14px;">
+      <div class="lbl">Layout.</div>
+      <div class="mono" style="line-height: 1.8;">grid: 1fr 640px 320px 1fr · gap 48px<br>top bar 44px · title block 56px below it<br>margin starts level with the first heading<br>section gap 30px · heading to body 8px<br>under 900px: margin folds under each section, indented 20px, same type<br>drawer (Notes): 360px from the right, over the page, one close affordance</div>
+      <div class="lbl" style="margin-top: 10px;">Not allowed.</div>
+      <div style="font-size: 13px; line-height: 1.6; color: #3a3a3f;">Cards for artifacts. Pills or badges for depth. Side-stripe borders. Permanent buttons under sections. Gradients anywhere. Uppercase tracked labels. A dashboard pane always on screen. Marketing copy on the reader.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
