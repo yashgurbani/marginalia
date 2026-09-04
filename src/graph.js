@@ -9,6 +9,11 @@ function el(tag, text) {
   return node;
 }
 
+function shortLabel(value, limit = 52) {
+  const text = String(value || "");
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
 function targetMetadata(target, snapshot, vaultState) {
   const knowledge = (snapshot.knowledge || []).find((entry) => entry.id === target);
   if (knowledge) return { id: `knowledge:${target}`, label: knowledge.concept, kind: "knowledge", target };
@@ -29,7 +34,7 @@ export function getConnectionGraphData(snapshot = {}, vaultState = {}) {
     nodes.set(sourceId, {
       data: {
         id: sourceId,
-        label: section?.heading || artifact.sectionId,
+        label: shortLabel(section?.heading || artifact.sectionId),
         kind: "section",
         sectionId: artifact.sectionId,
       },
@@ -101,9 +106,7 @@ export function mountConnectionGraph({ root, getSnapshot, getVaultState, onSecti
     display: "none",
     width: "100%",
     height: "360px",
-    border: "1px solid var(--line, #444)",
-    borderRadius: "6px",
-    background: "var(--panel-2, #1f2228)",
+    background: "var(--panel-2)",
   });
   const list = el("div");
   root.append(status, canvas, list);
@@ -129,8 +132,9 @@ export function mountConnectionGraph({ root, getSnapshot, getVaultState, onSecti
       const target = nodeMap.get(edge.data.target);
       card.textContent = `${source?.label || edge.data.sectionId} → ${edge.data.relation} → ${target?.label || edge.data.target}`;
       Object.assign(card.style, {
-        display: "block", width: "100%", margin: ".35rem 0", padding: ".55rem",
-        textAlign: "left", fontSize: ".76rem",
+        display: "block", width: "100%", margin: ".5rem 0", padding: "0",
+        border: "0", background: "transparent", color: "var(--link)",
+        textAlign: "left", fontSize: "var(--small-size)", cursor: "pointer",
       });
       card.title = edge.data.reason;
       card.addEventListener("click", () => onSection(edge.data.sectionId));
@@ -142,7 +146,7 @@ export function mountConnectionGraph({ root, getSnapshot, getVaultState, onSecti
     if (!cy || destroyed) return;
     cy.elements().remove();
     cy.add([...data.nodes, ...data.edges]);
-    if (data.nodes.length) cy.layout({ name: "cose", animate: false, fit: true, padding: 24 }).run();
+    if (data.nodes.length) cy.layout({ name: "breadthfirst", directed: true, animate: false, fit: true, padding: 32, spacingFactor: 1.4 }).run();
   };
 
   const render = () => {
@@ -168,15 +172,17 @@ export function mountConnectionGraph({ root, getSnapshot, getVaultState, onSecti
     try {
       const cytoscape = await loadCytoscape();
       if (destroyed) return;
+      const tokens = getComputedStyle(document.documentElement);
+      const color = (name, fallback) => tokens.getPropertyValue(name).trim() || fallback;
       cy = cytoscape({
         container: canvas,
         elements: [...lastData.nodes, ...lastData.edges],
-        layout: { name: "cose", animate: false, fit: true, padding: 24 },
+        layout: { name: "breadthfirst", directed: true, animate: false, fit: true, padding: 32, spacingFactor: 1.4 },
         style: [
-          { selector: "node", style: { "label": "data(label)", "font-size": 10, "text-wrap": "wrap", "text-max-width": 90, "background-color": "#ae91e8", "color": "#ece9e1", "text-outline-color": "#17191d", "text-outline-width": 2 } },
-          { selector: "node[kind = 'note']", style: { "shape": "round-rectangle", "background-color": "#70b8b2" } },
-          { selector: "node[kind = 'knowledge']", style: { "shape": "diamond", "background-color": "#e7b76d" } },
-          { selector: "edge", style: { "label": "data(relation)", "font-size": 8, "curve-style": "bezier", "target-arrow-shape": "triangle", "line-color": "#777b86", "target-arrow-color": "#777b86", "text-background-color": "#17191d", "text-background-opacity": 1, "color": "#ece9e1" } },
+          { selector: "node", style: { "label": "data(label)", "font-size": 10, "text-wrap": "wrap", "text-max-width": 90, "background-color": color("--agent", "#7a5fc9"), "color": color("--ink", "#1d1d1f"), "text-outline-color": color("--surface", "#fff"), "text-outline-width": 3 } },
+          { selector: "node[kind = 'note']", style: { "shape": "round-rectangle", "background-color": color("--reader", "#2f8f89") } },
+          { selector: "node[kind = 'knowledge']", style: { "shape": "diamond", "background-color": color("--warning", "#8a6234") } },
+          { selector: "edge", style: { "label": "data(relation)", "font-size": 9, "curve-style": "bezier", "target-arrow-shape": "triangle", "line-color": color("--quiet-2", "#8a8a90"), "target-arrow-color": color("--quiet-2", "#8a8a90"), "text-background-color": color("--surface", "#fff"), "text-background-opacity": 1, "color": color("--ink-2", "#3a3a3f") } },
         ],
       });
       cy.on("tap", "node[kind = 'section']", (event) => onSection(event.target.data("sectionId")));
