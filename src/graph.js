@@ -53,10 +53,12 @@ export function getConnectionGraphData(snapshot = {}, vaultState = {}) {
 function loadCytoscape() {
   if (globalThis.cytoscape) return Promise.resolve(globalThis.cytoscape);
   if (cytoscapePromise) return cytoscapePromise;
+  if (typeof document === "undefined") return Promise.reject(new Error("Cytoscape requires a browser document."));
+
   cytoscapePromise = new Promise((resolve, reject) => {
     const existing = document.querySelector(`script[data-marginalia-cytoscape="${CYTOSCAPE_VERSION}"]`);
     if (existing) {
-      existing.addEventListener("load", () => resolve(globalThis.cytoscape), { once: true });
+      existing.addEventListener("load", () => globalThis.cytoscape ? resolve(globalThis.cytoscape) : reject(new Error("Cytoscape loaded without exposing its API.")), { once: true });
       existing.addEventListener("error", () => reject(new Error("Cytoscape CDN was blocked.")), { once: true });
       return;
     }
@@ -65,18 +67,20 @@ function loadCytoscape() {
     script.async = true;
     script.crossOrigin = "anonymous";
     script.dataset.marginaliaCytoscape = CYTOSCAPE_VERSION;
-    script.addEventListener("load", () => {
-      if (globalThis.cytoscape) resolve(globalThis.cytoscape);
-      else reject(new Error("Cytoscape loaded without exposing its API."));
-    }, { once: true });
+    script.addEventListener("load", () => globalThis.cytoscape ? resolve(globalThis.cytoscape) : reject(new Error("Cytoscape loaded without exposing its API.")), { once: true });
     script.addEventListener("error", () => reject(new Error("Cytoscape CDN was blocked.")), { once: true });
     document.head.append(script);
   });
   return cytoscapePromise;
 }
 
+function selectorEscape(value) {
+  if (globalThis.CSS?.escape) return globalThis.CSS.escape(String(value));
+  return String(value).replace(/["\\]/g, "\\$&");
+}
+
 function defaultScroll(sectionId) {
-  const section = document.querySelector(`[data-section-id="${CSS.escape(sectionId)}"]`);
+  const section = document.querySelector(`[data-section-id="${selectorEscape(sectionId)}"]`);
   section?.scrollIntoView({ behavior: "smooth", block: "center" });
   section?.animate?.([
     { outline: "2px solid transparent" },
@@ -107,6 +111,7 @@ export function mountConnectionGraph({ root, getSnapshot, getVaultState, onSecti
   let active = false;
   let cy = null;
   let lastData = { nodes: [], edges: [] };
+  let destroyed = false;
 
   const renderFallback = (data) => {
     list.replaceChildren();
@@ -134,13 +139,14 @@ export function mountConnectionGraph({ root, getSnapshot, getVaultState, onSecti
   };
 
   const updateCytoscape = (data) => {
-    if (!cy) return;
+    if (!cy || destroyed) return;
     cy.elements().remove();
     cy.add([...data.nodes, ...data.edges]);
-    cy.layout({ name: "cose", animate: false, fit: true, padding: 24 }).run();
+    if (data.nodes.length) cy.layout({ name: "cose", animate: false, fit: true, padding: 24 }).run();
   };
 
   const render = () => {
+    if (destroyed) return;
     lastData = getConnectionGraphData(getSnapshot?.() || {}, getVaultState?.() || {});
     renderFallback(lastData);
     updateCytoscape(lastData);
@@ -152,6 +158,7 @@ export function mountConnectionGraph({ root, getSnapshot, getVaultState, onSecti
   };
 
   const activate = async () => {
+    if (destroyed) return;
     if (active) {
       render();
       return;
@@ -160,6 +167,7 @@ export function mountConnectionGraph({ root, getSnapshot, getVaultState, onSecti
     render();
     try {
       const cytoscape = await loadCytoscape();
+      if (destroyed) return;
       cy = cytoscape({
         container: canvas,
         elements: [...lastData.nodes, ...lastData.edges],
@@ -176,13 +184,23 @@ export function mountConnectionGraph({ root, getSnapshot, getVaultState, onSecti
       list.style.marginTop = ".55rem";
       render();
     } catch (error) {
+      if (destroyed) return;
       canvas.style.display = "none";
       status.textContent = `Interactive graph unavailable: ${error.message} The connection list remains available.`;
     }
   };
 
   render();
-  return { activate, render, destroy: () => cy?.destroy(), getData: () => lastData };
+  return {
+    activate,
+    render,
+    destroy() {
+      destroyed = true;
+      cy?.destroy();
+      cy = null;
+    },
+    getData: () => lastData,
+  };
 }
 
 export { CYTOSCAPE_VERSION, CYTOSCAPE_URL };
