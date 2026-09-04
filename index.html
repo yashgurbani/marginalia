@@ -27,6 +27,9 @@
     <section class="document-shell" aria-labelledby="document-title">
       <div class="document-meta">
         <p class="eyebrow">Source, untouched. The agent lives in the margin.</p>
+        <p class="thesis">A human and their agent work on the same page through WebMCP.</p>
+        <p class="layer-rule">Layer rule: “The page registers no WebMCP tool that mutates the source layer.”</p>
+        <p class="judge-hint">How judges test: open this page in a WebMCP browser, then use the prompts in the <a href="README.md">README</a>.</p>
         <h1 id="document-title">Marginalia</h1>
         <p id="attribution" class="attribution"></p>
         <p id="load-message" class="load-message" role="status"></p>
@@ -132,11 +135,19 @@
     });
 
     const status = document.querySelector("#webmcp-status");
-    const registeredHost = navigator.modelContext?.registerTool ? "navigator.modelContext" : null;
-    status.dataset.webmcpHost = registeredHost || "none";
-    status.textContent = registeredHost
-      ? "WebMCP: registered on navigator.modelContext"
-      : "WebMCP: no host, tools available for tests only";
+    function showWebMCPStatus(detail = window.marginaliaWebMCP) {
+      const outcome = detail || { status: "waiting", host: null };
+      status.dataset.webmcpHost = outcome.host || outcome.status;
+      status.textContent = outcome.status === "registered"
+        ? `WebMCP: ${outcome.count} tools on ${outcome.host}`
+        : outcome.status === "error"
+          ? `WebMCP: registration error on ${outcome.host}`
+          : outcome.status === "unavailable"
+            ? "WebMCP: no host detected"
+            : "WebMCP: waiting for host…";
+    }
+    window.addEventListener("marginaliawebmcpchange", (event) => showWebMCPStatus(event.detail));
+    showWebMCPStatus();
     console.info(`[Marginalia surface] ${status.textContent}; exposed tools: ${Boolean(window.marginaliaTools)}`);
   </script>
 </body>

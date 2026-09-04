@@ -198,24 +198,48 @@ const tools = [
 const exposed = Object.fromEntries(tools.map((item) => [item.name, item]));
 if (globalThis.window) globalThis.window.marginaliaTools = exposed;
 
-let modelContext = null;
-let hostName = null;
-if (globalThis.navigator?.modelContext) {
-  modelContext = globalThis.navigator.modelContext;
-  hostName = "navigator.modelContext";
-} else if (globalThis.document?.modelContext) {
-  modelContext = globalThis.document.modelContext;
-  hostName = "document.modelContext";
-} else if (globalThis.window?.modelContext) {
-  modelContext = globalThis.window.modelContext;
-  hostName = "window.modelContext";
+let registeredContext = null;
+
+function findModelContext() {
+  if (globalThis.navigator?.modelContext?.registerTool) return [globalThis.navigator.modelContext, "navigator.modelContext"];
+  if (globalThis.document?.modelContext?.registerTool) return [globalThis.document.modelContext, "document.modelContext"];
+  if (globalThis.window?.modelContext?.registerTool) return [globalThis.window.modelContext, "window.modelContext"];
+  return [null, null];
 }
 
-if (modelContext?.registerTool) {
-  console.info(`[Marginalia] WebMCP host: ${hostName}`);
-  for (const item of tools) modelContext.registerTool(item);
-} else {
-  console.warn("[Marginalia] No modelContext host found; test tools remain available on window.marginaliaTools.");
+function publishRegistration(detail) {
+  if (!globalThis.window) return;
+  globalThis.window.marginaliaWebMCP = detail;
+  globalThis.window.dispatchEvent(new CustomEvent("marginaliawebmcpchange", { detail }));
+}
+
+function registerAvailableTools() {
+  const [modelContext, host] = findModelContext();
+  if (!modelContext || modelContext === registeredContext) return Boolean(modelContext);
+  try {
+    for (const item of tools) modelContext.registerTool(item);
+    registeredContext = modelContext;
+    publishRegistration({ status: "registered", host, count: tools.length });
+    console.info(`[Marginalia] Registered ${tools.length} WebMCP tools on ${host}.`);
+    return true;
+  } catch (error) {
+    publishRegistration({ status: "error", host, detail: error?.message || String(error) });
+    console.error(`[Marginalia] WebMCP registration failed on ${host}.`, error);
+    return false;
+  }
+}
+
+if (!registerAvailableTools()) {
+  publishRegistration({ status: "waiting", host: null, count: 0 });
+  console.warn("[Marginalia] No modelContext host found; waiting up to 5 seconds while test tools remain available on window.marginaliaTools.");
+  const started = Date.now();
+  const poll = setInterval(() => {
+    if (registerAvailableTools() || Date.now() - started >= 5000) {
+      clearInterval(poll);
+      if (!registeredContext) publishRegistration({ status: "unavailable", host: null, count: 0 });
+    }
+  }, 250);
+  globalThis.addEventListener?.("modelcontextready", registerAvailableTools, { once: true });
 }
 
 export { tools };
