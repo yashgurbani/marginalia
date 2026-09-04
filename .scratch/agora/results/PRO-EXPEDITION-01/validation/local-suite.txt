@@ -1,0 +1,24 @@
+Final local suite, executed against the final source bytes:
+
+1. JavaScript syntax checks
+   Result: SYNTAX_OK
+
+2. Renderer behavior harness
+   Command: node .scratch/agora/results/PRO-EXPEDITION-01/diagnostics/renderer-contract.mjs
+   Output: ALL PASS
+   Exit: 0
+
+3. Tool/state/vault/figure/connection harness
+   Command: node .scratch/agora/results/PRO-EXPEDITION-01/diagnostics/tool-contract.mjs
+   Output: ALL PASS
+   Exit: 0
+
+4. Math/sidebar/graph integration harness
+   Command: node .scratch/agora/results/PRO-EXPEDITION-01/diagnostics/integration-contract.mjs
+   Output: ALL PASS
+   Exit: 0
+
+Expected non-failure console note during tool import:
+  [Marginalia] No modelContext host found; waiting up to 5 seconds while test tools remain available on window.marginaliaTools.
+
+This is expected in Node and confirms the test exposure remains available without a browser host.
