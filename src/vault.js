@@ -163,8 +163,13 @@ export function isVaultLoaded() {
   return notes.length > 0;
 }
 
+export function resolveReturnedPath(path) {
+  const normalized = cleanPath(path, "");
+  return returnedPaths.has(normalized) ? normalized : null;
+}
+
 export function hasReturnedPath(path) {
-  return returnedPaths.has(cleanPath(path, ""));
+  return Boolean(resolveReturnedPath(path));
 }
 
 export function searchNotes(query, limit = DEFAULT_LIMIT) {
@@ -183,10 +188,10 @@ export function searchNotes(query, limit = DEFAULT_LIMIT) {
   return clone(results);
 }
 
-export function indexMarkdownEntries(entries) {
+export function indexMarkdownEntries(entries, inheritedSkipped = []) {
   if (!Array.isArray(entries)) throw new TypeError("Markdown entries must be an array.");
   const accepted = [];
-  const skipped = [];
+  const skipped = [...inheritedSkipped];
   let bytes = 0;
 
   for (const entry of entries.slice(0, MAX_FILES)) {
@@ -219,7 +224,9 @@ export function indexMarkdownEntries(entries) {
   returnedPaths.clear();
   message = notes.length
     ? `Indexed ${notes.length} Markdown file${notes.length === 1 ? "" : "s"} locally${skipped.length ? `; skipped ${skipped.length}` : ""}.`
-    : "No Markdown files were indexed.";
+    : skipped.length
+      ? `No Markdown files were indexed; skipped ${skipped.length}.`
+      : "No Markdown files were indexed.";
   emit();
   return { ok: notes.length > 0, file_count: notes.length, skipped, total_bytes: totalBytes };
 }
@@ -232,7 +239,10 @@ export async function indexMarkdownFiles(fileList) {
 
   for (const file of files) {
     const path = cleanPath(file.webkitRelativePath || file.relativePath || file.name);
-    if (!/\.md$/i.test(path)) continue;
+    if (!/\.md$/i.test(path)) {
+      skipped.push({ path, reason: "not markdown" });
+      continue;
+    }
     if (Number(file.size) > MAX_FILE_BYTES) {
       skipped.push({ path, reason: "file exceeds 2 MB" });
       continue;
@@ -249,9 +259,7 @@ export async function indexMarkdownFiles(fileList) {
     }
   }
 
-  const result = indexMarkdownEntries(entries);
-  result.skipped.push(...skipped);
-  return result;
+  return indexMarkdownEntries(entries, skipped);
 }
 
 function readDirectoryEntries(reader) {
@@ -311,8 +319,12 @@ export function mountVaultControl({ root } = {}) {
   drop.setAttribute("role", "button");
   drop.setAttribute("aria-label", "Choose or drop a folder of Markdown notes");
   Object.assign(drop.style, {
-    display: "block", padding: ".75rem", border: "1px dashed var(--line, #555)",
-    borderRadius: "6px", textAlign: "center", cursor: "pointer",
+    display: "block",
+    padding: ".75rem",
+    border: "1px dashed var(--line, #555)",
+    borderRadius: "6px",
+    textAlign: "center",
+    cursor: "pointer",
   });
   const prompt = element("span", "Drop a notes folder, or choose one");
   const input = element("input");
@@ -360,7 +372,14 @@ export function mountVaultControl({ root } = {}) {
       drop.style.borderColor = "var(--line, #555)";
     });
   }
-  drop.addEventListener("drop", async (event) => load(await filesFromDrop(event.dataTransfer)));
+  drop.addEventListener("drop", async (event) => {
+    try {
+      await load(await filesFromDrop(event.dataTransfer));
+    } catch (error) {
+      message = `Could not read the dropped folder: ${error?.message || String(error)}`;
+      emit();
+    }
+  });
   drop.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
@@ -392,6 +411,7 @@ export function mountVaultControl({ root } = {}) {
 const localBridge = Object.freeze({
   search: searchNotes,
   hasReturnedPath,
+  resolveReturnedPath,
   getState: getVaultState,
   indexEntries: indexMarkdownEntries,
   localOnly: true,
