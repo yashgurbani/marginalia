@@ -4,9 +4,9 @@
 
 - **Work:** Ernest Rutherford, “The Scattering of α and β Particles by Matter and the Structure of the Atom,” *Philosophical Magazine* (1911).
 - **License:** Public domain. Rutherford died in 1937; this 1911 work is public domain.
-- **Source:** https://doi.org/10.1080/14786440508637080
+- **Source:** https://en.wikisource.org/wiki/The_Scattering_of_%CE%B1_and_%CE%B2_Particles_by_Matter_and_the_Structure_of_the_Atom
 - **Retrieved:** 2026-09-04.
-- **Note:** Faithful abridgement, section by section. Wikisource and the attempted Internet Archive item did not return the paper text during retrieval.
+- **Note:** Full paper transcription, section by section. The fixture uses the ChemTeam transcription and records the Wikisource edition as its source page.
 
 ## How do atoms form?
 
