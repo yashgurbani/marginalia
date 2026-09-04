@@ -1,4 +1,5 @@
 import * as defaultStateApi from "./state.js";
+import { renderFigure, renderMath } from "./figure.js";
 
 const LEVELS = new Set(["hidden", "stub", "summary", "full"]);
 
@@ -16,6 +17,12 @@ function el(tag, className, text) {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+function enhanceMath(node) {
+  renderMath(node).catch(() => {
+    node.dataset.mathRenderer = "raw-latex";
+  });
 }
 
 function appendTextWithHighlights(container, text, artifacts) {
@@ -58,6 +65,7 @@ function sourceBody(section, level, reason, artifacts, stateApi) {
     const line = el("p", "folded-line");
     line.append(document.createTextNode(`Folded: ${reason || "agent depth setting"} `), expandControl(section, stateApi));
     wrap.append(line);
+    enhanceMath(line);
     return wrap;
   }
 
@@ -65,11 +73,13 @@ function sourceBody(section, level, reason, artifacts, stateApi) {
   const source = el("p", "source-text");
   appendTextWithHighlights(source, shown, artifacts);
   wrap.append(source);
+  enhanceMath(source);
 
   if (level === "stub" || level === "summary") {
     const line = el("p", "fold-reason");
     line.append(document.createTextNode(`Shortened: ${reason || "agent depth setting"} `), expandControl(section, stateApi));
     wrap.append(line);
+    enhanceMath(line);
   }
   return wrap;
 }
@@ -86,25 +96,42 @@ function appendSourceLine(card, source) {
   } else card.append(el("span", "artifact-source", label));
 }
 
+function connectionTargetLabel(artifact, stateApi) {
+  const knowledge = stateApi.state?.knowledge?.find((entry) => entry.id === artifact.target);
+  return knowledge ? `${knowledge.concept} (${artifact.target})` : artifact.target;
+}
+
 function artifactCard(artifact, stateApi) {
-  const card = el("article", "artifact-card");
+  const card = el("article", `artifact-card artifact-kind-${artifact.kind || "annotation"}`);
   card.dataset.artifactId = artifact.id;
   const kind = [artifact.kind || "annotation", artifact.stance].filter(Boolean).join(" · ");
   card.append(el("div", "artifact-kind", kind));
 
   if (artifact.kind === "figure" && artifact.svg) {
     const figure = el("div", "artifact-figure");
-    figure.innerHTML = artifact.svg;
+    try {
+      renderFigure(figure, artifact.svg, { label: artifact.text || "Agent-generated diagram" });
+    } catch (error) {
+      figure.append(el("p", "empty-state", `Figure unavailable: ${error.detail || error.message || String(error)}`));
+    }
     card.append(figure);
   }
 
   if (artifact.kind === "connection" && artifact.target) {
-    const link = el("a", "connection-target", artifact.target);
-    link.href = String(artifact.target).startsWith("s") ? `#section-${artifact.target}` : "#";
-    card.append(link);
+    const connection = el("div", "artifact-connection");
+    connection.append(el("span", "artifact-relation", artifact.relation || "bridge"));
+    const target = el("a", "connection-target artifact-target", connectionTargetLabel(artifact, stateApi));
+    target.href = String(artifact.target).startsWith("s") ? `#section-${artifact.target}` : "#";
+    connection.append(target);
+    card.append(connection);
   }
+
   const content = artifact.text ?? artifact.text_md ?? artifact.summary ?? artifact.why;
-  if (content) card.append(el("div", "artifact-text", content));
+  if (content) {
+    const body = el("div", "artifact-text", content);
+    card.append(body);
+    enhanceMath(body);
+  }
   for (const source of artifact.sources || []) appendSourceLine(card, source);
 
   const reason = el("div", "artifact-reason");
@@ -114,6 +141,7 @@ function artifactCard(artifact, stateApi) {
   remove.addEventListener("click", () => stateApi.removeArtifact(artifact.id));
   reason.append(remove);
   card.append(reason);
+  enhanceMath(reason);
   return card;
 }
 
@@ -187,7 +215,9 @@ export function initRenderer({ root, stateApi = defaultStateApi } = {}) {
       }
       previousDepth.set(section.id, level);
 
-      const sectionArtifacts = snapshot.layers?.agent === false ? [] : snapshot.artifacts.filter((item) => item.sectionId === section.id);
+      const sectionArtifacts = snapshot.layers?.agent === false
+        ? []
+        : (snapshot.artifacts || []).filter((item) => item.sectionId === section.id);
       const highlights = snapshot.layers?.reader === false ? [] : sectionArtifacts;
       if (snapshot.layers?.source !== false || snapshot.layers?.agent === false) {
         article.append(sourceBody(section, level, snapshot.depth?.[section.id]?.reason, highlights, stateApi));
