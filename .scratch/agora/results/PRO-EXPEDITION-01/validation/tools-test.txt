@@ -1,0 +1,11 @@
+Gate requested: open tests/tools.test.html and observe ALL PASS.
+
+Observed in this runtime:
+- Exact browser page: NOT RUN because managed Chromium blocks all navigation.
+- Substitute command: node .scratch/agora/results/PRO-EXPEDITION-01/diagnostics/tool-contract.mjs
+- Output: ALL PASS
+- Exit status: 0
+
+Covered contract points include exactly nine exposed tools, honest no-vault response, local ranked results, returned paths, connection preconditions, relation validation, SVG sanitation, graph derivation, Activity path visibility, frozen source, and byte-stable source serialization.
+
+Disposition: contract PASS; exact immutable HTML page remains a pre-merge browser gate.
