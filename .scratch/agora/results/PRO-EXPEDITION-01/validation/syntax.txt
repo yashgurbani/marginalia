@@ -1,0 +1,9 @@
+Command set:
+  node --check src/figure.js
+  node --check src/vault.js
+  node --check src/graph.js
+  node --check src/tools.js
+  node --check src/render.js
+
+Result: SYNTAX_OK
+Exit status: 0 for every file.

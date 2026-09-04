@@ -1,0 +1,18 @@
+Gate requested: open tests/render.test.html and observe ALL PASS.
+
+Observed in this runtime:
+- Exact browser page: NOT RUN. Managed Chromium has enterprise URLBlocklist=["*"] and blocks local navigation.
+- Materially different substitute: diagnostics/renderer-contract.mjs, a minimal DOM harness executing the frozen page's core assertions against the final modules.
+- Command: node .scratch/agora/results/PRO-EXPEDITION-01/diagnostics/renderer-contract.mjs
+- Output: ALL PASS
+- Exit status: 0
+
+Assertions covered:
+- Markdown title/section parsing
+- Three rendered document sections
+- Depth chip update after setDepth
+- Agent artifact card appearance
+- Agent-layer toggle hides gutter
+- Agent-layer off restores full source depth
+
+Disposition: behavior-equivalent PASS; exact immutable HTML page remains a pre-merge browser gate.

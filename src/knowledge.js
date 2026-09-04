@@ -1,4 +1,6 @@
 import * as defaultStateApi from "./state.js";
+import { getVaultState, mountVaultControl, subscribeVault } from "./vault.js";
+import { mountConnectionGraph } from "./graph.js";
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -16,14 +18,18 @@ function textButton(label, className = "text-button") {
 export function initKnowledgePane({ root, stateApi = defaultStateApi } = {}) {
   if (!root) throw new Error("initKnowledgePane requires a root element.");
   let activeTab = "knowledge";
+  let activeMount = null;
 
   const render = (snapshot = stateApi.state) => {
+    activeMount?.destroy?.();
+    activeMount = null;
     root.replaceChildren();
     const header = el("div", "drawer-header");
     const tabs = el("div", "side-tabs");
     tabs.setAttribute("role", "tablist");
-    for (const [name, label] of [["knowledge", "Knowledge"], ["activity", "Activity"]]) {
+    for (const [name, label] of [["knowledge", "Knowledge"], ["activity", "Activity"], ["vault", "Vault"], ["connections", "Connections"]]) {
       const button = textButton(label, `tab-button${activeTab === name ? " is-active" : ""}`);
+      if (name === "vault" || name === "connections") button.dataset.marginaliaAux = name;
       button.setAttribute("role", "tab");
       button.setAttribute("aria-selected", String(activeTab === name));
       button.addEventListener("click", () => {
@@ -39,7 +45,22 @@ export function initKnowledgePane({ root, stateApi = defaultStateApi } = {}) {
     root.append(header);
 
     const content = el("div", "drawer-content");
-    if (activeTab === "activity") {
+    if (activeTab === "vault") {
+      const panel = el("section", "auxiliary-panel");
+      panel.dataset.marginaliaAuxPanel = "vault";
+      content.append(panel);
+      activeMount = mountVaultControl({ root: panel });
+    } else if (activeTab === "connections") {
+      const panel = el("section", "auxiliary-panel");
+      panel.dataset.marginaliaAuxPanel = "connections";
+      content.append(panel);
+      activeMount = mountConnectionGraph({
+        root: panel,
+        getSnapshot: () => stateApi.state,
+        getVaultState,
+      });
+      activeMount.activate();
+    } else if (activeTab === "activity") {
       const list = el("ol", "activity-list");
       const recent = [...(snapshot.activity || [])].slice(-10).reverse();
       if (!recent.length) list.append(el("li", "empty-state", "No tool activity yet."));
@@ -85,7 +106,7 @@ export function initKnowledgePane({ root, stateApi = defaultStateApi } = {}) {
     root.append(content);
 
     const footer = el("div", "drawer-footer");
-    const vaultCount = Number(globalThis.window?.marginaliaVault?.count || 0);
+    const vaultCount = getVaultState().file_count;
     footer.append(el("div", "vault-line", `Vault: ${vaultCount} ${vaultCount === 1 ? "note" : "notes"}`));
     const footerActions = el("div", "drawer-footer-actions");
     const removeAll = textButton("remove all agent artifacts", "text-button remove-all");
@@ -100,6 +121,16 @@ export function initKnowledgePane({ root, stateApi = defaultStateApi } = {}) {
   };
 
   const unsubscribe = stateApi.subscribe(render);
+  const unsubscribeVault = subscribeVault(() => {
+    if (activeTab !== "vault") render(stateApi.state);
+  });
   render(stateApi.state);
-  return { render, destroy: unsubscribe };
+  return {
+    render,
+    destroy() {
+      unsubscribe();
+      unsubscribeVault();
+      activeMount?.destroy?.();
+    },
+  };
 }
