@@ -7,9 +7,12 @@ import {
   addArtifact,
   logActivity,
 } from "./state.js";
+import { sanitizeSvg } from "./figure.js";
+import { isVaultLoaded, resolveReturnedPath, searchNotes } from "./vault.js";
 
 const annotationKinds = ["gloss", "expand", "eli5", "question", "caveat", "perspective", "link", "prerequisite", "connection", "reference"];
 const stances = ["supports", "contradicts", "extends", "unclear"];
+const connectionRelations = ["prerequisite", "analogy", "contradiction", "enables", "bridge", "example"];
 
 function refusal(detail, next_step, code = "validation_failed") {
   throw { code, detail, next_step };
@@ -42,49 +45,40 @@ function schema(properties, required = []) {
   return { type: "object", properties, required, additionalProperties: true };
 }
 
-function sanitizeSvg(value) {
-  let svg = text(value, "svg");
-  if (!/^\s*<svg\b/i.test(svg) || !/<\/svg>\s*$/i.test(svg)) {
-    refusal("svg must have one SVG root element.", "provide a complete SVG element");
-  }
-  svg = svg
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "")
-    .replace(/<\/?script\b[^>]*>/gi, "")
-    .replace(/<foreignObject\b[^>]*>[\s\S]*?<\/foreignObject\s*>/gi, "")
-    .replace(/<\/?foreignObject\b[^>]*>/gi, "")
-    .replace(/\s+on[a-z][\w:-]*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-    .replace(/\s+(?:xlink:)?href\s*=\s*(["'])(?!#)[\s\S]*?\1/gi, "");
-  svg = svg.replace(/\sviewbox\s*=/i, " viewBox=");
-  if (!/\sviewBox\s*=/i.test(svg)) {
-    const width = Number(svg.match(/\swidth\s*=\s*["']([\d.]+)/i)?.[1]) || 640;
-    const height = Number(svg.match(/\sheight\s*=\s*["']([\d.]+)/i)?.[1]) || 360;
-    svg = svg.replace(/<svg\b/i, `<svg viewBox="0 0 ${width} ${height}"`);
-  }
-  return svg;
-}
-
 function summarize(input) {
   const id = input?.section_id ?? input?.sectionId;
   return id ? `section ${id}` : "completed";
 }
 
-function tool(name, description, inputSchema, operation) {
+function summarizeSearch(input, result) {
+  const query = String(input?.query ?? "").trim();
+  if (!result?.ok) return `query "${query}" -> ${result?.error || "failed"}`;
+  if (result.detail === "no vault loaded") return `query "${query}" -> no vault loaded`;
+  const paths = (result.results || []).map((item) => item.path).filter(Boolean);
+  return paths.length ? `query "${query}" -> ${paths.join(", ")}` : `query "${query}" -> no local matches`;
+}
+
+function tool(name, description, inputSchema, operation, resultSummary = null) {
   return {
     name,
     description,
     inputSchema,
     async execute(input = {}) {
+      if (!resultSummary) logActivity(name, summarize(input));
       try {
-        logActivity(name, summarize(input));
-        return await operation(input);
+        const result = await operation(input);
+        if (resultSummary) logActivity(name, resultSummary(input, result));
+        return result;
       } catch (error) {
         const shaped = error && typeof error === "object" ? error : {};
-        return {
+        const result = {
           ok: false,
           error: shaped.code || "validation_failed",
           detail: shaped.detail || shaped.message || String(error),
           next_step: shaped.next_step || "correct the input and try again",
         };
+        if (resultSummary) logActivity(name, resultSummary(input, result));
+        return result;
       }
     },
   };
@@ -125,10 +119,11 @@ const tools = [
     async ({ query, limit = 5 }) => {
       const cleanQuery = text(query, "query");
       if (!Number.isInteger(limit) || limit < 1 || limit > 50) refusal("limit must be an integer from 1 through 50.", "provide a limit from 1 through 50");
-      if (!globalThis.window?.marginaliaVault?.search) return { ok: true, results: [], detail: "no vault loaded" };
-      const results = await globalThis.window.marginaliaVault.search(cleanQuery, limit);
-      return { ok: true, results: Array.isArray(results) ? results.slice(0, limit) : [] };
+      const results = searchNotes(cleanQuery, limit);
+      if (!isVaultLoaded()) return { ok: true, results: [], paths: [], detail: "no vault loaded" };
+      return { ok: true, results, paths: results.map((item) => item.path) };
     },
+    summarizeSearch,
   ),
   tool(
     "set_section_depth",
@@ -139,7 +134,17 @@ const tools = [
   tool(
     "annotate",
     "Adds a removable margin artifact with a reason. Never rewrites source text. Caveats and perspectives need sources and a calibrated stance.",
-    schema({ section_id: { type: "string" }, kind: { enum: annotationKinds }, range: { type: "object" }, text: { type: "string" }, sources: { type: "array" }, stance: { enum: stances }, reason: { type: "string" } }, ["section_id", "kind", "reason"]),
+    schema({
+      section_id: { type: "string" },
+      kind: { enum: annotationKinds },
+      range: { type: "object" },
+      text: { type: "string" },
+      sources: { type: "array" },
+      stance: { enum: stances },
+      reason: { type: "string" },
+      target: { type: "string" },
+      relation: { enum: connectionRelations },
+    }, ["section_id", "kind", "reason"]),
     async (input) => {
       const id = sectionId(input);
       const kind = input.kind;
@@ -161,9 +166,22 @@ const tools = [
         artifact.text_md = body;
         if (!input.generated && (!Array.isArray(input.sources) || input.sources.length < 1)) refusal("A non-generated prerequisite requires at least one source.", "provide a source or mark generated as true");
       }
-      if (kind === "connection" && (!input.target || !input.relation)) refusal("connection requires target and relation.", "provide a note path or knowledge id and its relation");
+      if (kind === "connection") {
+        const target = text(input.target, "target");
+        const relation = text(input.relation, "relation");
+        if (!connectionRelations.includes(relation)) {
+          refusal(`connection relation must be one of: ${connectionRelations.join(", ")}.`, "choose a listed connection relation");
+        }
+        const knowledgeTarget = state.knowledge.some((entry) => entry.id === target);
+        const noteTarget = resolveReturnedPath(target);
+        if (!knowledgeTarget && !noteTarget) {
+          refusal("connection target must be an existing knowledge id or a note path returned by search_notes.", "call get_knowledge or search_notes and use one returned target", "precondition_failed");
+        }
+        artifact.target = noteTarget || target;
+        artifact.relation = relation;
+      }
       if (kind === "reference" && (!input.url || !input.role || !input.why)) refusal("reference requires url, role, and why.", "provide all reference fields");
-      for (const key of ["sources", "stance", "target", "relation", "title", "text_md", "url", "role", "why"]) {
+      for (const key of ["sources", "stance", "title", "text_md", "url", "role", "why"]) {
         if (input[key] !== undefined) artifact[key] = input[key];
       }
       return { ok: true, artifact: addArtifact(id, artifact) };
