@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Marginalia tool tests</title>
+  <style>
+    body { background: #111; color: #eee; font: 15px/1.5 monospace; padding: 2rem; }
+    .pass { color: #70dc9b; } .fail { color: #ff8080; }
+  </style>
+</head>
+<body>
+  <h1>Marginalia tool tests</h1>
+  <div id="results"></div>
+  <script type="module">
+    const results = document.querySelector("#results");
+    let failures = 0;
+    let assertions = 0;
+
+    function assert(condition, label) {
+      assertions += 1;
+      const line = document.createElement("div");
+      line.className = condition ? "pass" : "fail";
+      line.textContent = `${condition ? "PASS" : "FAIL"}: ${label}`;
+      results.append(line);
+      console[condition ? "log" : "error"](line.textContent);
+      if (!condition) failures += 1;
+    }
+
+    const registered = [];
+    document.modelContext = { registerTool(tool) { registered.push(tool.name); } };
+    const core = await import("../src/state.js");
+    await import("../src/tools.js");
+
+    core.loadDoc([
+      { id: "s1", heading: "First", text: "Alpha particles cross the thin gold foil." },
+      { id: "s2", heading: "Second", text: "Most particles continue in a straight line." },
+      { id: "s3", heading: "Third", text: "A small fraction scatters through large angles." },
+    ], { id: "tiny", title: "Tiny paper", attribution: "Test fixture", license: "CC0" });
+
+    let toolCalls = 0;
+    const call = (name, input = {}) => {
+      toolCalls += 1;
+      return window.marginaliaTools[name].execute(input);
+    };
+
+    assert(Object.keys(window.marginaliaTools).length === 9, "exactly nine tools are exposed");
+    assert(registered.length === 9, "all tools register on document.modelContext");
+    assert(Object.isFrozen(core.state.doc) && Object.isFrozen(core.state.doc.sections[0]), "the source layer is deep-frozen");
+
+    const reading = await call("get_reading_state");
+    assert(reading.ok && reading.doc.sections.length === 3 && reading.cursor_section === "s1", "reading state returns the three-section summary");
+
+    const badSource = await call("upsert_knowledge", { concept: "scattering", level: "working", evidence: "I use this often.", source: "agent" });
+    assert(!badSource.ok && badSource.error === "validation_failed", "knowledge rejects an invalid source");
+
+    const shortEvidence = await call("upsert_knowledge", { concept: "scattering", level: "working", evidence: "short", source: "reader" });
+    assert(!shortEvidence.ok, "knowledge rejects evidence shorter than ten characters");
+
+    const knowledge = await call("upsert_knowledge", { concept: "scattering", level: "solid", evidence: "I derived this in class.", source: "interview" });
+    assert(knowledge.ok && knowledge.entry.status === "proposed", "knowledge upsert creates a proposed entry");
+
+    const hiddenBeforeConfirm = await call("set_section_depth", { section_id: "s2", level: "hidden", reason: "Already understood", knowledge_refs: [knowledge.entry.id] });
+    assert(!hiddenBeforeConfirm.ok && hiddenBeforeConfirm.error === "precondition_failed", "hidden depth needs confirmed knowledge");
+
+    core.setKnowledgeStatus(knowledge.entry.id, "confirmed");
+    const hidden = await call("set_section_depth", { section_id: "s2", level: "hidden", reason: "Already understood", knowledge_refs: [knowledge.entry.id] });
+    assert(hidden.ok && !hidden.pending && core.state.depth.s2.level === "hidden", "confirmed knowledge permits hidden depth off cursor");
+
+    const pending = await call("set_section_depth", { section_id: "s1", level: "stub", reason: "Reader knows basics", knowledge_refs: [] });
+    assert(pending.ok && pending.pending && core.state.depth.s1.level === "full", "cursor-section depth stays pending");
+    core.applyPending("s1");
+    assert(core.state.depth.s1.level === "stub" && core.state.pendingQuestions.length === 0, "applyPending applies the queued depth");
+
+    const mergedKnowledge = await call("upsert_knowledge", { concept: "SCATTERING", level: "heard", evidence: "I now qualify that answer.", source: "reader" });
+    assert(mergedKnowledge.ok && mergedKnowledge.entry.id === knowledge.entry.id && mergedKnowledge.entry.status === "proposed", "knowledge merges concepts case-insensitively and resets changed levels");
+
+    const invalidKind = await call("annotate", { section_id: "s2", kind: "rewrite", text: "No", reason: "Invalid kind test" });
+    assert(!invalidKind.ok, "annotation rejects an unknown kind");
+
+    const glossWithoutRange = await call("annotate", { section_id: "s2", kind: "gloss", text: "A definition", reason: "Term needs context" });
+    assert(!glossWithoutRange.ok, "gloss rejects a missing range");
+
+    const caveatWithoutSource = await call("annotate", { section_id: "s2", kind: "caveat", text: "Qualification", stance: "unclear", reason: "Evidence is mixed" });
+    assert(!caveatWithoutSource.ok, "caveat rejects missing sources");
+
+    const badStance = await call("annotate", { section_id: "s2", kind: "perspective", text: "Another view", sources: ["paper"], stance: "verified", reason: "Compare viewpoints" });
+    assert(!badStance.ok, "perspective rejects a non-calibrated stance");
+
+    const shortReason = await call("annotate", { section_id: "s2", kind: "question", text: "Why?", reason: "short" });
+    assert(!shortReason.ok, "every annotation rejects a short reason");
+
+    const missedQuote = await call("highlight", { section_id: "s2", quote: "not in the source", reason: "Reader asked why" });
+    assert(!missedQuote.ok, "highlight rejects a quote absent from the section");
+
+    const highlight = await call("highlight", { section_id: "s2", quote: "straight line", reason: "Key experimental result" });
+    assert(highlight.ok && highlight.artifact.author === "agent", "highlight adds an attributed agent artifact");
+
+    const figure = await call("insert_figure", {
+      section_id: "s3",
+      svg: '<svg width="20" height="10" onload="bad()"><scr' + 'ipt>bad()</scr' + 'ipt><foreignObject>x</foreignObject><image href="https://bad.example/x"/><circle cx="5" cy="5" r="2"/></svg>',
+      caption: "Scattering path",
+      reason: "Shows the geometry",
+    });
+    assert(figure.ok && /viewBox=/.test(figure.artifact.svg) && !/script|onload|foreignObject|https:/i.test(figure.artifact.svg), "figure strips active content and adds a viewBox");
+
+    const vault = await call("search_notes", { query: "gold" });
+    assert(vault.ok && vault.results.length === 0 && vault.detail === "no vault loaded", "note search reports an absent vault");
+
+    const beforeRemove = core.state.artifacts.length;
+    core.removeArtifact(highlight.artifact.id);
+    assert(core.state.artifacts.length === beforeRemove - 1, "the reader can remove an agent artifact");
+
+    const sourceText = core.state.doc.sections[1].text;
+    try { core.state.doc.sections[1].text = "changed"; } catch {}
+    assert(core.state.doc.sections[1].text === sourceText, "tool activity cannot mutate source text");
+    assert(core.state.activity.length === toolCalls, "every tool call writes one activity entry");
+
+    const final = document.createElement("strong");
+    final.id = "final-result";
+    final.className = failures ? "fail" : "pass";
+    final.textContent = failures ? `FAILURES: ${failures}` : "ALL PASS";
+    results.append(final);
+    console.log(`${final.textContent} (${assertions} assertions)`);
+  </script>
+</body>
+</html>
