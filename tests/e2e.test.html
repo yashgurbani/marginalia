@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Marginalia end-to-end test</title></head>
+<body>
+  <pre id="result">RUNNING</pre>
+  <iframe id="app" src="../index.html" hidden></iframe>
+  <script type="module">
+    import { loadFixture } from "../src/ingest.js";
+
+    const output = document.querySelector("#result");
+    const frame = document.querySelector("#app");
+    const failures = [];
+    const assert = (condition, label) => { if (!condition) failures.push(label); };
+    const waitFor = async (test, timeout = 5000) => {
+      const started = Date.now();
+      while (!test()) {
+        if (Date.now() - started > timeout) throw new Error("Timed out waiting for the app.");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    };
+
+    try {
+      const entries = await fetch("../fixtures/index.json").then((response) => response.json());
+      assert(entries.length === 3, "fixture index contains three entries");
+      for (const entry of entries) {
+        const fixture = await loadFixture({ ...entry, path: `../${entry.path}` });
+        assert(fixture.sections.length > 0, `${entry.id} loads and splits into sections`);
+        assert(fixture.meta.attribution.length > 0, `${entry.id} has attribution`);
+      }
+
+      await waitFor(() => frame.contentWindow?.marginaliaTools && frame.contentDocument.querySelectorAll(".section-row").length > 2);
+      const win = frame.contentWindow;
+      const doc = frame.contentDocument;
+      const tools = win.marginaliaTools;
+      const stateUrl = new URL("../src/state.js", location.href).href;
+      const stateApi = await win.eval(`import("${stateUrl}")`);
+      const registered = [];
+      win.modelContext = { registerTool(tool) { registered.push(tool.name); } };
+      await waitFor(() => win.marginaliaWebMCP?.status === "registered");
+      assert(registered.length === 9, "late modelContext host receives all nine tools");
+      assert(doc.querySelector("#webmcp-status").textContent.includes("9 tools on window.modelContext"), "status pill shows the actual late registration outcome");
+      const picker = doc.querySelector("#fixture-picker");
+      for (let index = 0; index < entries.length; index += 1) {
+        picker.value = String(index);
+        picker.dispatchEvent(new Event("change", { bubbles: true }));
+        await waitFor(() => doc.querySelector("#document-title").textContent === entries[index].title && doc.querySelector("#attribution").textContent.includes(entries[index].attribution));
+        assert(doc.querySelectorAll(".section-row").length > 0, `${entries[index].id} renders through the fixture picker`);
+      }
+      picker.value = "0";
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+      await waitFor(() => doc.querySelector("#document-title").textContent === entries[0].title);
+      const initial = await tools.get_reading_state.execute({ include_text: true });
+      assert(initial.ok && initial.sections.length > 2, "get_reading_state returns the real document");
+
+      const knowledge = await tools.upsert_knowledge.execute({ concept: "atomic nucleus", level: "working", evidence: "Reader explained why large-angle scattering implies concentrated charge.", source: "reader" });
+      assert(knowledge.ok && stateApi.state.knowledge.some((entry) => entry.id === knowledge.entry.id), "upsert_knowledge updates shared state");
+      stateApi.setKnowledgeStatus(knowledge.entry.id, "confirmed");
+
+      const stubId = initial.sections[1].id;
+      const hiddenId = initial.sections[2].id;
+      assert((await tools.set_section_depth.execute({ section_id: stubId, level: "stub", reason: "Reader already understands this setup.", apply: "now" })).ok, "stub depth applies to a non-cursor section");
+      assert((await tools.set_section_depth.execute({ section_id: hiddenId, level: "hidden", reason: "Confirmed knowledge covers this section.", knowledge_refs: [knowledge.entry.id], apply: "now" })).ok, "hidden depth accepts confirmed knowledge");
+
+      const section = await tools.get_section_text.execute({ section_id: stubId });
+      const term = section.text.match(/[A-Za-z]{5,}/)?.[0] || section.text.slice(0, 5);
+      const start = section.text.indexOf(term);
+      await tools.annotate.execute({ section_id: stubId, kind: "gloss", range: { start, end: start + term.length }, text: `${term}: a test definition.`, reason: "Defines a term at the point of use." });
+      await tools.annotate.execute({ section_id: stubId, kind: "caveat", text: "This interpretation has a limited scope.", sources: [{ title: "Primary source", url: "https://example.com/source" }], stance: "unclear", reason: "Shows uncertainty and the supporting source." });
+      await tools.highlight.execute({ section_id: stubId, quote: term, reason: "Marks the term used by the gloss." });
+      const figure = await tools.insert_figure.execute({ section_id: stubId, svg: '<svg width="40" height="20"><script>window.__bad=1<\/script><circle cx="10" cy="10" r="5"/></svg>', caption: "Small safe figure", reason: "Shows the sanitizer and inline figure path." });
+      assert(figure.ok && !figure.artifact.svg.includes("script"), "insert_figure strips scripts");
+      const notes = await tools.search_notes.execute({ query: "nucleus" });
+      assert(notes.ok && notes.detail === "no vault loaded", "search_notes reports no vault");
+
+      await waitFor(() => doc.querySelectorAll(".artifact-card").length >= 3);
+      assert(doc.querySelectorAll(".depth-chip").length === initial.sections.length, "DOM shows depth chips");
+      assert(doc.querySelector(`[data-section-id="${stubId}"] .fold-reason`)?.textContent.includes("Reader already understands"), "DOM shows a folded section reason");
+      assert(doc.querySelectorAll(".artifact-card .remove-artifact").length >= 3, "artifact cards show Remove buttons");
+      assert(doc.querySelector(".artifact-figure svg") && !doc.querySelector(".artifact-figure script"), "sanitized figure appears inline");
+
+      const agentToggle = doc.querySelector('[data-layer="agent"]');
+      agentToggle.checked = false;
+      agentToggle.dispatchEvent(new Event("change", { bubbles: true }));
+      await waitFor(() => doc.querySelector("#reader").classList.contains("agent-layer-off"));
+      assert(getComputedStyle(doc.querySelector(".margin-gutter")).display === "none", "Agent layer off hides the gutter");
+      assert(doc.querySelector(`[data-section-id="${stubId}"] .source-text`)?.textContent === section.text, "Agent layer off shows full source text");
+    } catch (error) {
+      failures.push(error.stack || error.message || String(error));
+    }
+
+    output.textContent = failures.length ? `FAILURES: ${failures.length}\n${failures.join("\n")}` : "ALL PASS\nFAILURES: 0";
+    document.body.dataset.testResult = failures.length ? "fail" : "pass";
+  </script>
+</body>
+</html>
