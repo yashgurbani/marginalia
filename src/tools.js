@@ -139,7 +139,7 @@ const tools = [
   tool(
     "annotate",
     "Adds a removable margin artifact with a reason. Never rewrites source text. Caveats and perspectives need sources and a calibrated stance.",
-    schema({ section_id: { type: "string" }, kind: { enum: annotationKinds }, range: { type: "object" }, text: { type: "string" }, sources: { type: "array" }, stance: { enum: stances }, reason: { type: "string" } }, ["section_id", "kind", "reason"]),
+    schema({ section_id: { type: "string" }, kind: { enum: annotationKinds }, range: { type: "object" }, text: { type: "string" }, sources: { type: "array" }, stance: { enum: stances }, target: { type: "string" }, relation: { type: "string" }, reason: { type: "string" } }, ["section_id", "kind", "reason"]),
     async (input) => {
       const id = sectionId(input);
       const kind = input.kind;
@@ -161,9 +161,12 @@ const tools = [
         artifact.text_md = body;
         if (!input.generated && (!Array.isArray(input.sources) || input.sources.length < 1)) refusal("A non-generated prerequisite requires at least one source.", "provide a source or mark generated as true");
       }
-      if (kind === "connection" && (!input.target || !input.relation)) refusal("connection requires target and relation.", "provide a note path or knowledge id and its relation");
+      if (kind === "connection") {
+        artifact.target = text(input.target, "target");
+        artifact.relation = text(input.relation, "relation");
+      }
       if (kind === "reference" && (!input.url || !input.role || !input.why)) refusal("reference requires url, role, and why.", "provide all reference fields");
-      for (const key of ["sources", "stance", "target", "relation", "title", "text_md", "url", "role", "why"]) {
+      for (const key of ["sources", "stance", "title", "text_md", "url", "role", "why"]) {
         if (input[key] !== undefined) artifact[key] = input[key];
       }
       return { ok: true, artifact: addArtifact(id, artifact) };
