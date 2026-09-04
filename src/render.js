@@ -244,10 +244,18 @@ function mountAuxiliarySidebar({ stateApi }) {
     for (const button of tabs.querySelectorAll(".tab-button:not([data-marginalia-aux])")) {
       if (button.dataset.marginaliaObserved) continue;
       button.dataset.marginaliaObserved = "true";
+      const nativeLabel = button.textContent;
       button.addEventListener("click", () => {
         activeAux = null;
         cleanupMounts();
         schedule();
+        queueMicrotask(() => {
+          for (const nativeButton of pane.querySelectorAll(".tab-button:not([data-marginalia-aux])")) {
+            const selected = nativeButton.textContent === nativeLabel;
+            nativeButton.classList.toggle("is-active", selected);
+            nativeButton.setAttribute("aria-selected", String(selected));
+          }
+        });
       });
     }
 

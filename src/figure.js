@@ -250,7 +250,7 @@ export function sanitizeSvg(value) {
   normalizeRoot(root);
 
   const serialized = new XMLSerializer().serializeToString(root);
-  if (/<(?:script|foreignObject|iframe|object|embed|audio|video|style)\b|\son\w+\s*=|(?:https?:|data:text\/html|javascript:)/i.test(serialized)) {
+  if (/<(?:script|foreignObject|iframe|object|embed|audio|video|style)\b|\son\w+\s*=|\s(?:href|xlink:href|src)\s*=\s*["']\s*(?:https?:|data:|javascript:)|(?:data:text\/html|javascript:)/i.test(serialized)) {
     failure("svg still contains active or external content after sanitization.");
   }
   return serialized;
