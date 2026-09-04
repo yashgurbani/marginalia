@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Marginalia fallback test</title></head>
+<body>
+  <pre id="result">RUNNING</pre>
+  <iframe id="app" src="../index.html" hidden></iframe>
+  <script type="module">
+    import { createVault } from "../src/vault.js";
+
+    const output = document.querySelector("#result");
+    const frame = document.querySelector("#app");
+    const failures = [];
+    const assert = (condition, label) => { if (!condition) failures.push(label); };
+    const waitFor = async (test, timeout = 10000) => {
+      const started = Date.now();
+      while (!test()) {
+        if (Date.now() - started > timeout) throw new Error("Timed out waiting for the fallback app.");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    };
+
+    try {
+      await waitFor(() => frame.contentWindow?.marginaliaTools && frame.contentDocument.querySelectorAll(".section-row").length > 2);
+      const win = frame.contentWindow;
+      const doc = frame.contentDocument;
+      const tools = win.marginaliaTools;
+
+      await waitFor(() => doc.querySelector(".source-text .katex"));
+      assert(Boolean(doc.querySelector(".source-text .katex")), "Rutherford inline math renders with KaTeX");
+
+      win.marginaliaVault = createVault([{
+        path: "physics/nucleus.md",
+        title: "Nuclear notes",
+        text: "# Nuclear notes\nThe compact nucleus explains large-angle alpha scattering.",
+      }]);
+      const notes = await tools.search_notes.execute({ query: "nucleus scattering", limit: 3 });
+      assert(notes.ok && notes.results[0]?.path === "physics/nucleus.md", "vault search returns the seeded note");
+      assert(typeof notes.results[0]?.score === "number" && notes.results[0].score > 0, "vault search returns a positive score");
+
+      const reading = await tools.get_reading_state.execute({ include_text: false });
+      const sectionId = reading.sections[0].id;
+      const targetId = reading.sections[1].id;
+      const mathArtifact = await tools.annotate.execute({
+        section_id: sectionId,
+        kind: "question",
+        text: "Does the energy relation $E = mc^2$ apply here?",
+        reason: "Checks math rendering in the margin.",
+      });
+      await waitFor(() => doc.querySelector(`[data-artifact-id="${mathArtifact.artifact.id}"] .katex`));
+      assert(Boolean(doc.querySelector(`[data-artifact-id="${mathArtifact.artifact.id}"] .katex`)), "margin artifact math renders with KaTeX");
+
+      const connection = await tools.annotate.execute({
+        section_id: sectionId,
+        kind: "connection",
+        target: targetId,
+        relation: "explains",
+        reason: "Connects this claim to the next section.",
+      });
+      assert(connection.ok, "annotate accepts a connection target and relation");
+      await waitFor(() => doc.querySelector(`[data-artifact-id="${connection.artifact.id}"] .connection-target`));
+      const card = doc.querySelector(`[data-artifact-id="${connection.artifact.id}"]`);
+      assert(card?.textContent.includes("explains") && card?.textContent.includes(targetId), "connection card shows its relation and target");
+      assert(card?.querySelector(".connection-target")?.getAttribute("href") === `#section-${targetId}`, "section target is a link");
+    } catch (error) {
+      failures.push(error.stack || error.message || String(error));
+    }
+
+    output.textContent = failures.length ? `FAILURES: ${failures.length}\n${failures.join("\n")}` : "ALL PASS\nFAILURES: 0";
+    document.body.dataset.testResult = failures.length ? "fail" : "pass";
+  </script>
+</body>
+</html>

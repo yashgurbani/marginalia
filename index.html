@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Marginalia</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" onload="window.dispatchEvent(new Event('katexready'))"></script>
   <link rel="stylesheet" href="src/style.css">
 </head>
 <body>
@@ -20,6 +22,10 @@
     </fieldset>
     <button id="remove-all" type="button">Remove all agent artifacts</button>
     <button id="export-json" type="button">Export JSON</button>
+    <label id="vault-drop" class="vault-drop" for="vault-input">Drop notes
+      <input id="vault-input" type="file" accept=".md,.txt,text/markdown,text/plain" webkitdirectory multiple>
+    </label>
+    <span id="vault-status" class="vault-status" role="status">Vault: none</span>
     <span id="webmcp-status" class="status-pill" data-webmcp-host="unknown">WebMCP: checking…</span>
   </header>
 
@@ -50,6 +56,7 @@
     import "./src/tools.js";
     import { initRenderer } from "./src/render.js";
     import { initKnowledgePane } from "./src/knowledge.js";
+    import { initVault } from "./src/vault.js";
 
     const fallbackEntry = {
       id: "demo-fallback",
@@ -67,6 +74,11 @@
 
     initRenderer({ root: document.querySelector("#reader"), stateApi });
     initKnowledgePane({ root: document.querySelector("#knowledge-pane"), stateApi });
+    initVault({
+      dropZone: document.querySelector("#vault-drop"),
+      input: document.querySelector("#vault-input"),
+      status: document.querySelector("#vault-status"),
+    });
 
     function showDocument(doc) {
       stateApi.loadDoc(doc.sections, doc.meta);

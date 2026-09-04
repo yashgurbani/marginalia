@@ -18,6 +18,29 @@ function el(tag, className, text) {
   return node;
 }
 
+function appendMathText(container, text) {
+  const pattern = /\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/g;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    container.append(document.createTextNode(text.slice(cursor, match.index)));
+    const raw = match[0];
+    const expression = match[1] ?? match[2];
+    try {
+      if (!globalThis.katex?.renderToString) throw new Error("KaTeX unavailable");
+      const math = el("span", "math");
+      math.innerHTML = globalThis.katex.renderToString(expression, {
+        displayMode: raw.startsWith("$$"),
+        throwOnError: false,
+      });
+      container.append(math);
+    } catch {
+      container.append(document.createTextNode(raw));
+    }
+    cursor = match.index + raw.length;
+  }
+  container.append(document.createTextNode(text.slice(cursor)));
+}
+
 function appendTextWithHighlights(container, text, artifacts) {
   const ranges = artifacts
     .filter((item) => item.kind === "highlight")
@@ -34,12 +57,13 @@ function appendTextWithHighlights(container, text, artifacts) {
   let cursor = 0;
   for (const range of ranges) {
     if (range.start < cursor) continue;
-    container.append(document.createTextNode(text.slice(cursor, range.start)));
-    const mark = el("mark", "agent-highlight", text.slice(range.start, range.end));
+    appendMathText(container, text.slice(cursor, range.start));
+    const mark = el("mark", "agent-highlight");
+    appendMathText(mark, text.slice(range.start, range.end));
     container.append(mark);
     cursor = range.end;
   }
-  container.append(document.createTextNode(text.slice(cursor)));
+  appendMathText(container, text.slice(cursor));
 }
 
 function sourceBody(section, level, reason, artifacts, stateApi) {
@@ -80,7 +104,21 @@ function artifactCard(artifact, stateApi) {
     card.append(figure);
   }
   const content = artifact.text ?? artifact.text_md ?? artifact.summary ?? artifact.why;
-  if (content) card.append(el("p", "artifact-text", content));
+  if (content) {
+    const text = el("p", "artifact-text");
+    appendMathText(text, content);
+    card.append(text);
+  }
+  if (artifact.kind === "connection" && artifact.target && artifact.relation) {
+    const connection = el("p", "artifact-connection");
+    connection.append(document.createTextNode(`${artifact.relation}: `));
+    const target = el("a", "connection-target", artifact.target);
+    target.href = artifact.target.startsWith("s") && /^s\d+$/.test(artifact.target)
+      ? `#section-${artifact.target}`
+      : artifact.target;
+    connection.append(target);
+    card.append(connection);
+  }
   if (artifact.stance) card.append(el("p", "artifact-stance", `Stance: ${artifact.stance}`));
   if (["caveat", "perspective"].includes(artifact.kind) && artifact.sources?.length) {
     const list = el("ul", "artifact-sources");
@@ -132,6 +170,7 @@ export function initRenderer({ root, stateApi = defaultStateApi } = {}) {
     for (const section of snapshot.doc.sections) {
       const row = el("div", "section-row");
       row.dataset.sectionId = section.id;
+      row.id = `section-${section.id}`;
       const article = el("section", "document-section");
       if (snapshot.cursorSection === section.id) article.classList.add("is-cursor");
       article.addEventListener("click", () => stateApi.setCursor(section.id));
@@ -196,6 +235,14 @@ export function initRenderer({ root, stateApi = defaultStateApi } = {}) {
   };
 
   const unsubscribe = stateApi.subscribe(render);
+  const rerenderMath = () => render(stateApi.state);
+  window.addEventListener("katexready", rerenderMath);
   render(stateApi.state);
-  return { render, destroy: unsubscribe };
+  return {
+    render,
+    destroy() {
+      unsubscribe();
+      window.removeEventListener("katexready", rerenderMath);
+    },
+  };
 }

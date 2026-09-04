@@ -1,0 +1,3 @@
+WebMCP notes
+
+Marginalia exposes read and agent-layer tools. It does not expose a tool that changes the immutable source layer.
