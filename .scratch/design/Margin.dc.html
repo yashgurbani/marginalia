@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #f7f7f8; color: #1d1d1f; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    a { color: #4a5fa8; text-decoration: none; } a:hover { color: #34437a; text-decoration: underline; }
+    .note { font-size: 12px; color: #6b6b70; line-height: 1.45; }
+    .k { color: #7a5fc9; font-size: 12px; }
+    .why { color: #8a8a90; font-size: 12px; margin-top: 6px; }
+    .card { width: 320px; font-size: 13.5px; line-height: 1.5; color: #3a3a3f; }
+    .serif { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; }
+  </style>
+</helmet>
+<div style="width: 1120px; min-height: 760px; background: #f7f7f8; padding: 48px 56px; display: flex; flex-direction: column; gap: 36px; box-sizing: border-box;">
+  <div>
+    <div style="font-size: 22px; font-weight: 600; margin: 0 0 6px 0;">Margin anatomy</div>
+    <div class="note" style="max-width: 70ch;">Every agent artifact is one block: a kind word in the agent hue, the content, an optional source line, then the reason in a quieter tone with a text "remove". No boxes, no borders, no badges. The block sits level with the paragraph or heading it is anchored to; blocks never overlap, they push down.</div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px 48px;">
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div class="note">Kinds: gloss · expand · eli5 · question · link · prerequisite · reference</div>
+      <div class="card">
+        <div class="k">expand</div>
+        <div>The "sphere of electrification" is Thomson's model: positive charge spread through the whole atom, electrons embedded in it.</div>
+        <div class="why">Added because you marked §1 lost. <span style="color: #6b6b70;">remove</span></div>
+      </div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div class="note">caveat and perspective need at least one source and a stance: supports, contradicts, extends, unclear. The stance follows the kind word.</div>
+      <div class="card">
+        <div class="k">perspective · extends</div>
+        <div>Nagaoka's 1904 Saturnian model already put the charge at the centre, but without scattering data.</div>
+        <div style="font-size: 12px; margin-top: 6px;"><a href="#">Nagaoka 1904, Phil. Mag. 7</a></div>
+        <div class="why">Added because you asked who else had this idea. <span style="color: #6b6b70;">remove</span></div>
+      </div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div class="note">connection points at a note in your vault or another section. The target is a link; the relation is one word.</div>
+      <div class="card">
+        <div class="k">connection · builds on</div>
+        <div><a href="#">notes/atomic-structure.md</a></div>
+        <div>Your note on Bohr's quantised orbits starts from this nucleus.</div>
+        <div class="why">Linked because search_notes matched "nucleus". <span style="color: #6b6b70;">remove</span></div>
+      </div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div class="note">Highlight lives in the column, not the margin: a flat tint behind the quoted run in the reader hue, no underline.</div>
+      <div class="card serif" style="font-size: 17px; line-height: 1.6; color: #1d1d1f;">…contains a charge <span style="background: #eef7f6; box-shadow: 0 0 0 3px #eef7f6;">±Ne at its centre</span> surrounded by…</div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div class="note">Folded and shortened sections show one italic line in the column with the reason and a text link. Depth is a lowercase word beside the heading: full · summary · stub · hidden.</div>
+      <div class="card serif" style="color: #6b6b70; font-style: italic; font-size: 15px;">Folded: you confirmed the random-walk argument. <a href="#" style="font-style: normal;">expand</a></div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div class="note">Pending: a change aimed at the section you are reading waits. One line, one action.</div>
+      <div class="card" style="color: #6b6b70; font-size: 13px;">Will fold when you move on. <a href="#">apply now</a></div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 48px; font-size: 12px; color: #6b6b70; line-height: 1.5; max-width: 100ch;">
+    <div style="flex: 1;"><span style="color: #1d1d1f;">Motion.</span> Fold and unfold: height and opacity, 240ms, cubic-bezier(0.22, 1, 0.36, 1). A new margin block fades in over 200ms. With prefers-reduced-motion, changes are instant.</div>
+    <div style="flex: 1;"><span style="color: #1d1d1f;">Layers off.</span> Agent off: margin empty, every section full, no depth words. You off: no tints, no marks. Source is never toggled; it is the page.</div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

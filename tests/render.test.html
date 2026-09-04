@@ -60,14 +60,15 @@
 
     api.setCursor("s2");
     api.setDepth("s1", "stub", "Known from the test fixture.");
-    assert(document.querySelector('[data-section-id="s1"] .depth-chip')?.textContent === "stub", "depth chip updates after setDepth");
+    assert(document.querySelector('[data-section-id="s1"] .depth-chip')?.textContent === "stub", "depth word updates after setDepth");
 
     api.addArtifact("s1", { kind: "expand", text: "Margin text", reason: "Adds test context." });
-    assert(document.querySelectorAll(".artifact-card").length === 1, "artifact card appears after addArtifact");
+    assert(document.querySelectorAll(".artifact-card").length === 1, "artifact block appears after addArtifact");
 
     api.toggleLayer("agent", false);
     assert(getComputedStyle(document.querySelector(".margin-gutter")).display === "none", "agent-layer toggle hides the gutter");
     assert(document.querySelector('[data-section-id="s1"] .depth-chip')?.textContent === "full", "agent off restores full source depth");
+    assert(getComputedStyle(document.querySelector('[data-section-id="s1"] .depth-chip')).display === "none", "agent off hides depth words");
 
     const output = failures.length ? `FAILURES: ${failures.length}\n${failures.join("\n")}` : "ALL PASS";
     document.querySelector("#results").textContent = output;

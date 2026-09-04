@@ -38,7 +38,7 @@
       win.modelContext = { registerTool(tool) { registered.push(tool.name); } };
       await waitFor(() => win.marginaliaWebMCP?.status === "registered");
       assert(registered.length === 9, "late modelContext host receives all nine tools");
-      assert(doc.querySelector("#webmcp-status").textContent.includes("9 tools on window.modelContext"), "status pill shows the actual late registration outcome");
+      assert(doc.querySelector("#webmcp-status").textContent.includes("WebMCP · 9 tools"), "status text shows the actual late registration outcome");
       const picker = doc.querySelector("#fixture-picker");
       for (let index = 0; index < entries.length; index += 1) {
         picker.value = String(index);
@@ -73,9 +73,9 @@
       assert(notes.ok && notes.detail === "no vault loaded", "search_notes reports no vault");
 
       await waitFor(() => doc.querySelectorAll(".artifact-card").length >= 3);
-      assert(doc.querySelectorAll(".depth-chip").length === initial.sections.length, "DOM shows depth chips");
+      assert(doc.querySelectorAll(".depth-chip").length === initial.sections.length, "DOM shows depth words");
       assert(doc.querySelector(`[data-section-id="${stubId}"] .fold-reason`)?.textContent.includes("Reader already understands"), "DOM shows a folded section reason");
-      assert(doc.querySelectorAll(".artifact-card .remove-artifact").length >= 3, "artifact cards show Remove buttons");
+      assert(doc.querySelectorAll(".artifact-card .remove-artifact").length >= 3, "artifact blocks show remove controls");
       assert(doc.querySelector(".artifact-figure svg") && !doc.querySelector(".artifact-figure script"), "sanitized figure appears inline");
 
       const agentToggle = doc.querySelector('[data-layer="agent"]');

@@ -8,36 +8,38 @@
 </head>
 <body>
   <header class="top-bar">
-    <a class="brand" href="./">Marginalia</a>
-    <label class="fixture-control">Document
-      <select id="fixture-picker" aria-label="Choose a document"><option>Loading…</option></select>
-    </label>
-    <fieldset class="layer-toggles" aria-label="Visible layers">
-      <legend>Layers</legend>
-      <label><input type="checkbox" data-layer="source" checked> Source</label>
-      <label><input type="checkbox" data-layer="reader" checked> You</label>
-      <label><input type="checkbox" data-layer="agent" checked> Agent</label>
-    </fieldset>
-    <button id="remove-all" type="button">Remove all agent artifacts</button>
-    <button id="export-json" type="button">Export JSON</button>
-    <span id="webmcp-status" class="status-pill" data-webmcp-host="unknown">WebMCP: checking…</span>
+    <div class="top-bar-start">
+      <a class="brand" href="./">Marginalia</a>
+      <label class="fixture-control">
+        <span class="visually-hidden">Document</span>
+        <select id="fixture-picker" aria-label="Choose a document"><option>Loading…</option></select>
+      </label>
+    </div>
+    <div class="top-bar-end">
+      <fieldset class="layer-toggles" aria-label="Visible layers">
+        <legend class="visually-hidden">Layers</legend>
+        <label class="layer-toggle source-toggle"><input type="checkbox" data-layer="source" checked><span>Source</span></label>
+        <label class="layer-toggle reader-toggle"><input type="checkbox" data-layer="reader" checked><span>You</span></label>
+        <label class="layer-toggle agent-toggle"><input type="checkbox" data-layer="agent" checked><span>Agent</span></label>
+      </fieldset>
+      <span id="webmcp-status" class="webmcp-status" data-webmcp-host="unknown">WebMCP · checking</span>
+      <button id="notes-toggle" class="chrome-text" type="button" aria-controls="knowledge-pane" aria-expanded="false">Notes</button>
+    </div>
   </header>
 
   <main>
     <section class="document-shell" aria-labelledby="document-title">
       <div class="document-meta">
-        <p class="eyebrow">Source, untouched. The agent lives in the margin.</p>
-        <p class="thesis">A human and their agent work on the same page through WebMCP.</p>
-        <p class="layer-rule">Layer rule: “The page registers no WebMCP tool that mutates the source layer.”</p>
-        <p class="judge-hint">How judges test: open this page in a WebMCP browser, then use the prompts in the <a href="README.md">README</a>.</p>
         <h1 id="document-title">Marginalia</h1>
         <p id="attribution" class="attribution"></p>
         <p id="load-message" class="load-message" role="status"></p>
       </div>
       <div id="reader" class="reader"></div>
     </section>
-    <aside id="knowledge-pane" class="knowledge-pane" aria-label="Knowledge and activity"></aside>
   </main>
+
+  <aside id="knowledge-pane" class="knowledge-pane" aria-label="Notes" aria-hidden="true"></aside>
+  <footer class="layer-rule">Layer rule: “The page registers no WebMCP tool that mutates the source layer.”</footer>
 
   <script type="module" src="src/ingest.js"></script>
   <script type="module" src="src/state.js"></script>
@@ -64,15 +66,32 @@
     const message = document.querySelector("#load-message");
     const title = document.querySelector("#document-title");
     const attribution = document.querySelector("#attribution");
+    const notes = document.querySelector("#knowledge-pane");
+    const notesToggle = document.querySelector("#notes-toggle");
 
     initRenderer({ root: document.querySelector("#reader"), stateApi });
-    initKnowledgePane({ root: document.querySelector("#knowledge-pane"), stateApi });
+    initKnowledgePane({ root: notes, stateApi });
+
+    function setNotesOpen(open) {
+      document.body.classList.toggle("notes-open", open);
+      notes.setAttribute("aria-hidden", String(!open));
+      notesToggle.setAttribute("aria-expanded", String(open));
+      if (open) notes.querySelector(".drawer-close")?.focus();
+      else notesToggle.focus();
+    }
+    notesToggle.addEventListener("click", () => setNotesOpen(!document.body.classList.contains("notes-open")));
+    notes.addEventListener("marginaliaclosenotes", () => setNotesOpen(false));
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && document.body.classList.contains("notes-open")) setNotesOpen(false);
+    });
 
     function showDocument(doc) {
       stateApi.loadDoc(doc.sections, doc.meta);
       title.textContent = doc.meta.title;
       attribution.replaceChildren();
-      const line = [doc.meta.attribution, doc.meta.license].filter(Boolean).join(" · ");
+      const parts = [doc.meta.attribution].filter(Boolean);
+      if (doc.meta.license && !String(doc.meta.attribution).toLocaleLowerCase().includes(String(doc.meta.license).toLocaleLowerCase())) parts.push(doc.meta.license);
+      const line = parts.join(" · ");
       attribution.append(document.createTextNode(line));
       if (doc.meta.source_url) {
         attribution.append(document.createTextNode(" · "));
@@ -124,8 +143,8 @@
         input.checked = snapshot.layers[input.dataset.layer] !== false;
       });
     });
-    document.querySelector("#remove-all").addEventListener("click", () => stateApi.removeAllArtifacts());
-    document.querySelector("#export-json").addEventListener("click", () => {
+
+    notes.addEventListener("marginaliaexport", () => {
       const blob = new Blob([JSON.stringify(stateApi.exportJSON(), null, 2)], { type: "application/json" });
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
@@ -139,12 +158,12 @@
       const outcome = detail || { status: "waiting", host: null };
       status.dataset.webmcpHost = outcome.host || outcome.status;
       status.textContent = outcome.status === "registered"
-        ? `WebMCP: ${outcome.count} tools on ${outcome.host}`
+        ? `WebMCP · ${outcome.count} tools`
         : outcome.status === "error"
-          ? `WebMCP: registration error on ${outcome.host}`
+          ? "WebMCP · registration error"
           : outcome.status === "unavailable"
-            ? "WebMCP: no host detected"
-            : "WebMCP: waiting for host…";
+            ? "WebMCP · not registered"
+            : "WebMCP · checking";
     }
     window.addEventListener("marginaliawebmcpchange", (event) => showWebMCPStatus(event.detail));
     showWebMCPStatus();
