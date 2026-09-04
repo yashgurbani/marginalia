@@ -35,77 +35,85 @@ function appendTextWithHighlights(container, text, artifacts) {
   for (const range of ranges) {
     if (range.start < cursor) continue;
     container.append(document.createTextNode(text.slice(cursor, range.start)));
-    const mark = el("mark", "agent-highlight", text.slice(range.start, range.end));
-    container.append(mark);
+    container.append(el("mark", "agent-highlight", text.slice(range.start, range.end)));
     cursor = range.end;
   }
   container.append(document.createTextNode(text.slice(cursor)));
 }
 
+function expandControl(section, stateApi) {
+  const expand = el("button", "text-button expand-button", "expand");
+  expand.type = "button";
+  expand.addEventListener("click", (event) => {
+    event.stopPropagation();
+    stateApi.setDepth(section.id, "full", "Reader expanded this section.", [], "now");
+    if (stateApi.state.pendingQuestions?.some((item) => item.sectionId === section.id)) stateApi.applyPending(section.id);
+  });
+  return expand;
+}
+
 function sourceBody(section, level, reason, artifacts, stateApi) {
   const wrap = el("div", "section-body");
   if (level === "hidden") {
-    wrap.append(el("p", "folded-line", `folded: ${reason || "agent depth setting"}`));
-  } else {
-    const shown = level === "stub" ? firstSentence(section.text) : level === "summary" ? firstParagraph(section.text) : section.text;
-    const p = el("p", "source-text");
-    appendTextWithHighlights(p, shown, artifacts);
-    wrap.append(p);
-    if (level === "stub") wrap.append(el("p", "fold-reason", `Folded after the first sentence: ${reason || "agent depth setting"}`));
+    const line = el("p", "folded-line");
+    line.append(document.createTextNode(`Folded: ${reason || "agent depth setting"} `), expandControl(section, stateApi));
+    wrap.append(line);
+    return wrap;
   }
-  if (level === "hidden" || level === "stub") {
-    const expand = el("button", "text-button expand-button", "Expand");
-    expand.type = "button";
-    expand.addEventListener("click", (event) => {
-      event.stopPropagation();
-      stateApi.setDepth(section.id, "full", "Reader expanded this section.", [], "now");
-      if (stateApi.state.pendingQuestions?.some((item) => item.sectionId === section.id)) stateApi.applyPending(section.id);
-    });
-    wrap.append(expand);
+
+  const shown = level === "stub" ? firstSentence(section.text) : level === "summary" ? firstParagraph(section.text) : section.text;
+  const source = el("p", "source-text");
+  appendTextWithHighlights(source, shown, artifacts);
+  wrap.append(source);
+
+  if (level === "stub" || level === "summary") {
+    const line = el("p", "fold-reason");
+    line.append(document.createTextNode(`Shortened: ${reason || "agent depth setting"} `), expandControl(section, stateApi));
+    wrap.append(line);
   }
   return wrap;
+}
+
+function appendSourceLine(card, source) {
+  const label = typeof source === "string" ? source : source.title || source.url || source.path || "Source";
+  const url = typeof source === "object" ? source.url : "";
+  if (url) {
+    const link = el("a", "artifact-source", label);
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    card.append(link);
+  } else card.append(el("span", "artifact-source", label));
 }
 
 function artifactCard(artifact, stateApi) {
   const card = el("article", "artifact-card");
   card.dataset.artifactId = artifact.id;
-  const top = el("div", "artifact-top");
-  top.append(el("span", "artifact-kind", artifact.kind || "annotation"));
-  top.append(el("span", "agent-tag", "author:agent"));
-  card.append(top);
+  const kind = [artifact.kind || "annotation", artifact.stance].filter(Boolean).join(" · ");
+  card.append(el("div", "artifact-kind", kind));
 
   if (artifact.kind === "figure" && artifact.svg) {
     const figure = el("div", "artifact-figure");
     figure.innerHTML = artifact.svg;
     card.append(figure);
   }
-  const content = artifact.text ?? artifact.text_md ?? artifact.summary ?? artifact.why;
-  if (content) card.append(el("p", "artifact-text", content));
-  if (artifact.stance) card.append(el("p", "artifact-stance", `Stance: ${artifact.stance}`));
-  if (["caveat", "perspective"].includes(artifact.kind) && artifact.sources?.length) {
-    const list = el("ul", "artifact-sources");
-    for (const source of artifact.sources) {
-      const item = el("li");
-      if (typeof source === "string") item.textContent = source;
-      else {
-        const label = source.title || source.url || source.path || "Source";
-        if (source.url) {
-          const link = el("a", "", label);
-          link.href = source.url;
-          link.target = "_blank";
-          link.rel = "noreferrer";
-          item.append(link);
-        } else item.textContent = label;
-      }
-      list.append(item);
-    }
-    card.append(list);
+
+  if (artifact.kind === "connection" && artifact.target) {
+    const link = el("a", "connection-target", artifact.target);
+    link.href = String(artifact.target).startsWith("s") ? `#section-${artifact.target}` : "#";
+    card.append(link);
   }
-  card.append(el("p", "artifact-reason", artifact.reason || "No reason supplied."));
-  const remove = el("button", "text-button remove-artifact", "Remove");
+  const content = artifact.text ?? artifact.text_md ?? artifact.summary ?? artifact.why;
+  if (content) card.append(el("div", "artifact-text", content));
+  for (const source of artifact.sources || []) appendSourceLine(card, source);
+
+  const reason = el("div", "artifact-reason");
+  reason.append(document.createTextNode(`${artifact.reason || "No reason supplied."} `));
+  const remove = el("button", "text-button remove-artifact", "remove");
   remove.type = "button";
   remove.addEventListener("click", () => stateApi.removeArtifact(artifact.id));
-  card.append(remove);
+  reason.append(remove);
+  card.append(reason);
   return card;
 }
 
@@ -113,6 +121,20 @@ function selectedWord(container) {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !selection.anchorNode || !container.contains(selection.anchorNode)) return "";
   return selection.toString().trim().match(/[\p{L}\p{N}'’-]+/u)?.[0] || "";
+}
+
+function pendingLine(pending, stateApi) {
+  const verbs = { hidden: "fold", stub: "shorten", summary: "shorten", full: "expand" };
+  const line = el("div", "pending-change");
+  line.append(document.createTextNode(`Will ${verbs[pending.level] || "change"} when you move on. `));
+  const apply = el("button", "text-button", "apply now");
+  apply.type = "button";
+  apply.addEventListener("click", (event) => {
+    event.stopPropagation();
+    stateApi.applyPending(pending.sectionId);
+  });
+  line.append(apply);
+  return line;
 }
 
 export function initRenderer({ root, stateApi = defaultStateApi } = {}) {
@@ -131,57 +153,49 @@ export function initRenderer({ root, stateApi = defaultStateApi } = {}) {
 
     for (const section of snapshot.doc.sections) {
       const row = el("div", "section-row");
+      row.id = `section-${section.id}`;
       row.dataset.sectionId = section.id;
       const article = el("section", "document-section");
       if (snapshot.cursorSection === section.id) article.classList.add("is-cursor");
       article.addEventListener("click", () => stateApi.setCursor(section.id));
 
-      const heading = el("div", "section-heading");
-      heading.append(el("h2", "", section.heading));
       const configured = LEVELS.has(snapshot.depth?.[section.id]?.level) ? snapshot.depth[section.id].level : "full";
       const level = snapshot.layers?.agent === false ? "full" : configured;
-      heading.append(el("span", "depth-chip", level));
+      const heading = el("div", "section-heading");
+      const headingMeta = el("div", "section-heading-meta");
+      headingMeta.append(el("h2", "", section.heading), el("span", "depth-chip", level));
+      heading.append(headingMeta);
+
+      const controls = el("div", "reader-controls");
+      const marks = snapshot.marks?.[section.id] || {};
+      for (const [markKind, label] of [["known", "I know this"], ["lost", "Lost me"]]) {
+        const button = el("button", `mark-button${marks[markKind] ? " is-active" : ""}`, label);
+        button.type = "button";
+        button.setAttribute("aria-pressed", String(Boolean(marks[markKind])));
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          stateApi.mark(section.id, markKind, !marks[markKind]);
+        });
+        controls.append(button);
+      }
+      heading.append(controls);
       article.append(heading);
+
       const oldLevel = previousDepth.get(section.id);
-      if (oldLevel && oldLevel !== level && article.animate) {
-        article.animate(
-          [{ opacity: 0.45, transform: "translateY(-4px)" }, { opacity: 1, transform: "translateY(0)" }],
-          { duration: 300, easing: "ease-out" },
-        );
+      if (oldLevel && oldLevel !== level && article.animate && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        article.animate([{ opacity: 0.45 }, { opacity: 1 }], { duration: 240, easing: "cubic-bezier(0.22, 1, 0.36, 1)" });
       }
       previousDepth.set(section.id, level);
 
       const sectionArtifacts = snapshot.layers?.agent === false ? [] : snapshot.artifacts.filter((item) => item.sectionId === section.id);
+      const highlights = snapshot.layers?.reader === false ? [] : sectionArtifacts;
       if (snapshot.layers?.source !== false || snapshot.layers?.agent === false) {
-        article.append(sourceBody(section, level, snapshot.depth?.[section.id]?.reason, sectionArtifacts, stateApi));
+        article.append(sourceBody(section, level, snapshot.depth?.[section.id]?.reason, highlights, stateApi));
       }
 
       const pending = snapshot.pendingQuestions?.find((item) => item.type === "depth" && item.sectionId === section.id);
-      if (pending && snapshot.layers?.agent !== false) {
-        const badge = el("div", "pending-badge", `Pending: ${pending.level}`);
-        const apply = el("button", "text-button", "Apply now");
-        apply.type = "button";
-        apply.addEventListener("click", (event) => {
-          event.stopPropagation();
-          stateApi.applyPending(section.id);
-        });
-        badge.append(apply);
-        article.append(badge);
-      }
+      if (pending && snapshot.layers?.agent !== false) article.append(pendingLine(pending, stateApi));
 
-      const controls = el("div", "reader-controls");
-      const marks = snapshot.marks?.[section.id] || {};
-      for (const [kind, label] of [["known", "I know this"], ["lost", "Lost me"]]) {
-        const button = el("button", `mark-button${marks[kind] ? " is-active" : ""}`, label);
-        button.type = "button";
-        button.setAttribute("aria-pressed", String(Boolean(marks[kind])));
-        button.addEventListener("click", (event) => {
-          event.stopPropagation();
-          stateApi.mark(section.id, kind, !marks[kind]);
-        });
-        controls.append(button);
-      }
-      article.append(controls);
       article.addEventListener("dblclick", () => {
         const term = selectedWord(article);
         if (term) stateApi.tapTerm(section.id, term);
