@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Marginalia renderer tests</title>
+  <link rel="stylesheet" href="../src/style.css">
+</head>
+<body>
+  <pre id="results">RUNNING</pre>
+  <div id="reader" class="reader"></div>
+  <aside id="knowledge"></aside>
+  <script type="module">
+    import { parseMarkdown } from "../src/ingest.js";
+    import { initRenderer } from "../src/render.js";
+    import { initKnowledgePane } from "../src/knowledge.js";
+
+    const listeners = new Set();
+    const state = {
+      doc: null, cursorSection: null, marks: {}, knowledge: [], artifacts: [], depth: {},
+      layers: { source: true, reader: true, agent: true }, activity: [], pendingQuestions: [],
+    };
+    const notify = () => listeners.forEach((fn) => fn(state));
+    const api = {
+      state,
+      loadDoc(sections, meta) {
+        state.doc = { ...meta, sections };
+        state.cursorSection = sections[0].id;
+        state.marks = Object.fromEntries(sections.map((s) => [s.id, { known: false, lost: false, tappedTerms: [] }]));
+        state.depth = Object.fromEntries(sections.map((s) => [s.id, { level: "full", reason: "" }]));
+        notify();
+      },
+      getReadingState() { return JSON.parse(JSON.stringify(state)); },
+      getSectionText(id) { return state.doc.sections.find((section) => section.id === id).text; },
+      subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+      setCursor(id) { state.cursorSection = id; notify(); },
+      mark(id, kind, on) { state.marks[id][kind] = on; notify(); },
+      tapTerm(id, term) { state.marks[id].tappedTerms.push(term); notify(); },
+      setDepth(id, level, reason) { state.depth[id] = { level, reason }; notify(); },
+      applyPending(id) { state.pendingQuestions = state.pendingQuestions.filter((x) => x.sectionId !== id); notify(); },
+      addArtifact(sectionId, artifact) { const item = { ...artifact, id: `a${state.artifacts.length + 1}`, sectionId, author: "agent" }; state.artifacts.push(item); notify(); return item; },
+      removeArtifact(id) { state.artifacts = state.artifacts.filter((x) => x.id !== id); notify(); },
+      removeAllArtifacts() { state.artifacts = []; notify(); },
+      toggleLayer(name, on) { state.layers[name] = on; notify(); },
+      upsertKnowledge(entry) { const item = { ...entry, id: `k${state.knowledge.length + 1}`, status: "proposed" }; state.knowledge.push(item); notify(); return item; },
+      setKnowledgeStatus(id, status) { state.knowledge.find((x) => x.id === id).status = status; notify(); },
+      logActivity(toolName, summary) { state.activity.push({ toolName, summary, ts: new Date().toISOString() }); notify(); },
+      exportJSON() { return JSON.parse(JSON.stringify(state)); },
+    };
+
+    const parsed = parseMarkdown(`# Test document\n\n## One\nFirst sentence. More text.\n\n## Two\nSecond body.\n\n## Three\nThird body.`);
+    api.loadDoc(parsed.sections, { id: "test", title: parsed.title, attribution: "Test", license: "Test" });
+    initRenderer({ root: document.querySelector("#reader"), stateApi: api });
+    initKnowledgePane({ root: document.querySelector("#knowledge"), stateApi: api });
+
+    const failures = [];
+    const assert = (condition, message) => { if (!condition) failures.push(message); };
+    assert(parsed.title === "Test document", "parseMarkdown reads the title");
+    assert(parsed.sections.length === 3 && parsed.sections[2].id === "s3", "parseMarkdown creates sequential sections");
+    assert(document.querySelectorAll(".document-section").length === 3, "renderer shows three sections");
+
+    api.setCursor("s2");
+    api.setDepth("s1", "stub", "Known from the test fixture.");
+    assert(document.querySelector('[data-section-id="s1"] .depth-chip')?.textContent === "stub", "depth chip updates after setDepth");
+
+    api.addArtifact("s1", { kind: "expand", text: "Margin text", reason: "Adds test context." });
+    assert(document.querySelectorAll(".artifact-card").length === 1, "artifact card appears after addArtifact");
+
+    api.toggleLayer("agent", false);
+    assert(getComputedStyle(document.querySelector(".margin-gutter")).display === "none", "agent-layer toggle hides the gutter");
+    assert(document.querySelector('[data-section-id="s1"] .depth-chip')?.textContent === "full", "agent off restores full source depth");
+
+    const output = failures.length ? `FAILURES: ${failures.length}\n${failures.join("\n")}` : "ALL PASS";
+    document.querySelector("#results").textContent = output;
+    document.title = output.split("\n")[0];
+    document.body.dataset.testResult = failures.length ? "fail" : "pass";
+  </script>
+</body>
+</html>

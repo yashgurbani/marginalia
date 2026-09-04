@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marginalia</title>
+  <link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+  <header class="top-bar">
+    <a class="brand" href="./">Marginalia</a>
+    <label class="fixture-control">Document
+      <select id="fixture-picker" aria-label="Choose a document"><option>Loading…</option></select>
+    </label>
+    <fieldset class="layer-toggles" aria-label="Visible layers">
+      <legend>Layers</legend>
+      <label><input type="checkbox" data-layer="source" checked> Source</label>
+      <label><input type="checkbox" data-layer="reader" checked> You</label>
+      <label><input type="checkbox" data-layer="agent" checked> Agent</label>
+    </fieldset>
+    <button id="remove-all" type="button">Remove all agent artifacts</button>
+    <button id="export-json" type="button">Export JSON</button>
+    <span id="webmcp-status" class="status-pill" data-webmcp-host="unknown">WebMCP: checking…</span>
+  </header>
+
+  <main>
+    <section class="document-shell" aria-labelledby="document-title">
+      <div class="document-meta">
+        <p class="eyebrow">Source, untouched. The agent lives in the margin.</p>
+        <h1 id="document-title">Marginalia</h1>
+        <p id="attribution" class="attribution"></p>
+        <p id="load-message" class="load-message" role="status"></p>
+      </div>
+      <div id="reader" class="reader"></div>
+    </section>
+    <aside id="knowledge-pane" class="knowledge-pane" aria-label="Knowledge and activity"></aside>
+  </main>
+
+  <script type="module" src="src/ingest.js"></script>
+  <script type="module" src="src/state.js"></script>
+  <script type="module" src="src/tools.js"></script>
+  <script type="module" src="src/render.js"></script>
+  <script type="module" src="src/knowledge.js"></script>
+  <script type="module">
+    import { loadFixture, parseMarkdown } from "./src/ingest.js";
+    import * as stateApi from "./src/state.js";
+    import "./src/tools.js";
+    import { initRenderer } from "./src/render.js";
+    import { initKnowledgePane } from "./src/knowledge.js";
+
+    const fallbackEntry = {
+      id: "demo-fallback",
+      title: "Demo fallback",
+      attribution: "Built-in demo text. No fixture files were available.",
+      license: "Demo content",
+      source_url: "",
+    };
+    const fallbackMarkdown = `# Demo fallback\n\n## The source layer\nThis text stays untouched. Agent changes appear beside it, never inside it.\n\n## The reader layer\nMark what you know, note where you are lost, or double-click a term.\n\n## The agent layer\nAnnotations, figures, highlights, and folds stay visible and removable.`;
+
+    const picker = document.querySelector("#fixture-picker");
+    const message = document.querySelector("#load-message");
+    const title = document.querySelector("#document-title");
+    const attribution = document.querySelector("#attribution");
+
+    initRenderer({ root: document.querySelector("#reader"), stateApi });
+    initKnowledgePane({ root: document.querySelector("#knowledge-pane"), stateApi });
+
+    function showDocument(doc) {
+      stateApi.loadDoc(doc.sections, doc.meta);
+      title.textContent = doc.meta.title;
+      attribution.replaceChildren();
+      const line = [doc.meta.attribution, doc.meta.license].filter(Boolean).join(" · ");
+      attribution.append(document.createTextNode(line));
+      if (doc.meta.source_url) {
+        attribution.append(document.createTextNode(" · "));
+        const link = document.createElement("a");
+        link.href = doc.meta.source_url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.textContent = "Original source";
+        attribution.append(link);
+      }
+    }
+
+    function showFallback(detail) {
+      const parsed = parseMarkdown(fallbackMarkdown);
+      picker.replaceChildren(new Option("Demo fallback", "demo-fallback"));
+      showDocument({ sections: parsed.sections, meta: { ...fallbackEntry, title: parsed.title } });
+      message.textContent = `Fixture list unavailable. Showing the demo fallback. ${detail}`;
+      message.className = "load-message is-warning";
+    }
+
+    async function loadEntry(entry) {
+      message.textContent = "Loading document…";
+      message.className = "load-message";
+      try {
+        showDocument(await loadFixture(entry));
+        message.textContent = "";
+      } catch (error) {
+        showFallback(error.message);
+      }
+    }
+
+    try {
+      const response = await fetch("fixtures/index.json");
+      if (!response.ok) throw new Error(`fixtures/index.json returned ${response.status}.`);
+      const entries = await response.json();
+      if (!Array.isArray(entries) || !entries.length) throw new Error("fixtures/index.json contains no entries.");
+      picker.replaceChildren(...entries.map((entry, index) => new Option(entry.title, String(index))));
+      picker.addEventListener("change", () => loadEntry(entries[Number(picker.value)]));
+      await loadEntry(entries[0]);
+    } catch (error) {
+      showFallback(error.message);
+    }
+
+    document.querySelectorAll("[data-layer]").forEach((input) => {
+      input.addEventListener("change", () => stateApi.toggleLayer(input.dataset.layer, input.checked));
+    });
+    stateApi.subscribe((snapshot) => {
+      document.querySelectorAll("[data-layer]").forEach((input) => {
+        input.checked = snapshot.layers[input.dataset.layer] !== false;
+      });
+    });
+    document.querySelector("#remove-all").addEventListener("click", () => stateApi.removeAllArtifacts());
+    document.querySelector("#export-json").addEventListener("click", () => {
+      const blob = new Blob([JSON.stringify(stateApi.exportJSON(), null, 2)], { type: "application/json" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `${stateApi.state.doc?.id || "marginalia"}.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    });
+
+    const status = document.querySelector("#webmcp-status");
+    const registeredHost = navigator.modelContext?.registerTool ? "navigator.modelContext" : null;
+    status.dataset.webmcpHost = registeredHost || "none";
+    status.textContent = registeredHost
+      ? "WebMCP: registered on navigator.modelContext"
+      : "WebMCP: no host, tools available for tests only";
+    console.info(`[Marginalia surface] ${status.textContent}; exposed tools: ${Boolean(window.marginaliaTools)}`);
+  </script>
+</body>
+</html>

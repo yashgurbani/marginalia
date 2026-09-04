@@ -1,0 +1,26 @@
+[
+  {
+    "id": "rutherford-1911",
+    "title": "The Scattering of α and β Particles by Matter and the Structure of the Atom",
+    "path": "fixtures/rutherford-1911.md",
+    "license": "Public domain",
+    "attribution": "Ernest Rutherford, Philosophical Magazine (1911). Public domain; faithful abridgement.",
+    "source_url": "https://doi.org/10.1080/14786440508637080"
+  },
+  {
+    "id": "how-do-atoms-form",
+    "title": "How do atoms form? A physicist explains where the atoms that make up everything around come from",
+    "path": "fixtures/how-do-atoms-form.md",
+    "license": "CC BY-ND 4.0",
+    "attribution": "Stephen L. Levy, The Conversation, CC BY-ND 4.0. https://theconversation.com/how-do-atoms-form-a-physicist-explains-where-the-atoms-that-make-up-everything-around-come-from-256172",
+    "source_url": "https://theconversation.com/how-do-atoms-form-a-physicist-explains-where-the-atoms-that-make-up-everything-around-come-from-256172"
+  },
+  {
+    "id": "chrome-webmcp-docs",
+    "title": "WebMCP",
+    "path": "fixtures/chrome-webmcp-docs.md",
+    "license": "CC BY 4.0 prose; Apache 2.0 code samples",
+    "attribution": "Chrome for Developers, WebMCP, CC BY 4.0 for prose and Apache 2.0 for code samples.",
+    "source_url": "https://developer.chrome.com/docs/ai/webmcp"
+  }
+]
