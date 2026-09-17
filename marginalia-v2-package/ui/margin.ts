@@ -127,6 +127,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   let denied = false;
   let pendingNoteMutation: ReaderMutation | undefined;
   let pendingNoteCommitted = false;
+  let draftSaveFailed = false;
   let needsReconciliation = false;
   let lastOpener: HTMLElement | null = null;
   const expanded = new Set<string>();
@@ -138,9 +139,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   try { tabKey = sessionStorage.getItem(sessionKey) ?? id(); sessionStorage.setItem(sessionKey, tabKey); } catch { tabKey = id(); }
   const draftKey = 'draft:' + tabKey + ':' + capture.url + (options.draftScope ? ':' + options.draftScope : '');
   const draftBuffer = documentDraft(namespace, draftKey, capture, { read: () => persistence.read<Draft>(draftKey), write: value => persistence.write(draftKey, value) });
-  // Questions are source-bound, not aliases of a draft key that may later be
-  // reused by another captured page or saved view.
-  const questionKey = 'question:' + tabKey + ':' + capture.url + (options.draftScope ? ':' + options.draftScope : '');
+  // Preserve the established source-bound key so existing question drafts
+  // remain readable across this reconciliation.
+  const questionKey = 'question:' + draftKey;
   const questionBuffer = documentQuestion(namespace, questionKey, capture.url, { read: () => persistence.read<AskingSelection>(questionKey), write: value => persistence.write(questionKey, value) });
   draft = draftBuffer.get(); pendingNoteMutation = draft?.mutation; questionDraft = questionBuffer.get();
   const threadsNow = () => {
@@ -181,6 +182,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const changed = () => { if (alive()) channel?.postMessage('changed'); };
   const fail = (error: unknown) => {
     if (!alive()) return;
+    if (draft) draftSaveFailed = true;
     if (error instanceof Error && error.message.startsWith('Local storage changed elsewhere.')) needsReconciliation = true;
     announce(needsReconciliation ? 'Another tab saved work. Use Recover unsaved changes in Settings; your draft is still here.' : journal.unsaved ? 'Not saved yet. Keep this page open and use Retry saving in Settings.' : pendingNoteCommitted ? 'Your note is saved. Use Retry saving in Settings to clear its draft.' : error instanceof Error ? error.message : 'Your work could not be saved. Keep this page open and try again.'); renderSettings();
   };
@@ -221,7 +223,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
 
   const noteEditor = mountNoteEditor(compose, {
     edit(text) { if (draft && !saving && !draft.mutation) { draft.text = text; persistDraft(); } },
-    save: () => { void saveDraft(); },
+    save: () => { draftSaveFailed = true; void saveDraft(); },
     discard: () => { void safely(async () => { if (saving || draft?.mutation) return; await draftBuffer.save(undefined); draft = undefined; editorGeneration++; renderCompose(); readingTitle.focus({ preventScroll: true }); }); },
     ask: () => { void safely(async () => {
       const committed = await saveDraftNow();
@@ -278,7 +280,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     for (const child of [density, marks, cue]) child.setAttribute('aria-hidden', 'true');
     segment.append(density, marks, cue); map.append(segment);
   });
-  function persistDraft() { if (draft && alive()) { editorGeneration++; void track(draftBuffer.save(draft)).catch(fail); } }
+  function persistDraft() { if (draft && alive()) { editorGeneration++; void track(draftBuffer.save(draft)).catch(error => { draftSaveFailed = true; fail(error); }); } }
   function beginDraft(explicitAnchor?: QuoteAnchor, thread?: Thread, noteId?: string) {
     if (!alive()) return;
     if (!hydrationFinished) { announce('Restoring saved work. The editor will be available when the read finishes.'); return; }
@@ -302,6 +304,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   async function saveDraftNow(): Promise<Extract<ReaderMutation, { kind: 'keep' | 'note' }> | undefined> {
     if (!alive() || !draft || saving || !draft.text.trim()) return;
     saving = true; renderCompose();
+    // A save attempt remains retryable until its mutation and draft cleanup
+    // are both durable.
+    draftSaveFailed = true;
     try {
       const saved = structuredClone(draft);
       if (!saved.threadId && !saved.mutation && !saved.source) throw new Error('Choose the attachment again. This older draft has no recorded original capture; its text is retained.');
@@ -320,7 +325,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       if (alive()) { changed(); renderThreads(); renderCompose(); if (returnToReading && (compose.contains(document.activeElement) || document.activeElement === document.body)) readingTitle.focus({ preventScroll: true }); announce('Note saved on this device.'); }
       return mutation;
     } catch (error) { fail(error); }
-    finally { saving = false; if (alive()) { renderCompose(); renderSettings(); } }
+    finally { saving = false; if (draft) draftSaveFailed = true; if (alive()) { renderCompose(); renderSettings(); } }
   }
 
   async function keep(anchor: QuoteAnchor, parked = false) {
@@ -828,10 +833,11 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       await locked(() => journal.reconcilePersistence()); needsReconciliation = false; pendingNoteCommitted = false;
       changed(); renderThreads(); renderCompose(); renderSettings(); announce('Recovered changes need deliberate review. Your note and question drafts are retained.');
     })));
-    if (hydrationFinished) settingsBody.append(el('p', 'Some work needs saving or conflict review. Memory-only recovery lasts only while this document stays open; export before closing.', 'm-error'), button('Retry saving', () => safely(async () => {
+    if (hydrationFinished && (journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() || pendingNoteMutation || pendingNoteCommitted || draftSaveFailed || !!draft)) settingsBody.append(el('p', 'Some work needs saving or conflict review. Memory-only recovery lasts only while this document stays open; export before closing.', 'm-error'), button('Retry saving', () => safely(async () => {
       if (draft || pendingNoteMutation) await saveDraftNow();
       else { await locked(() => journal.retryPersistence()); await draftBuffer.flush(); }
       if (questionBuffer.unsaved()) await questionBuffer.save(questionBuffer.get());
+      draftSaveFailed = false;
       changed(); renderThreads(); renderCompose(); renderSettings();
     })));
     if (options.allowHelper === false) settingsBody.append(el('p', 'Open the browser-owned margin or localhost page to connect the local helper.', 'm-meta'));
@@ -924,7 +930,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     select: showSelection,
     setReadingPosition(start: number) { if (alive() && !suspended && !held) { readingPosition = Math.max(0, Math.min(capture.text.length, start)); sectionIndex = sectionFor(readingPosition); renderPosition(); } },
     suspend() { highlight(null); suspended = true; management?.close(); askingMount?.setVisible(false); },
-    resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); paintHighlights(); },
+    resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); renderSettings(); paintHighlights(); },
     async openThread(threadId: string) { await locked(() => journal.load()); const thread = currentThread(threadId); if (!thread || thread.deletedAt || thread.sourceUrl !== capture.url) throw new Error('The current thread is unavailable; local work is unchanged.'); expanded.add(threadId); renderThreads(); hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); threadNodes.get(threadId)?.node.querySelector<HTMLElement>('.m-source-action')?.focus({ preventScroll: true }); },
     destroy,
   };
