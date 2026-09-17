@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { allowedPage, validAnchor, validSnapshot, pageIdentity, isMessage } from '../extension/lib/protocol.ts';
 import { DEFAULT_HELPER_ORIGIN, validHelperOrigin } from '../extension/lib/helper-origin.ts';
 import { readReply, respondAsync } from '../extension/lib/respond.ts';
-import { requestCaptureIdentity } from '../extension/lib/surface-identity.ts';
+import { liveSourceMatches, requestCaptureIdentity, requireWorkspaceSurface } from '../extension/lib/surface-identity.ts';
 const source = 'Before selected passage after';
 const anchor = { exact: 'selected passage', prefix: 'Before ', suffix: ' after', start: 7, end: 23 };
 const snapshot = { document: 'document-1', revision: 1, position: 7, anchor, sections: [{ title: 'Page', start: 0, end: source.length }], capture: { url: 'https://arxiv.org/html/1234', title: 'Paper', pageType: 'Paper', text: source, capturedAt: '2026-09-17T00:00:00.000Z', extractionVersion: 'dom-safe-text-v1' } };
@@ -48,6 +48,64 @@ test('embedded margin separates capture identity from stable browser document id
     ),
     /Reopen the margin after navigation/,
   );
+});
+test('workspace accepts the current extension tab document initially and after reload', async () => {
+  const workspaceUrl = 'chrome-extension://extension-id/workspace.html#workspace=12345678-1234-1234-1234-123456789abc';
+  const calls: unknown[] = [];
+  for (const documentId of ['workspace-document-1', 'workspace-document-2']) {
+    const context = { contextType: 'TAB', tabId: 42, frameId: 0, documentId, documentUrl: workspaceUrl, documentOrigin: 'chrome-extension://extension-id', incognito: false };
+    await requireWorkspaceSurface(
+      { tabId: 42, documentId, documentLifecycle: 'active', url: workspaceUrl, origin: 'chrome-extension://extension-id', frameId: 0, incognito: false },
+      42,
+      workspaceUrl,
+      'chrome-extension://extension-id',
+      async filter => { calls.push(filter); return [context]; },
+      async tabId => ({ id: tabId, url: workspaceUrl, incognito: false, discarded: false }),
+    );
+  }
+  assert.deepEqual(calls, [
+    { contextTypes: ['TAB'], documentIds: ['workspace-document-1'], tabIds: [42] },
+    { contextTypes: ['TAB'], documentIds: ['workspace-document-1'], tabIds: [42] },
+    { contextTypes: ['TAB'], documentIds: ['workspace-document-2'], tabIds: [42] },
+    { contextTypes: ['TAB'], documentIds: ['workspace-document-2'], tabIds: [42] },
+  ]);
+});
+test('workspace rejects spoofed sender, tab, URL, document, origin, frame, and stale context', async () => {
+  const url = 'chrome-extension://extension-id/workspace.html#workspace=12345678-1234-1234-1234-123456789abc';
+  const origin = 'chrome-extension://extension-id';
+  const sender = { tabId: 42, documentId: 'workspace-document-1', documentLifecycle: 'active', url, origin, frameId: 0, incognito: false };
+  const context = { contextType: 'TAB', tabId: 42, frameId: 0, documentId: sender.documentId, documentUrl: url, documentOrigin: origin, incognito: false };
+  const tab = { id: 42, url, incognito: false, discarded: false };
+  const rejects = async (candidateSender = sender, candidateContext = context, candidateTab = tab) => assert.rejects(
+    requireWorkspaceSurface(candidateSender, 42, url, origin, async () => [candidateContext], async () => candidateTab),
+    /Reopen this margin from the source/,
+  );
+
+  await rejects({ ...sender, tabId: 43 });
+  await rejects({ ...sender, url: url.replace('12345678', '87654321') });
+  await rejects({ ...sender, documentId: 'workspace-document-spoof' });
+  await rejects({ ...sender, origin: 'chrome-extension://other-extension' });
+  await rejects({ ...sender, frameId: 1 });
+  await rejects({ ...sender, documentLifecycle: 'cached' });
+  await rejects(sender, { ...context, tabId: 43 });
+  await rejects(sender, { ...context, documentUrl: url + '-spoof' });
+  await rejects(sender, { ...context, documentId: 'workspace-document-spoof' });
+  await rejects(sender, { ...context, documentOrigin: 'chrome-extension://other-extension' });
+  await rejects(sender, { ...context, frameId: 1 });
+  await rejects(sender, context, { ...tab, url: url + '-spoof' });
+
+  let reads = 0;
+  await assert.rejects(
+    requireWorkspaceSurface(sender, 42, url, origin, async () => ++reads === 1 ? [context] : [], async () => tab),
+    /Reopen this margin from the source/,
+  );
+});
+test('workspace retains the original live source document and URL', () => {
+  const frame = { documentId: 'source-document-1', documentLifecycle: 'active', url: 'https://example.org/article#current-section' };
+  assert.equal(liveSourceMatches(frame, 'source-document-1', 'https://example.org/article'), true);
+  assert.equal(liveSourceMatches({ ...frame, documentId: 'source-document-2' }, 'source-document-1', 'https://example.org/article'), false);
+  assert.equal(liveSourceMatches({ ...frame, documentLifecycle: 'cached' }, 'source-document-1', 'https://example.org/article'), false);
+  assert.equal(liveSourceMatches({ ...frame, url: 'https://example.org/replacement' }, 'source-document-1', 'https://example.org/article'), false);
 });
 test('extension binds exact quote, offsets and context to retained source', () => {
   assert.equal(validAnchor(anchor, source), true);

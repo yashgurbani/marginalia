@@ -3,7 +3,7 @@ import { browser } from 'wxt/browser';
 import { readReply, respondAsync } from '../lib/respond.ts';
 import { helperReconnect } from '../lib/helper-reconnect.ts';
 import { allowedPage, isMessage, pageIdentity, validAnchor, validSnapshot } from '../lib/protocol.ts';
-import { requestCaptureIdentity } from '../lib/surface-identity.ts';
+import { liveSourceMatches, requestCaptureIdentity, requireWorkspaceSurface } from '../lib/surface-identity.ts';
 import { attachQuote, type QuoteAnchor } from '../../contracts/reader.ts';
 
 export default defineBackground(() => {
@@ -16,6 +16,7 @@ export default defineBackground(() => {
   ]);
   const panelUrl = browser.runtime.getURL('/panel.html');
   const workspaceUrl = browser.runtime.getURL('/workspace.html');
+  const extensionOrigin = browser.runtime.getURL('').replace(/\/$/, '');
   let excludedCache: string[] | null = null;
   const cachePolicy = (value: unknown) => { excludedCache = Array.isArray(value) && value.every(h => typeof h === 'string') ? value : null; };
   void storageReady.then(async () => { const value = (await browser.storage.local.get('excludedHosts')).excludedHosts ?? []; cachePolicy(value); }).catch(() => { excludedCache = null; });
@@ -80,10 +81,16 @@ export default defineBackground(() => {
         await navigator.locks.request(key, async () => {
           const binding = (await browser.storage.session.get(key))[key] as { tabId: number; sourceDocument: string; url: string; surfaceTab: number; surfaceDocument?: string } | undefined;
           if (!binding || binding.surfaceTab !== sender.tab!.id) throw new Error('Reopen this margin from the source.');
-          const surface = await browser.webNavigation.getFrame({ tabId: binding.surfaceTab, frameId: 0 });
-          if (surface?.documentId !== sender.documentId || surface?.documentLifecycle !== 'active' || surface?.url !== sender.url) throw new Error('Reopen this margin from the source.');
+          await requireWorkspaceSurface(
+            { tabId: sender.tab?.id, documentId: sender.documentId, documentLifecycle: sender.documentLifecycle, url: sender.url, origin: sender.origin, frameId: sender.frameId, incognito: sender.tab?.incognito },
+            binding.surfaceTab,
+            workspaceUrl + '#workspace=' + message.workspace,
+            extensionOrigin,
+            filter => browser.runtime.getContexts({ contextTypes: ['TAB'], documentIds: filter.documentIds, tabIds: filter.tabIds }),
+            surfaceTab => browser.tabs.get(surfaceTab),
+          );
           const frame = await browser.webNavigation.getFrame({ tabId: binding.tabId, frameId: 0 });
-          if (frame?.documentId !== binding.sourceDocument || frame.documentLifecycle !== 'active' || pageIdentity(frame.url) !== binding.url || !await permitted(frame.url)) throw new Error('The source changed. Reopen the margin from that page.');
+          if (!liveSourceMatches(frame, binding.sourceDocument, binding.url) || !await permitted(frame!.url)) throw new Error('The source changed. Reopen the margin from that page.');
           tabId = binding.tabId;
           sourceDocument = binding.sourceDocument;
           if (binding.surfaceDocument !== sender.documentId) await browser.storage.session.set({ [key]: { ...binding, surfaceDocument: sender.documentId } });
