@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
-import { attachQuote, type ReaderMutation, type Thread, type Note, type QuoteAnchor, type SourceCapture, type SourceVersion, type AttachmentRecord, type NoteVersionRef, type NoteVersion, type ReplyVersion, type ReplyViewState } from '../contracts/reader.ts';
+import { attachQuote, type ReaderMutation, type Thread, type Note, type QuoteAnchor, type SourceCapture, type SourceVersion, type SourceSection, type AttachmentRecord, type NoteVersionRef, type NoteVersion, type ReplyVersion, type ReplyViewState } from '../contracts/reader.ts';
 import { canonicalReplyData, validateReply, type CandidateReply, type ReplyCapability } from '../contracts/reply.ts';
 import { digestReply, runHostChecks } from '../contracts/host-checks.ts';
 
@@ -47,6 +47,24 @@ export class ReaderStore {
         INSERT INTO migrations(version) VALUES(2);
       `);
     })();
+    if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=4').get()) {
+      this.db.pragma('foreign_keys = OFF');
+      try {
+        this.db.transaction(() => {
+          this.db.exec(`
+            CREATE TABLE source_versions_v4(id TEXT PRIMARY KEY, sourceId TEXT NOT NULL REFERENCES sources(id), hash TEXT NOT NULL, text TEXT NOT NULL, capturedAt TEXT NOT NULL, extractionVersion TEXT NOT NULL, title TEXT, pageType TEXT, metadataStatus TEXT NOT NULL DEFAULT 'legacy', sections TEXT NOT NULL DEFAULT '', UNIQUE(sourceId,hash,extractionVersion,sections));
+            INSERT INTO source_versions_v4(id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections)
+              SELECT id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,'' FROM source_versions;
+            DROP TABLE source_versions;
+            ALTER TABLE source_versions_v4 RENAME TO source_versions;
+            CREATE TRIGGER source_version_immutable BEFORE UPDATE ON source_versions BEGIN SELECT RAISE(ABORT, 'Source versions are immutable'); END;
+            INSERT INTO migrations(version) VALUES(4);
+          `);
+        })();
+      } finally {
+        this.db.pragma('foreign_keys = ON');
+      }
+    }
   }
   close() { this.db.close(); }
   private event(kind: string, value: unknown) {
@@ -96,16 +114,24 @@ export class ReaderStore {
     const provided = 'capturedAt' in capture;
     const sourceId = digest(capture.url), hash = digest(capture.text);
     const extractionVersion = provided ? capture.extractionVersion : '';
-    const versionId = digest(sourceId + hash + extractionVersion);
+    const normalizedSections = provided && capture.sections?.length
+      ? capture.sections.map(({ title, start, end }) => ({ title, start, end }))
+      : [];
+    const sections = normalizedSections.length ? JSON.stringify(normalizedSections) : '';
+    const versionId = sections
+      ? digest(canonicalReplyData(['source-version-sections-v1', sourceId, hash, extractionVersion, normalizedSections]))
+      : digest(sourceId + hash + extractionVersion);
     if (provided) this.db.prepare('INSERT OR IGNORE INTO sources VALUES(?,?,?,?)').run(sourceId, capture.url, capture.title, capture.pageType);
-    this.db.prepare('INSERT OR IGNORE INTO source_versions(id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus) VALUES(?,?,?,?,?,?,?,?,?)')
-      .run(versionId, sourceId, hash, capture.text, provided ? capture.capturedAt : '', extractionVersion, provided ? capture.title : null, provided ? capture.pageType : null, provided ? 'provided' : 'unavailable');
+    this.db.prepare('INSERT OR IGNORE INTO source_versions(id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections) VALUES(?,?,?,?,?,?,?,?,?,?)')
+      .run(versionId, sourceId, hash, capture.text, provided ? capture.capturedAt : '', extractionVersion, provided ? capture.title : null, provided ? capture.pageType : null, provided ? 'provided' : 'unavailable', sections);
     this.db.prepare('INSERT INTO search(entityId,kind,content) SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM search WHERE entityId=? AND kind=?)').run(versionId, 'source', capture.text, versionId, 'source');
     return versionId;
   }
   sourceVersion(id: string): SourceVersion | undefined {
-    const row = this.db.prepare('SELECT * FROM source_versions WHERE id=?').get(id) as SourceVersion | undefined;
-    return row ? { ...row, capturedAt: row.capturedAt || null, extractionVersion: row.extractionVersion || null } : undefined;
+    const row = this.db.prepare('SELECT * FROM source_versions WHERE id=?').get(id) as (Omit<SourceVersion, 'sections'> & { sections: string }) | undefined;
+    if (!row) return;
+    const { sections, ...version } = row;
+    return { ...version, capturedAt: version.capturedAt || null, extractionVersion: version.extractionVersion || null, ...(sections ? { sections: JSON.parse(sections) as SourceSection[] } : {}) };
   }
   noteVersion(ref: NoteVersionRef): NoteVersion | undefined {
     return this.db.prepare('SELECT * FROM note_versions WHERE noteId=? AND revision=?').get(ref.noteId, ref.revision) as NoteVersion | undefined;
@@ -274,6 +300,14 @@ function validateMutation(m: ReaderMutation) {
 
 function validateCapture(c: SourceCapture) {
   if (!c || typeof c.url !== 'string' || c.url.length > 8000 || !/^https?:$/.test(new URL(c.url).protocol) || new URL(c.url).username || new URL(c.url).password || typeof c.text !== 'string' || c.text.length > 1000000 || typeof c.title !== 'string' || c.title.length > 1000 || typeof c.pageType !== 'string' || c.pageType.length > 100 || typeof c.extractionVersion !== 'string' || !c.extractionVersion.length || c.extractionVersion.length > 100 || typeof c.capturedAt !== 'string' || !Number.isFinite(Date.parse(c.capturedAt))) throw new Error('Invalid source capture.');
+  if (c.sections !== undefined) {
+    if (!Array.isArray(c.sections) || c.sections.length > 2000) throw new Error('Invalid source sections.');
+    let previousEnd = 0;
+    for (const section of c.sections) {
+      if (!section || typeof section !== 'object' || typeof section.title !== 'string' || !section.title.length || section.title.length > 1000 || !Number.isSafeInteger(section.start) || !Number.isSafeInteger(section.end) || section.start < previousEnd || section.end <= section.start || section.end > c.text.length) throw new Error('Invalid source sections.');
+      previousEnd = section.end;
+    }
+  }
 }
 function validateId(id: string) { if (typeof id !== 'string' || !/^[\w-]{1,100}$/.test(id)) throw new Error('Invalid change identifier.'); }
 function validateRevision(revision: number) { if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Invalid revision.'); }

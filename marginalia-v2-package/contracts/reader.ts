@@ -4,8 +4,9 @@ import type { HostCheckReport } from './host-checks.ts';
 // Missing kind means a legacy quote. Whole-page anchors deliberately contain no quote.
 export type QuoteAnchor = { kind?: 'quote' | 'section' | 'whole-page'; exact: string; prefix: string; suffix: string; start: number; end: number };
 export const wholePageAnchor = (): QuoteAnchor => ({ kind: 'whole-page', exact: '', prefix: '', suffix: '', start: 0, end: 0 });
-export type SourceCapture = { url: string; title: string; pageType: string; text: string; capturedAt: string; extractionVersion: string };
-export type SourceVersion = { id: string; sourceId: string; hash: string; text: string; capturedAt: string | null; extractionVersion: string | null; title: string | null; pageType: string | null; metadataStatus: 'provided' | 'legacy' | 'unavailable' };
+export type SourceSection = { title: string; start: number; end: number };
+export type SourceCapture = { url: string; title: string; pageType: string; text: string; capturedAt: string; extractionVersion: string; sections?: SourceSection[] };
+export type SourceVersion = { id: string; sourceId: string; hash: string; text: string; capturedAt: string | null; extractionVersion: string | null; title: string | null; pageType: string | null; metadataStatus: 'provided' | 'legacy' | 'unavailable'; sections?: SourceSection[] };
 export type NoteVersionRef = { noteId: string; revision: number };
 export type NoteVersion = NoteVersionRef & { text: string; createdAt: string };
 export type ReplyVersion = { id: string; threadId: string; parentId: string | null; supersedes: string | null; reply: CandidateReply; hash: string; validation: HostCheckReport; answeredNote: NoteVersion | null; createdAt: string; deletedAt: string | null; revision: number };
