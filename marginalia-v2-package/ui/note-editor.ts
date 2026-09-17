@@ -12,14 +12,16 @@ export function mountNoteEditor(host: HTMLElement, actions: {
   edit(text: string): void; save(): void; discard(): void; ask(): void;
   attachments(): AttachmentChoice[];
 }) {
+  let current: NoteEditorState | undefined;
   const body = el('div', undefined, 'm-note-editor'); body.hidden = true;
   const attachment = el('div', undefined, 'm-attachment'), label = el('span');
   const choices = el('div', undefined, 'm-choose-anchor'); choices.hidden = true;
   const change = button('Change', () => {
-    if (change.disabled) return;
+    if (!current || !current.canChange || current.saving || current.locked) return;
     // A displayed set stays stable until an explicit selection or cancellation.
     const options = actions.attachments();
     choices.replaceChildren(...options.map(option => button(option.label, () => {
+      if (!current || !current.canChange || current.saving || current.locked || choices.hidden) return;
       choices.hidden = true; option.choose(); field.focus({ preventScroll: true });
     })), button('Cancel attachment change', () => { choices.hidden = true; change.focus(); }));
     choices.hidden = false; choices.querySelector('button')?.focus();
@@ -44,7 +46,8 @@ export function mountNoteEditor(host: HTMLElement, actions: {
   host.append(body);
   return {
     update(state?: NoteEditorState) {
-      body.hidden = !state;
+      current = state; body.hidden = !state;
+      if (state?.saving || state?.locked || !state?.canChange) choices.hidden = true;
       if (!state) { choices.hidden = true; return; }
       // Do not reset selection or scrollTop when the backing text has not changed.
       if (field.value !== state.text) field.value = state.text;
