@@ -1,75 +1,91 @@
-# T05 fixes — independent review
+# T05 fixes — independent review closure
 
-## Scope and decision
+## Scope and bounded verdict
 
-- Target: `d216063b8f99b93c1ff82eccd79ebf65eca5bb12` (`d216063`)
-- Comparison/base: `3b6f61f` (`git diff 3b6f61f...d216063`)
-- Review scope: the narrow reconciliation claimed in the native report matrix, not a restart of the full T05 review
-- Production changes by this review: none
-- Verification: targeted reads, `git diff --check`, and the two focused margin suites only
+- Final source reviewed: `88700cf30ffd9e5b192018f0039eea397392b05d` (`88700cf`)
+- Reconciliation context: `d216063` against `integration3b6f61f`; `88700cf` is the immutable follow-up source
+- Evidence read: the native reconciliation matrix, `wayfinder/SPEC-FINAL.md`, and Chief's `.chief-retry-check.log`
+- Review scope: the three narrow claims in the handoff; no broad re-review and no production edits
 
-**Bounded acceptance:** this target is demonstrably more than a pure `c5` restore. The Final-Pro capture/section preservation and the saved-thread fallback guard are present in the committed target. I do not accept the target as fully integrated or as proof of the entire native matrix, because three concrete blockers remain below. The uncommitted Sol edits visible in the working tree were not treated as part of `d216063` and are not included in this report commit.
+**Bounded acceptance:** `88700cf` closes the earlier Q1 and R1 findings, and T1 is withdrawn after source-faithful inspection. The final source supports the narrow reconciliation: Final-Pro capture/sections are preserved, the original source-bound question key is retained, saved-thread fallback does not resurrect deliberate local absence, and historical saved replies remain available against their original source. This is not full product/runtime acceptance; the remaining gates are listed below.
 
 ## Claim checks
 
-### 1. Final-Pro capture and section preservation — accepted at source level
+### 1. Final-Pro capture and section preservation — accepted
 
-`marginalia-v2-package/ui/margin.ts:92-97` in `d216063` clones the incoming capture and uses `options.sections ?? capture.sections`, cloning the selected section list before UI ordering. This preserves the recorded `capture.sections` default and keeps UI ordering separate from the source capture used for attachment.
+In `ui/margin.ts`, the final source clones the incoming capture, then selects `options.sections ?? capture.sections` and clones the selected list before UI ordering. This preserves the recorded `capture.sections` default and keeps display ordering separate from the source capture used for attachment.
 
-This is a code-level acceptance of the narrow claim. A dedicated test that mutates the host-owned capture/sections after mount is not present; the native browser durability claim therefore remains open.
+This is a source-level acceptance of the narrow claim. A dedicated test that mutates host-owned capture/sections after mount is not present, so native browser durability is not inferred from this code check.
 
-### 2. Source-bound question storage — partial; continuity blocker
+### 2. Source-bound question storage — accepted; Q1 closed
 
-The committed target changes the question key at `ui/margin.ts:139-143` to:
+`88700cf` restores the established key shape:
 
 ```text
-question:<tabKey>:<capture.url>[:<draftScope>]
+question:draft:<tabKey>:<capture.url>[:<draftScope>]
 ```
 
-That key is source-bound, and export history at `ui/margin.ts:900` still filters retained questions by `q.capture?.url === capture.url`. However, the parent code used `question:` plus the existing `draftKey`, whose durable shape was `question:draft:<tabKey>:<capture.url>[:<draftScope>]`. `d216063` has no legacy read or migration path. Existing persisted question drafts written by the parent can therefore become invisible after this target is installed.
+`draftKey` contains the tab, captured source URL, and optional scope. Reusing `question:` + `draftKey` both keeps questions source-bound and preserves already-persisted question drafts from the parent source. Question history and export continue to filter retained records by the captured URL.
 
-**Blocker Q1:** source isolation is implemented, but backward-readable source-bound question storage is not proven and is likely broken for already-persisted drafts. The current working tree contains an uncommitted Sol edit that restores `question:` + `draftKey`; that edit is not part of `d216063` and is not being committed here. Exact missing evidence for acceptance is either a committed legacy-key fallback/migration or a test proving old and new persisted question records both hydrate correctly.
+This is the correct compatibility boundary for the current contract. The earlier `d216063` direct key shape would have needed a migration; `88700cf` removes that continuity defect. Chief's retry log includes the question hydration/cleanup and explicit question-retention cases as passing.
 
-### 3. Saved-thread handling — fallback accepted; local reply identity remains blocked
+### 3. Saved-thread and saved-reply handling — accepted with original-source semantics
 
-The committed `threadsNow` guard at `ui/margin.ts:146-157` does the intended narrow work: a `savedThread` snapshot is not reintroduced when the local journal already has the thread ID or when pending, conflict, or resolution history names that ID. `ui/margin-model.ts:6-8` then limits displayed threads to the current source URL and non-deleted records. The recovery evidence also has passing focused cases for deliberate absence and source-bound orphan export.
+The `threadsNow` guard keeps a library `savedThread` snapshot read-only and refuses to reintroduce it when the local journal already contains the ID or pending, conflict, or resolution history names it. `orderedThreads` limits the visible page list to the current source URL and non-deleted threads. This preserves deliberate local absence and does not overwrite local history with a library fallback.
 
-The remote saved-reply path checks `bundle.source.id` against the current thread source version at `ui/margin.ts:617-620`. The local path does not provide the same guarantee: `readReplies` calls `persistence.replies.list(thread.id)` at `ui/margin.ts:629`, and `ui/persistence.ts:329-340` filters only by `record.version.threadId`. Before mounting at `ui/margin.ts:642-657`, there is no check that `saved.source.id === thread.sourceVersionId` (or an equivalent current-source identity).
+The saved-reply path correctly treats a reply as historical source-bound data:
 
-**Blocker T1:** a cached reply attached to an older source version can be mounted after the same thread's current source identity changes. The existing equal-revision test uses a matching `source` ID and does not exercise this mismatch. The fallback/absence guard is accepted; the matrix's broader “source/reply loads validate current source IDs” claim is only partial.
+- `validateReply` receives `saved.source.text`, not the current page text.
+- `mountReply` receives `saved.source.text`, so the original reply/source remains renderable when the thread later has a different current source version.
+- Reply history, local view recovery, and the original quote are not discarded merely because the current thread changed.
+- A remote refresh separately checks the returned bundle's source ID against the current thread before adopting new helper data. That is a guard against accepting the wrong live bundle; it is not a reason to hide an already-saved historical reply.
+
+This matches `wayfinder/SPEC-FINAL.md`: replies are immutable versions, source bindings have exact/moved/unsure/lost outcomes, page edits must not guess a new attachment, and saved threads/history preserve the work at its original source. A blanket `saved.source.id === currentThread.sourceVersionId` filter would violate that historical-access requirement and is not requested here.
+
+## Source navigation judgment — T1 withdrawn
+
+The relevant path is conservative and explicit:
+
+1. `bindingAnchor(binding, saved.source.text)` first resolves the selector against the immutable saved source and requires one exact or moved match.
+2. It constructs the original quote anchor, then attaches that anchor against the current capture. If the current page is lost or ambiguous, it returns no anchor.
+3. `onSourceNavigate` calls `sourceAction` only for a successfully reattached anchor; otherwise it announces that the original reply is preserved and no navigation was attempted.
+4. `sourceAction` independently rejects any non-whole-page anchor that is not exact or moved before invoking `onSource` or scrolling.
+
+Therefore a historical reply remains accessible, while navigation acts on the current page only after an explicit action and an unambiguous exact/moved reattachment. I found no repro of accidental navigation on a mismatched or ambiguous current source, so T1 is not an implementation blocker.
+
+The only small UX evidence gap is that this saved-reply path does not separately display the word “moved” when a safe current match has moved. That does not delete history or make navigation unsafe. If the launch surface requires the canonical non-exact label, the bounded correction is a status such as “Current page match; original source retained,” not hiding or deleting the historical reply.
 
 ## Targeted verification
 
-`node --experimental-strip-types --test tests/margin-entry.test.ts tests/margin-recovery.test.ts` under Node `v24.14.1` / npm `11.11.0` produced **30 passed, 1 failed** in both runs (once at the committed target, and again after the uncommitted Sol working-tree delta was visible).
-
-The reproducible failure is:
+Chief's exact retry check, recorded in `marginalia-v2-package/.chief-retry-check.log` after `88700cf`, reports:
 
 ```text
-tests/margin-entry.test.ts:23
-reading-position editor is connected, anchored and single-map across save failure, collapse and suspend
-Error: Missing button: Retry saving
+tests 31
+pass 31
+fail 0
 ```
 
-The failure occurs after the controlled `journal` quota error and before the test can retry the retained note. The current working tree adds a `draftSaveFailed` latch and a clean-settings assertion, but the same focused failure remains. `git diff --check 3b6f61f...d216063` is clean.
+The earlier local `30 passed, 1 failed` observation was made while `d216063` and the follow-up retry fix were landing concurrently. It is superseded by the immutable-source Chief rerun and is not carried forward as R1.
 
-**Blocker R1:** the focused retry/recovery behavior is not currently green, so the native matrix's “entry/recovery tests pass” wording is not independently reproducible in this checkout. This is a concrete T05 integration hold even though the other 30 focused tests passed.
+## Remaining gates and evidence limits
 
-## Evidence limits and remaining native gates
-
-`marginalia-v2-package/docs/evidence/pro-t05-fixes/NATIVE-INTEGRATION-REVIEW.md:33-50` records the reconciliation matrix, but its header still says `Bounded fixes commit: pending (this change)` and does not bind the matrix counts to `d216063`. Its own acceptance section (`:54-55`) leaves the following unverified:
+The native matrix's own open-gate section remains applicable. This report does not claim evidence for:
 
 - real localhost Origin/Fetch-Metadata enforcement and Show/Renew/Pair/List/Forget/401 behavior;
-- re-pair, offline, quota, reload/restart durability and extension-panel transport;
-- keyboard, screen-reader, and actual 200%-zoom behavior; and
+- re-pair, offline, quota, reload/restart durability or extension-panel transport;
+- keyboard, screen-reader, actual 200%-zoom, reduced-motion, and hit-target behavior; or
 - the real note → exact consent → provisional → committed reply → explicit follow-up/cancel/unknown journey, including T06's send boundary and T20 runtime/renderer acceptance.
 
-The report also says the supplied browser harness could not be reproduced with the installed TypeScript 5.9 API under Node 24, so its earlier Node 22/Chromium results are historical rather than native acceptance. No live provider, extension transport, or cross-owner runtime evidence was added by this review.
+The supplied browser harness's TypeScript 5.9/Node 24 incompatibility also means its earlier Node 22/Chromium results remain historical rather than fresh native acceptance. The native report header still contains a “bounded fixes commit: pending” placeholder; this closure binds the source-level verdict to `88700cf`, but that evidence document should be refreshed separately if a canonical receipt is required.
 
 ## Final disposition
 
-Accept the target narrowly as a non-pure-`c5` source reconciliation for:
+**Bounded acceptance of `88700cf`:**
 
-- freezing the original capture and retaining recorded sections; and
-- preventing a library fallback snapshot from resurrecting a deliberate local absence or overriding pending/conflict/resolution history.
+- Final-Pro capture and recorded sections are retained.
+- Source-bound question storage remains backward-readable under the established key.
+- Saved-thread fallback preserves deliberate absence and local conflict/history authority.
+- Historical saved replies remain source-faithful, and current-source navigation refuses mismatched or ambiguous reattachment.
+- The exact focused suites are Chief-observed 31/31 with zero failures.
 
-Hold overall T05 acceptance on **Q1** (persisted-question key continuity), **T1** (local cached-reply source-version validation), and **R1** (the reproducible focused retry failure). The native browser, transport, accessibility, T06, and T20 gates remain explicitly unverified rather than inferred as passed.
+No source-level blocker remains for the three handoff claims. Full T05/product acceptance remains gated by the native browser, transport, accessibility, T06, and T20 evidence explicitly listed above.
