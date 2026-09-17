@@ -6,9 +6,8 @@ import type { ConsentScope, FetchedResourceRecord } from '../../../contracts/con
  *
  * The model authors a `citations` block: claim, support, source, a declared date and a
  * self-reported `fetched` flag. That flag is a model claim, not proof. This module is the
- * host-authority layer (the same shape as contracts/host-checks.ts for classifications): it
- * binds each claim to the exact broker retrieval records the host observed, decides which
- * claims resolve to a real fetch, and withholds the evidence headline when nothing does.
+ * host reconciliation binds citations to broker retrieval records. It records retrieval
+ * facts without deciding whether fetched text supports a claim; the headline is withheld.
  *
  * It performs no IO. Retrieval already happened in the trusted daemon through
  * daemon/retrieval/broker.ts; the caller passes the observed records here. A plausible URL or
@@ -22,7 +21,9 @@ export type BoundSourceVersion = { id: string; hash: string; capturedAt: string 
 
 /**
  * Host observations. Never parsed from reply JSON. `observed` are the exact broker records for
- * this session. `retrievalComplete` is the host confinement truth: false means another route
+ * this attempt. The caller must validate the reply, bind it to the same attempt's egress
+ * record and frozen source, and pass the validated final or partial reply distinctly.
+ * `retrievalComplete` is the host confinement truth: false means another route
  * could have fetched, so the log is not authoritative and must not be treated as complete.
  */
 export type EvidenceObservations = {
@@ -35,7 +36,7 @@ export type EvidenceObservations = {
 };
 
 export type CitationAttribution =
-  | 'observed-fetch'          // fetch claimed and a real fetched record backs the URL
+  | 'observed-fetch'          // fetch claimed and a real fetched record matches the URL
   | 'author-supplied'         // support offered with no fetch claim: reasoning or local context
   | 'unsupported-fetch-claim' // fetch claimed but no fetched record backs it
   | 'unresolved';             // fetch observed, but the log is incomplete or the source is stale
@@ -59,16 +60,19 @@ export type EvidenceEntryAssessment = {
   attribution: CitationAttribution;
   /** The bound observed record when a fetch resolves; null otherwise. */
   record: FetchedResourceRecord | null;
+  /** Which broker URL matched the model's citation; a redirect may yield a different resource. */
+  citationUrlMatch: 'requested' | 'final' | 'both' | null;
   /** Page-text containment ("the fetched page contains the attributed text") is a separate step. */
   textVerified: false;
   notes: readonly string[];
 };
 
-export type EvidenceVerdict = 'supported' | 'insufficient' | 'refused';
+export type EvidenceVerdict = 'unverified' | 'insufficient' | 'refused';
 
 export type EvidenceAssessment = {
   transform: typeof EVIDENCE_TRANSFORM;
   verdict: EvidenceVerdict;
+  replyStatus: CandidateReply['status'];
   reason: string;
   sessionScope: ConsentScope;
   retrievalComplete: boolean;
@@ -76,7 +80,7 @@ export type EvidenceAssessment = {
   boundSourceVersion: BoundSourceVersion;
   entries: readonly EvidenceEntryAssessment[];
   observedFetchCount: number;
-  /** Host-authority summary. Null (withheld) unless at least one claim resolves to a fetch. */
+  /** Semantic headline is withheld: a retrieved URL cannot verify a claim. */
   headline: string | null;
   issues: readonly string[];
 };
@@ -90,15 +94,18 @@ function normalizeUrl(input: string | undefined): string | null {
   return `${url.protocol}//${url.hostname.toLowerCase()}${url.port ? `:${url.port}` : ''}${url.pathname}${url.search}`;
 }
 
-/** Find the observed record whose requested or final URL matches, preferring a fetched outcome. */
-function matchRecord(url: string | undefined, observed: readonly FetchedResourceRecord[]): FetchedResourceRecord | null {
+/** Find a broker record and preserve which URL matched, preferring a fetched outcome. */
+function matchRecord(url: string | undefined, observed: readonly FetchedResourceRecord[]): { record: FetchedResourceRecord; match: 'requested' | 'final' | 'both' } | null {
   const target = normalizeUrl(url);
   if (target === null) return null;
-  let fallback: FetchedResourceRecord | null = null;
+  let fallback: ReturnType<typeof matchRecord> = null;
   for (const record of observed) {
-    if (normalizeUrl(record.requestedUrl) === target || normalizeUrl(record.finalUrl) === target) {
-      if (record.outcome === 'fetched') return record;
-      if (fallback === null) fallback = record;
+    const requested = normalizeUrl(record.requestedUrl) === target;
+    const final = normalizeUrl(record.finalUrl) === target;
+    if (requested || final) {
+      const found = { record, match: requested && final ? 'both' : requested ? 'requested' : 'final' } as const;
+      if (record.outcome === 'fetched') return found;
+      if (fallback === null) fallback = found;
     }
   }
   return fallback;
@@ -129,6 +136,7 @@ export function reconcileEvidence(reply: CandidateReply, observations: EvidenceO
     const claimed = entry.fetched === true;
     let attribution: CitationAttribution = 'author-supplied';
     let record: FetchedResourceRecord | null = null;
+    let citationUrlMatch: EvidenceEntryAssessment['citationUrlMatch'] = null;
     let fetchedObserved = false;
 
     if (!claimed) {
@@ -145,14 +153,17 @@ export function reconcileEvidence(reply: CandidateReply, observations: EvidenceO
           ? 'No observed retrieval record matches this URL. A cited URL is not a fetched source.'
           : 'No URL was supplied, so no retrieval record can back this fetch claim.');
         issues.push(`entry ${entry.id}: unattributable fetch claim`);
-      } else if (matched.outcome !== 'fetched') {
+      } else if (matched.record.outcome !== 'fetched') {
         attribution = 'unsupported-fetch-claim';
-        record = matched;
-        notes.push(`The retrieval for this URL ended as "${matched.outcome}", so it produced no source bytes.`);
-        issues.push(`entry ${entry.id}: retrieval outcome was ${matched.outcome}`);
+        record = matched.record;
+        citationUrlMatch = matched.match;
+        notes.push(`The retrieval for this URL ended as "${record.outcome}", so it produced no source bytes.`);
+        issues.push(`entry ${entry.id}: retrieval outcome was ${record.outcome}`);
       } else {
-        record = matched;
+        record = matched.record;
+        citationUrlMatch = matched.match;
         fetchedObserved = true;
+        if (matched.match === 'requested') notes.push(`The cited URL was requested, but the fetched resource was ${record.finalUrl}.`);
         if (!observations.retrievalComplete) {
           attribution = 'unresolved';
           notes.push('The retrieval log is incomplete, so this fetch cannot be certified as the whole story.');
@@ -181,12 +192,13 @@ export function reconcileEvidence(reply: CandidateReply, observations: EvidenceO
       fetchedObserved,
       attribution,
       record,
+      citationUrlMatch,
       textVerified: false,
       notes,
     };
   });
 
-  const observedFetchCount = assessed.filter((entry) => entry.attribution === 'observed-fetch').length;
+  const observedFetchCount = assessed.filter((entry) => entry.fetchedObserved).length;
 
   let verdict: EvidenceVerdict;
   let reason: string;
@@ -199,18 +211,21 @@ export function reconcileEvidence(reply: CandidateReply, observations: EvidenceO
   } else if (assessed.length === 0) {
     verdict = 'insufficient';
     reason = 'No citations were offered, so there is no attributable support.';
-  } else if (observedFetchCount > 0) {
-    verdict = 'supported';
-    reason = 'At least one claim resolves to an observed host retrieval.';
-    headline = `${observedFetchCount} of ${assessed.length} claim(s) resolve to an observed retrieval.`;
+  } else if (reply.status === 'partial') {
+    verdict = 'insufficient';
+    reason = 'This reply is partial. Recorded retrievals do not establish claim support.';
+  } else if (assessed.some((entry) => entry.attribution === 'observed-fetch')) {
+    verdict = 'unverified';
+    reason = 'A cited URL resolves to an observed retrieval, but its text and support for the claim are unverified.';
   } else {
     verdict = 'insufficient';
-    reason = 'No claim resolves to an observed host retrieval; support is author-supplied, incomplete or unattributable.';
+    reason = 'No complete, current retrieval attribution is available; claim support is unverified.';
   }
 
   return {
     transform: EVIDENCE_TRANSFORM,
     verdict,
+    replyStatus: reply.status,
     reason,
     sessionScope: scope,
     retrievalComplete: observations.retrievalComplete,

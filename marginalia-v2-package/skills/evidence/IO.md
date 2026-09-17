@@ -51,19 +51,25 @@ observations: {
 
 Result `EvidenceAssessment`:
 
-- `verdict`: `supported` (≥1 claim resolves to an observed fetch, log complete, source fresh),
-  `insufficient` (author-supplied, incomplete or unattributable), or `refused` (closed session
-  produced retrieval records).
+- `verdict`: `unverified` (a complete reply has a current observed retrieval, but claim
+  support remains unverified), `insufficient` (partial, author-supplied, incomplete or
+  unattributable), or `refused` (closed session produced retrieval records).
+- `replyStatus`: `partial` or `complete` from the validated reply. A partial reply never gets
+  the `unverified` final assessment.
 - `entries[].attribution`: `observed-fetch` | `author-supplied` | `unsupported-fetch-claim` |
   `unresolved`.
 - `entries[].record`: the bound `FetchedResourceRecord` when a fetch resolves.
+- `entries[].citationUrlMatch`: `requested`, `final`, `both` or null. A requested URL may
+  redirect; the actual resource is always `record.finalUrl`.
 - `entries[].dates`: `{ claimedSourceDate, claimedSourceDateVerified: false, retrievalDate }`.
-- `headline`: withheld (`null`) unless a claim resolves to a complete, fresh observed fetch.
+- `headline`: withheld (`null`) until a separate host check establishes semantic support.
 
 ## Consumption by existing jobs (integration, not yet wired)
 
-The host builds `observations` from records it already owns:
+The host calls this only with a schema-validated reply, after binding its final or partial
+status to the producing attempt. It builds `observations` from that same attempt's egress
+record, never another attempt's fetches:
 `EgressRecord.fetched` and `EgressRecord.retrievalComplete` (`contracts/consent.ts`), and
-`FrozenJobContext.sourceVersionId` / `sourceHash` (`contracts/jobs.ts`). The assessment feeds the
-renderer's citation authority line in place of the current author-only string. See the T14 receipt
-for the exact wiring request to T06 Pro.
+`FrozenJobContext.sourceVersionId` / `sourceHash` (`contracts/jobs.ts`). The assessment may
+provide retrieval facts to the renderer. It grants no claim-level support or checked headline.
+See the T14 receipt for the T06 wiring request.

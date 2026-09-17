@@ -48,9 +48,10 @@ One `citations` block inside a valid `marginalia.reply.v1` reply. Each entry is:
 
 ## How the host will judge you
 
-- A `fetched: true` entry with a matching observed fetched record → counted as observed support.
+- A `fetched: true` entry with a matching observed fetched record → counted as an observed
+  retrieval only. The host has not checked the page text or whether it supports your claim.
 - A `fetched: true` entry with no matching record, or a rejected/failed/cancelled retrieval →
   neutralized to unsupported and flagged. Do not pad with these.
 - Any fetch claim in a closed session → unsupported, and a confinement break is recorded.
-- An incomplete retrieval log or a changed source version → the host withholds the evidence
-  headline even for real fetches. Write so the reply still reads honestly in that state.
+- The host withholds the evidence claim headline even for a complete, current fetch. An
+  incomplete log, changed source version or partial reply further limits attribution.
