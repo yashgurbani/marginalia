@@ -6,6 +6,8 @@ Updated 17 September 2026. Chief task: 01a0adaf-dd71-7583-8307-b877547c9189.
 
 The consolidated implementation is published at `2c35157c38a59a3a84c8eaa1265aaf12706951f2` on `codex/marginalia-v2`. Frozen owner hashes matched before integration. This includes the helper, durable reader journal, provider adapters, extension, saved-reply margin, jobs, consent, library and renderer/kernel. Integration is not feature acceptance: live asking, recovery, confinement and release gates remain open.
 
+Post-review integration: T01 Pro commit `2c926c5` is integrated as `39ff68c`. Chief inspected its three-path diff; the T01 owner independently ran the exact commit on local Node 24.14.1, with 9/9 diagnostics tests passing. Diagnostics now probes only the explicitly configured executable and dedicated home. T06 must still wire the same canonical runtime identity into both runtime creation and diagnostics; until then the no-argument caller honestly reports unavailable/unknown. This fixes the component, not the complete sign-in/recovery journey.
+
 Ten ticket owners have completed or are reconciling exact-source 6Pro reviews and have submitted bounded implementation follow-ups. Pro is producing fixes and regression tests on isolated branches or patch/ZIP artifacts. Astra owners inspect those outputs; chief controls integration. The [combined Pro review](https://chatgpt.com/c/6aab9618-74b8-83eb-9518-da28543f1429) remains active against the same revision, full spec, whitepaper and both design passes. Its initial write scope is review documents only, under `docs/evidence/pro-consolidated/`.
 
 Testing is now authorized: the user lifted the pause after consolidation. The local baseline failed with 45 TypeScript diagnostics. The test run stalled in a provider-adapter child and was interrupted; its aggregate was 91 tests, 59 passing and 32 failing. This is not a completed-suite result. A real Node strip-only loader failure prevents server tests from loading. See [baseline evidence](docs/evidence/CONSOLIDATION-BASELINE.md). Fixes must address both genuine source defects and outdated test contracts without weakening product requirements.
@@ -29,7 +31,7 @@ Integrated means committed for review, not that the full reader experience passe
 | Ticket | Capability | Current work and remaining gate |
 |---|---|---|
 | T00 | Numerical fixture | Foundation integrated; final rendered/live fixture remains |
-| T01 | Helper and pairing | Integrated; Pro correcting diagnostics/pairing in owned paths; correct product account and recovery still require acceptance |
+| T01 | Helper and pairing | Pro diagnostics correction integrated as 39ff68c, 9/9 focused owner checks on Node 24; T06 canonical identity wiring and live recovery remain |
 | T02 | App-server and MCP adapters | Integrated; Pro fixing adapter lifecycle/hooks and tests; real authenticated asking and recovery remain |
 | T03 | Reply contract/host authority | Integrated with samples binding; Pro contract corrections/tests active; real host records and delivery remain |
 | T04 | Extension capture/private host | Integrated with section metadata; Pro extension fixes active; hostile-page, worker recovery, port/identity and live Ask checks remain |
