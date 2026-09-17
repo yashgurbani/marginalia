@@ -324,7 +324,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       await draftBuffer.save(undefined); draft = undefined; editorGeneration++; pendingNoteMutation = undefined; pendingNoteCommitted = false;
       if (alive()) { changed(); renderThreads(); renderCompose(); if (returnToReading && (compose.contains(document.activeElement) || document.activeElement === document.body)) readingTitle.focus({ preventScroll: true }); announce('Note saved on this device.'); }
       return mutation;
-    } catch (error) { fail(error); }
+    } catch (error) { draftSaveFailed = true; fail(error); }
     finally { saving = false; if (draft) draftSaveFailed = true; if (alive()) { renderCompose(); renderSettings(); } }
   }
 
