@@ -1,5 +1,20 @@
 # Parallel execution wave — 17 September 2026
 
+## Recovered outcomes
+
+All six workers completed and their exact branch heads were verified on origin. All four Luna runtimes independently report gpt-5.6-luna/max and task_complete. Their MCP caller responses timed out after300seconds, but execution continued and committed successfully. No replay was needed. Runtime starts were staggered at15:35,15:40,15:45,15:50CEST; the Promise.all submission did not establish simultaneous starts. Investigate dispatch serialization before claiming four-way parallel execution again.
+
+| Worker | Published commit | Reported result |
+|---|---|---|
+| Sol Evidence | 053a203d4781099d726e9ec91e35c47900e5b423 | Retrieval no longer certifies support; redirect and partial-reply attribution corrected.16focused passes/typecheck. |
+| Sol Explore | bead55269f5512bc2df88f04509b5b61551ded94 | Honest model-suggested wording, fragment/publicIPv6 handling, host assessment/current-context contract.15focused passes/typecheck. |
+| Luna persistence | 55e89c2718e1539e01f14f6abec909a8a0031955 | Two new keep-device/recovery regressions;44related passes/typecheck. |
+| Luna library | e5a18645d2467052ec5e1cc389d47c4fbc7cdf81 | Three new state/export/reopen retention regressions;45related passes/typecheck. Worker also ran unnecessary full suite294pass/1skip beyond the focused brief. |
+| Luna capture | 380c51c9fbd157530f291cb9cbd37d0cbc955a61 | Seven new capture/source/no-send regressions;16related passes. Project/extension typechecks blocked by source/declaration diagnostics and missing generated WXT configuration; not a green type gate. |
+| Luna renderer | 37bd4c4f309f517e5834a4a475c8b73ed20afc29 | Three new range/no-extrapolation/authority regressions;39related passes/1skip, focused strict typecheck; reported13Chrome checks including six browser scenarios. |
+
+Checks above are recovered worker evidence, not fresh chief reruns. Four Luna branches contain tests and reports only. All six remain unmerged pending diff review; Sol product corrections additionally require independent verification. Explore assessment machinery must be checked against chief simplicity guidance. No whole-ticket/live/platform acceptance is implied. These six completed runs no longer consume active worker slots.
+
 User budget: two Sol Medium, four Luna Max via dynamic complementary MCP automatic account selection with priority requested; one Opus 5 for challenging work. Requested model/effort/tier are not runtime-confirmed until metadata is inspected.
 
 Six MCP calls dispatched together; chief exec cell32. Each task uses isolated worktree and exact ownership. No recursive delegation or integration-branch writes. Product acceptance remains subject to chief review and independent verification.
