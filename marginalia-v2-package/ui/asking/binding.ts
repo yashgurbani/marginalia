@@ -204,6 +204,10 @@ export function assertSavedReply(saved: SavedAskingReply, j: JobSnapshot, b: Ask
   const reply = checkedCandidate(r.reply, b, validate, 'complete');
   requireMatch(reply.intent === j.context.intent && r.validation?.schema === 'marginalia.host-report.v1' && r.validation.checkVersion === 'host-checks.v1' &&
     hash(r.validation.replyDigest) && r.validation.replyDigest === r.hash && hash(r.validation.parameterDigest) && Array.isArray(r.validation.results) && r.validation.results.length <= 64);
+  // Check the report's transport shape, not the scientific truth or headline authority it reports.
+  requireMatch(r.validation.results.every(result => record(result) && text(result.requestId, 100) && text(result.criterion, 100) &&
+    text(result.model, 100) && text(result.classification, 100) && ['pass', 'fail', 'unsupported'].includes(result.status) &&
+    text(result.reason, 4000, true) && (result.headline === undefined || text(result.headline, 4000, true))));
   if (saved.view) requireMatch(saved.view.replyVersionId === r.id && Number.isSafeInteger(saved.view.revision) && saved.view.revision >= 0 &&
     record(saved.view.parameters) && Object.values(saved.view.parameters).every(x => typeof x === 'number' && Number.isFinite(x)) && record(saved.view.view));
   return reply;

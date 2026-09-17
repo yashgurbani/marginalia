@@ -232,6 +232,8 @@ export function createAskingFlow(options: AskingOptions) {
         publish({ phase: 'submitting', preparation: undefined, message: 'Submitting the approved request. Provider sending has not yet been observed.' });
         try {
           requireCurrent(op);
+          // A synchronous display callback may outlive the preview; check expiry again at the local handoff.
+          assertPreparation(p, op.expected!, binding, now());
           op.dispatched = true; // No await after this final local fence and before the existing host endpoint.
           const continuation = { id: p.job.id, idempotencyKey: p.job.idempotencyKey, grantId: grant.id, preparedPayloadDigest: p.job.preparedPayloadDigest };
           const response = op.expected!.kind === 'retry'
@@ -241,8 +243,12 @@ export function createAskingFlow(options: AskingOptions) {
               : await options.host.start({ ...hostCopy(p.job), grantId: grant.id }, op.abort.signal);
           if (current(op) && receiveEpoch === op.receiveEpoch) await acceptJob(op, response, receiveEpoch);
         } catch {
-          if (current(op) && receiveEpoch === op.receiveEpoch) publish({ phase: 'unknown',
-            message: 'The request outcome is unknown. Check its status before trying again; it will not be resent automatically.' });
+          if (current(op) && receiveEpoch === op.receiveEpoch) {
+            if (!op.dispatched) blocked('expired-preview');
+            // A later read may already have established the terminal outcome while this HTTP response was pending.
+            else if (!op.job || !terminal.has(op.job.state)) publish({ phase: 'unknown',
+              message: 'The request outcome is unknown. Check its status before trying again; it will not be resent automatically.' });
+          }
         }
         return grant;
       } catch {

@@ -49,6 +49,10 @@ export function connectAskingSurfaces(flow: AskingFlow, options: AskingSurfaces)
   const announced = new Set<string>();
   function report(message: string) { if (!destroyed) { try { options.onError?.(message); } catch { /* Display only. */ } } }
   function dispose(item: { destroy(): void } | undefined) { try { item?.destroy(); } catch { report('A view could not be fully removed. Reopen this margin before continuing.'); } }
+  function isCurrent(result: AskingResult): boolean {
+    const latest = flow.getState();
+    return [latest.previousResult, latest.result].some(value => value?.reply.id === result.reply.id && value.reply.hash === result.reply.hash);
+  }
   function update(state: AskingState) {
     if (destroyed) return;
     const version = ++revision;
@@ -88,6 +92,7 @@ export function connectAskingSurfaces(flow: AskingFlow, options: AskingSurfaces)
       }
       try {
         const supplied = options.replyOptions(hostCopy(result));
+        if (destroyed || version !== revision || !isCurrent(result)) { root.remove(); return; }
         const mount = options.mountReply(root, hostCopy(result.reply.reply), {
           ...supplied,
           ...(result.view && !supplied.initialState ? { initialState: { parameters: result.view.parameters, view: result.view.view } } : {}),
@@ -97,7 +102,7 @@ export function connectAskingSurfaces(flow: AskingFlow, options: AskingSurfaces)
             await flow.followup(followupQuestion(context));
           },
         });
-        if (destroyed || version !== revision) { dispose(mount); root.remove(); return; }
+        if (destroyed || version !== revision || !isCurrent(result)) { dispose(mount); root.remove(); return; }
         replies.set(key, { mount, root });
         if (state.result?.reply.id === result.reply.id && !announced.has(key)) {
           announced.add(key);
