@@ -7,6 +7,8 @@ import { renderDiagram } from './diagram.ts';
 import { calculateReply, formatNumber, initialRendererState, type RendererState } from './state.ts';
 import { classificationsFromHost } from './host-authority.ts';
 import type { ClassificationView, HostCheckReport } from '../contracts/host-checks.ts';
+import { validateSamplesInterpolationReadiness, type SampleGenerationRecord } from '../contracts/sample-provenance.ts';
+import { interpolateSamples } from '../kernel/samples.ts';
 
 export type { RendererState } from './state.ts';
 export type RecomputeRequest = RendererState & { blockId: string; solverId: string; reason: string; requestId: string; stateKey: string };
@@ -19,6 +21,8 @@ export type ReplyOptions = {
   hostReport?: HostCheckReport;
   /** Existing host checks only: no model turn, retrieval, or saved-solver execution. */
   resolveHostReport?: (parameters: Readonly<Record<string, number>>, context: { requestId: string; stateKey: string }) => Promise<HostCheckReport | undefined>;
+  /** Trusted host-owned sidecars keyed by samples block ID. Candidate data must never populate this map. */
+  sampleGenerationRecords?: Readonly<Record<string, SampleGenerationRecord>>;
   onStateChange?: (state: RendererState) => void | Promise<void>;
   onSourceHighlight?: (binding: SourceBinding | null) => void;
   onSourceNavigate?: (binding: SourceBinding) => void;
@@ -57,11 +61,14 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   const authorityUpdates: (() => void)[] = [];
   let hostViews: ClassificationView[] = [];
   let authorityGeneration = 0;
+  let samplesGeneration = 0;
   let remainingPlotVertices = 24_000;
   const invalidInputs = new Set<string>();
   let injectedReport: HostCheckReport | undefined;
   try { injectedReport = options.hostReport ? structuredClone(options.hostReport) : undefined; } catch { /* An invalid injection is never authority. */ }
   let recentReport = injectedReport;
+  let sampleGenerationRecords: Readonly<Record<string, SampleGenerationRecord>> = Object.freeze({});
+  try { sampleGenerationRecords = Object.freeze(structuredClone(options.sampleGenerationRecords ?? {})); } catch { /* Unreadable sidecars confer no sample authority. */ }
   const getState = () => structuredClone(state);
   const status = el(doc, 'p', '', 'mr-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const saveStatus = el(doc, 'div', undefined, 'mr-save-status'); saveStatus.setAttribute('role', 'status');
@@ -135,13 +142,36 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       if (!destroyed && generation === authorityGeneration) announce('The current host check is unavailable. The headline stays withheld; local calculations remain available.');
     }
   };
+  const requestSamples = async () => {
+    if (destroyed || !capability('samples')) return;
+    const generation = ++samplesGeneration;
+    const parameters = structuredClone(state.parameters);
+    const stateKey = canonicalReplyData({ reply, parameters });
+    const blocks = reply.blocks.filter(block => block.type === 'samples');
+    const current = () => !destroyed && invalidInputs.size === 0 && generation === samplesGeneration && canonicalReplyData({ reply, parameters: state.parameters }) === stateKey;
+    const results = await Promise.all(blocks.map(async block => {
+      try {
+        const readiness = await validateSamplesInterpolationReadiness(reply, block, parameters, sampleGenerationRecords[block.id]);
+        if (!readiness.ok) return [block.id, { ok: false as const, reason: readiness.reason }] as const;
+        return [block.id, interpolateSamples(readiness.block, readiness.parameters)] as const;
+      } catch {
+        return [block.id, { ok: false as const, reason: 'The sample generation binding could not be checked. The recorded grid remains historical.' }] as const;
+      }
+    }));
+    if (!current()) return;
+    for (const [blockId, result] of results) calculation.samples.set(blockId, result);
+    remainingPlotVertices = 24_000;
+    for (const update of updates) update();
+  };
   const refresh = () => {
     if (destroyed) return;
+    ++samplesGeneration;
     ++authorityGeneration; hostViews = [];
     calculation = calculateReply(reply, state.parameters);
     remainingPlotVertices = 24_000;
     for (const update of updates) update();
     persist(); announce(invalidInputs.size ? 'Correct the invalid input. The plot uses the last accepted values; the headline stays withheld.' : 'Updated locally. No model request was sent.');
+    if (!destroyed) void requestSamples();
     if (!destroyed) void requestAuthority();
   };
   const onFollowup = (text: string, extra: { questionId?: string; answer?: string } = {}) => {
@@ -246,7 +276,9 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
         const value = target.valueAsNumber;
         if (!Number.isFinite(value) || value < parameter.min || value > parameter.max) {
           error.textContent = `Enter a number from ${parameter.min} to ${parameter.max}${parameter.unit ? ` ${parameter.unit}` : ''}.`; target.setAttribute('aria-invalid', 'true');
-          invalidInputs.add(parameter.name); ++authorityGeneration; hostViews = []; for (const update of authorityUpdates) update();
+          invalidInputs.add(parameter.name); ++authorityGeneration; ++samplesGeneration; hostViews = []; for (const update of authorityUpdates) update();
+          for (const block of reply.blocks) if (block.type === 'samples') calculation.samples.set(block.id, { ok: false, reason: 'Correct the invalid input before applying the recorded sample grid.' });
+          remainingPlotVertices = 24_000; for (const update of updates) update();
           announce('Correct the invalid input. The plot uses the last accepted values; the headline stays withheld.'); return;
         }
         const wasInvalid = invalidInputs.delete(parameter.name);
@@ -379,12 +411,13 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       case 'samples': {
         section.append(el(doc, 'p', `Precomputed samples · ${block.envelope.interpolation} interpolation`, 'mr-meta'));
         section.append(el(doc, 'p', block.envelope.axes.map(axis => `${axis.name}: ${axis.min} to ${axis.max}, ${axis.count} samples`).join('; ')), el(doc, 'p', `Recorded error evidence: ${block.envelope.errorEvidence}`, 'mr-meta'));
+        if (block.envelope.fixedInputs) section.append(el(doc, 'p', `Recorded fixed generation inputs: ${Object.entries(block.envelope.fixedInputs).map(([name, value]) => `${name} = ${formatNumber(value)}`).join('; ') || 'none'}`, 'mr-meta'));
         for (const region of block.envelope.forbiddenRegions) section.append(el(doc, 'p', `Excluded region: ${region.expression}. ${region.reason}`, 'mr-meta'));
-        const current = el(doc, 'div'); section.append(current);
+        const current = el(doc, 'div'); current.setAttribute('aria-live', 'polite'); section.append(current);
         dynamic(() => {
           const result = calculation.samples.get(block.id); current.replaceChildren();
           if (!capability('samples')) current.append(el(doc, 'p', 'Precomputed sample interpolation is not available in this view.'));
-          else if (result?.ok) current.append(pagedTable(doc, [{ key: 'name', label: 'Quantity' }, { key: 'value', label: 'Interpolated value' }], Object.entries(result.values).map(([name, value]) => ({ name, value: formatNumber(value) })), 'Current sampled values', tableView('current')), el(doc, 'p', 'Output units are not declared by this sample block.', 'mr-meta'));
+          else if (result?.ok) current.append(pagedTable(doc, [{ key: 'name', label: 'Quantity' }, { key: 'value', label: 'Interpolated value' }], Object.entries(result.values).map(([name, value]) => ({ name, value: formatNumber(value) })), 'Current sampled values', tableView('current')), el(doc, 'p', sampleGenerationRecords[block.id]?.origin === 'imported' ? 'A matching host-owned import record binds this data to the reply. It does not claim that a solver executed.' : 'A matching host-owned execution record binds this grid to the reply and current generation inputs.', 'mr-meta'), el(doc, 'p', 'Output units are not declared by this sample block.', 'mr-meta'));
           else { const reason = result && !result.ok ? result.reason : 'No sample result is available.'; current.append(el(doc, 'p', reason)); offerRecompute(current, block.id, reason); }
         });
         const grid = el(doc, 'details'); grid.append(el(doc, 'summary', 'Recorded sample grid')); rememberDetails(grid, `grid:${block.id}:${occurrence}`);
@@ -438,6 +471,7 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   if (reply.sourceBindings[0]) article.append(button(doc, 'Back to source passage', () => navigate(reply.sourceBindings[0])));
   article.append(saveStatus, status); root.append(article, dialog);
   for (const update of updates) update();
+  void requestSamples();
   void requestAuthority();
-  return { getState, destroy() { if (destroyed) return; destroyed = true; ++authorityGeneration; clearHighlight(); if (dialog.open) dialog.close(); article.remove(); dialog.remove(); updates.length = 0; authorityUpdates.length = 0; } };
+  return { getState, destroy() { if (destroyed) return; destroyed = true; ++authorityGeneration; ++samplesGeneration; clearHighlight(); if (dialog.open) dialog.close(); article.remove(); dialog.remove(); updates.length = 0; authorityUpdates.length = 0; } };
 }

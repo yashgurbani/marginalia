@@ -3,7 +3,7 @@ import type { JsonValue } from '../contracts/reader.ts';
 import { compileExpression } from '../kernel/expression.ts';
 import { runModel } from '../kernel/model.ts';
 import type { Trajectory } from '../kernel/integrate.ts';
-import { interpolateSamples } from '../kernel/samples.ts';
+import type { interpolateSamples } from '../kernel/samples.ts';
 
 export type RendererState = { parameters: Record<string, number>; view: Record<string, JsonValue> };
 export type Calculation<T> = { ok: true; value: T } | { ok: false; reason: string };
@@ -62,10 +62,7 @@ export function calculateReply(reply: CandidateReply, parameters: Record<string,
       }
       if (block.type === 'samples') {
         if (!reply.blocks.some(model => model.id === block.model && model.type === 'model')) throw new Error('These samples do not reference a declared model. Their recorded grid remains available, but no current result is inferred.');
-        const unrecorded = reply.parameters.find(p => !block.envelope.axes.some(axis => axis.name === p.name));
-        samples.set(block.id, unrecorded
-          ? { ok: false, reason: `These samples do not record the value of ${unrecorded.label} used to calculate them. They cannot be reliably applied to the current settings; recomputation is required.` }
-          : interpolateSamples(block, parameters));
+        samples.set(block.id, { ok: false, reason: 'The sample generation binding is being checked. The recorded grid remains available below.' });
       }
     } catch (error) {
       const failure = { ok: false as const, reason: error instanceof Error ? error.message : 'The calculation could not finish.' };

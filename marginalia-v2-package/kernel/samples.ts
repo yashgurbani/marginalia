@@ -10,7 +10,7 @@ const failure = (reason: string): SamplesInterpolationResult => ({ ok: false, re
 const gridKey = (indices: number[]) => indices.join(',');
 
 /** Interpolates a complete rectilinear grid without extrapolation. */
-export function interpolateSamples(block: SamplesBlock, parameters: Record<string, number>): SamplesInterpolationResult {
+export function interpolateSamples(block: SamplesBlock, parameters: Readonly<Record<string, number>>): SamplesInterpolationResult {
   const { axes, interpolation, forbiddenRegions, errorEvidence } = block.envelope;
   if (!errorEvidence.trim()) return failure('Interpolation is unavailable because recorded error evidence is missing.');
   if (!axes.length || axes.length > 6 || new Set(axes.map(axis => axis.name)).size !== axes.length) return failure('The sample envelope has invalid or duplicate axes.');
