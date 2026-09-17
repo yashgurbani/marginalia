@@ -19,3 +19,7 @@ Integration branch: codex/marginalia-v2. Ticket tasks currently share the user's
 Each task owns wayfinder/build-receipts/Txx.md. Record claim, exact files, Pro URL and observed access, implementation commit if any, acceptance evidence, remaining limitations, and completion/blocker. Do not edit the global checkpoint/map concurrently. The chief updates them from receipts. Stop after this ticket; send the chief task your result.
 
 No task may describe a capability as shipped based only on a mock, fixture, consultant assertion or passing unit test. Verify the relevant entry point and report what remains untested.
+
+## Verified fresh-chat access
+
+Open a dedicated fresh Chat page, refresh and allow hydration. If the composer says Extra High, open it, choose Latest in Select model, then move Power to maximum Pro (5 of 5). Close the menu and verify the composer explicitly says 6 Pro before sending. The workspace-credit banner is not evidence of Pro exhaustion in this user's workspace. Latest/Sol/5.5 submenu does not list every power mode. Every ticket owner uses its own conversation and records URL/model, with GitHub branch/commit/path ownership in each handoff. Do not use stalled Branch in new chat as the default route.
