@@ -1,5 +1,10 @@
 # Chief consolidation checkpoint
 
+## Chief fidelity hold — 18 September 2026
+
+T05 correction aaf42f4 restored ui/margin.ts byte-for-byte to c5d7d51 (both Git blob8dca3afac92d5b4fed7d8fe9ead04bf9ed7d96d4). Chief does NOT accept this as proof of full final-Pro reconciliation. Passing earlier tests cannot justify losing later source-position, recovery, focus, exact-request and lifecycle improvements. Same Sol session has been explicitly tasked to compare every finalPro margin requirement and preserve both intended behaviors with narrow changes, exec71. Do not merge aaf42f4 merely because it restores the older green version. Independent T05 Luna is still reviewing329626b plus concurrent effects, session01a0b176-8a2a-78c3-ab0d-a82997260340; preserve its work.
+
+T06 Luna first review ended at22:30UTC with a generic readiness question, no saved verdict; it is not a completed review. Same session01a0b170-eada-7072-a823-eefcae6ab901 resumed through exec74 to finalize actual findings/report from accumulated inspection. No duplicate reviewer or reimplementation launched. Chief standalone native checks remain valid but do not replace independent verdict. Pro comprehensive new chat remains pending actual accepted consolidation.
 ## Combined candidate — 18 September 2026, review hold
 
 Isolated codex/final-pro-combined-check at fb1900367409de7ade052f05c68801b1d9eb390b assembles T05 329626b and T06 9945cc5 on integration324c288. Merges applied without conflicts; this is not chief integration acceptance. Full test suite:671tests,661pass,8fail,2skip. Fulltypecheck passes.
