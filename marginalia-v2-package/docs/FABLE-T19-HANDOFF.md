@@ -2,7 +2,7 @@
 
 Chief coordination task: `codex://threads/01a0adaf-dd71-7583-8307-b877547c9189`.
 Workspace: `D:\Projects\Marginalia\marginalia-v2-package`.
-Status: reserved for the user's Opus/Fable session; not yet claimed or running.
+Status: Opus 5 delivered the three-document experience slice. Direct chief messaging is unavailable to Opus; `wayfinder/build-receipts/T19.md` is the relay. Chief decisions and C1–C15 ownership are recorded in `docs/T19-CHIEF-DISPOSITION.md`. Runtime changes, all-platform installers and acceptance remain open.
 
 ## Objective
 
