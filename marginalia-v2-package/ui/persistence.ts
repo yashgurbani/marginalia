@@ -1,5 +1,5 @@
-import type { Persistence } from './journal.ts';
-import type { ReplyVersion, ReplyViewState, SourceVersion } from '../contracts/reader.ts';
+import { ReaderJournal, type Persistence, type JournalState } from './journal.ts';
+import type { QuoteAnchor, ReaderMutation, SourceCapture, Thread, ReplyVersion, ReplyViewState, SourceVersion } from '../contracts/reader.ts';
 import type { HostCheckReport } from '../contracts/host-checks.ts';
 import type { SampleGenerationRecord } from '../contracts/sample-provenance.ts';
 import { canonicalReplyData } from '../contracts/reply.ts';
@@ -31,6 +31,151 @@ function replyLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
   replyQueues.set(key, next);
   void next.finally(() => { if (replyQueues.get(key) === next) replyQueues.delete(key); }).catch(() => {});
   return next;
+}
+
+
+/** A note's attachment belongs to its original capture, including while storage is unavailable. */
+export type MarginDraft = {
+  anchor: QuoteAnchor; text: string; source?: SourceCapture; position?: number;
+  threadId?: string; noteId?: string; revision?: number; mutation?: ReaderMutation;
+};
+
+// Retaining the actual journal preserves its private durable baseline and operation queue.
+// This is document-lifetime recovery over the same IndexedDB store, not another database.
+const documentJournals = new Map<string, { journal: ReaderJournal; bind(backend: Persistence): void }>();
+export function documentJournal(namespace: string, backend: Persistence): ReaderJournal {
+  const existing = documentJournals.get(namespace);
+  if (existing) { existing.bind(backend); return existing.journal; }
+  let current = backend;
+  const journal = new ReaderJournal({ load: () => current.load(), save: state => current.save(state) });
+  documentJournals.set(namespace, { journal, bind(next) { current = next; } });
+  return journal;
+}
+
+/** Called inside the shared journal lock. Durable history/conflict is NOT an applied note. */
+export async function applyIntendedNote(journal: ReaderJournal, mutation: ReaderMutation): Promise<void> {
+  if (mutation.kind !== 'note' && mutation.kind !== 'keep') throw new Error('A note change is required.');
+  await journal.retryPersistence();
+  await journal.load();
+  await journal.change(mutation); // Validates identity even for an idempotent replay.
+  const applied = journal.state.pending.some(change => change.id === mutation.id) ||
+    journal.state.acknowledged?.some(receipt => receipt.id === mutation.id);
+  if (journal.unsaved || journal.state.conflicts.some(item => item.change.id === mutation.id) || !applied) {
+    throw new Error('This note has not been applied. Its draft and change identity are preserved; review the conflict in Settings.');
+  }
+}
+
+/** Serialize the helper read with current journal loading and reconciliation.
+ * Remote merge monotonicity itself remains ReaderJournal/T07's responsibility. */
+export async function resolveHelperConflict(
+  journal: ReaderJournal,
+  lock: (operation: () => Promise<void>) => Promise<void>,
+  changeId: string,
+  list: (change: ReaderMutation) => Promise<Thread[]>,
+): Promise<void> {
+  await lock(async () => {
+    await journal.load();
+    const conflict = journal.state.conflicts.find(item => item.change.id === changeId);
+    if (!conflict) throw new Error('This conflict changed elsewhere. Reload before resolving it.');
+    const remote = await list(structuredClone(conflict.change));
+    await journal.resolveConflict(changeId, remote);
+  });
+}
+
+/** Order an explicit final snapshot after all issued saves, even for A -> B -> A.
+ * A recovered competing snapshot is preserved, but is not the active completed view. */
+export function replySaveLifecycle(initial: ReplyState, save: (state: ReplyState) => Promise<void>) {
+  let tail: Promise<void> = Promise.resolve(), closing: Promise<void> | undefined;
+  let pending = 0, closed = false;
+  let completed = canonicalReplyData(initial), preserved = completed;
+  const recovered = (error: unknown) => error instanceof Error && error.name === 'RecoveredViewConflict';
+  const enqueue = (state: ReplyState) => {
+    const snapshot = structuredClone(state), key = canonicalReplyData(snapshot);
+    pending++;
+    const work = tail.then(async () => {
+      try { await save(snapshot); completed = key; preserved = key; }
+      catch (error) { if (recovered(error)) preserved = key; throw error; }
+      finally { pending--; }
+    });
+    tail = work.catch(() => {});
+    return work;
+  };
+  const flush = (state: ReplyState): Promise<void> => {
+    if (closed) return closing ?? tail;
+    if (!pending && canonicalReplyData(state) === preserved) return tail;
+    return enqueue(state).catch(error => { if (!recovered(error)) throw error; });
+  };
+  return {
+    save(state: ReplyState) { return closed ? Promise.resolve() : enqueue(state); },
+    flush,
+    close(state: ReplyState) {
+      if (closing) return closing;
+      closing = flush(state); // Enqueue before fencing later renderer callbacks.
+      closed = true;
+      return closing;
+    },
+    status: () => ({ pending, completed, preserved, closed }),
+  };
+}
+
+type DraftIO = { read(): Promise<MarginDraft | undefined>; write(value: MarginDraft | undefined): Promise<void> };
+function createDraftBuffer(io: DraftIO, source: SourceCapture) {
+  let value: MarginDraft | undefined, known = false, generation = 0, dirty = false;
+  let tail: Promise<void> = Promise.resolve(), pending = 0;
+  const save = (next: MarginDraft | undefined) => {
+    const snapshot = structuredClone(next), revision = ++generation, writer = io.write;
+    value = snapshot; known = true; dirty = true; pending++;
+    const work = tail.then(async () => {
+      try { await writer(structuredClone(snapshot)); if (revision === generation) dirty = false; }
+      finally { pending--; }
+    });
+    tail = work.catch(() => {});
+    return work;
+  };
+  return {
+    source: structuredClone(source),
+    bind(next: DraftIO) { io = next; },
+    async load() {
+      if (!known) {
+        const revision = generation, saved = await io.read();
+        if (revision === generation && !known) { value = structuredClone(saved); known = true; }
+      }
+      return structuredClone(value);
+    },
+    get: () => structuredClone(value),
+    unsaved: () => dirty,
+    save,
+    flush() { return dirty || pending ? save(value) : tail; },
+  };
+}
+const draftBuffers = new Map<string, { namespace: string; key: string; buffer: ReturnType<typeof createDraftBuffer> }>();
+export function documentDraft(namespace: string, key: string, source: SourceCapture, io: DraftIO) {
+  const identity = JSON.stringify([namespace, key, source.url]);
+  const existing = draftBuffers.get(identity);
+  if (existing) { existing.buffer.bind(io); return existing.buffer; }
+  const buffer = createDraftBuffer(io, source);
+  draftBuffers.set(identity, { namespace, key, buffer });
+  return buffer;
+}
+export function unsavedDrafts(namespace: string, sourceUrl: string) {
+  return [...draftBuffers.values()].filter(entry => entry.namespace === namespace && entry.buffer.source.url === sourceUrl && entry.buffer.unsaved())
+    .map(entry => ({ key: entry.key, source: structuredClone(entry.buffer.get()?.source ?? entry.buffer.source), draft: entry.buffer.get() ?? null, durable: false as const }));
+}
+
+/** Orphan keeps carry source identity even when their Thread was never saved.
+ * Infer other mutations only from an unambiguous recorded association, never from the current page. */
+export function sourceBoundJournal(state: JournalState, sourceUrl: string) {
+  const sources = new Map<string, Set<string>>();
+  const associate = (id: string, url: string) => { const values = sources.get(id) ?? new Set<string>(); values.add(url); sources.set(id, values); };
+  for (const thread of state.threads) associate(thread.id, thread.sourceUrl);
+  const changes = [...state.pending, ...state.conflicts.map(item => item.change),
+    ...(state.resolutions ?? []).flatMap(item => item.replacement ? [item.change, item.replacement] : [item.change])];
+  for (const change of changes) if (change.kind === 'keep') associate(change.threadId, change.capture.url);
+  const belongs = (change: ReaderMutation) => change.kind === 'keep' ? change.capture.url === sourceUrl :
+    sources.get(change.threadId)?.size === 1 && sources.get(change.threadId)!.has(sourceUrl);
+  const resolutions = (state.resolutions ?? []).filter(item => belongs(item.change) && (!item.replacement || belongs(item.replacement)));
+  return structuredClone({ threads: state.threads.filter(thread => thread.sourceUrl === sourceUrl),
+    pending: state.pending.filter(belongs), conflicts: state.conflicts.filter(item => belongs(item.change)), resolutions });
 }
 
 /** Only used inside the trusted local page or extension-origin margin. */
@@ -222,5 +367,31 @@ export function localPersistence(name = 'marginalia-reader') {
     },
     unsaved(threadId: string) { return [...unsavedReplyViews.values()].filter(item => item.namespace === name && item.record.version.threadId === threadId).map(item => structuredClone(item)); },
   };
-  return { read, write, journal, replies };
+  const library = {
+    async restore(origin: string, thread: Thread, send: (change: ReaderMutation) => Promise<void>, list: () => Promise<Thread[]>): Promise<Thread> {
+      const key = 'library-restore:' + JSON.stringify([origin, thread.id]);
+      return withReply(key, async () => {
+        let pending = await read<ReaderMutation>(key);
+        if (!pending) {
+          if (!thread.deletedAt) throw new Error('Only a removed thread can be restored here.');
+          pending = { id: crypto.randomUUID(), kind: 'remove', threadId: thread.id, removed: false, expectedRevision: thread.revision };
+          await write(key, pending); // Stable identity before the helper side effect.
+        }
+        if (pending.kind !== 'remove' || pending.removed || pending.threadId !== thread.id) throw new Error('The saved restore request does not match this thread.');
+        try { await send(pending); }
+        catch (error) {
+          if (error instanceof Error && error.name === 'Conflict') await write(key, undefined);
+          throw error; // Transport uncertainty retains exactly this request.
+        }
+        const canonical = (await list()).find(candidate => candidate.id === thread.id);
+        if (!canonical || canonical.deletedAt || canonical.revision <= pending.expectedRevision) {
+          if (canonical && canonical.revision > pending.expectedRevision) await write(key, undefined); // Confirmed old restore was superseded; a new choice needs a fresh revision.
+          throw new Error('The helper has not confirmed a current restored thread. Reload the library before choosing another action.');
+        }
+        await write(key, undefined);
+        return canonical;
+      });
+    },
+  };
+  return { read, write, journal, replies, library };
 }
