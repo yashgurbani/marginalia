@@ -1,12 +1,13 @@
-import type { ReaderMutation, Thread } from '../contracts/reader.ts';
+import { validateReaderMutation, type ReaderMutation, type Thread } from '../contracts/reader.ts';
 
-export type JournalConflict = { change: ReaderMutation; message: string };
+export type JournalConflict = { change: ReaderMutation; message: string; disposition?: 'invalid-change' };
 export type ConflictResolution = {
   change: ReaderMutation;
   message: string;
   resolvedAt: string;
   resolution: 'accepted-remote' | 'replaced';
   replacement?: ReaderMutation;
+  disposition?: 'invalid-change';
 };
 export type MutationReceipt = { id: string; fingerprint: string };
 export type JournalState = {
@@ -119,7 +120,7 @@ export class ReaderJournal {
     const change = structuredClone(mutation);
     await this.enqueue(async () => {
       await this.ensureDurableStateInitialized();
-      assertValidMutation(change);
+      validateReaderMutation(change);
       const existingConflict = this.state.conflicts.find(({ change: existing }) => existing.id === change.id);
       if (existingConflict) {
         if (!sameMutation(existingConflict.change, change)) duplicateIdError();
@@ -167,12 +168,17 @@ export class ReaderJournal {
         if (index < 0) break;
         const change = this.state.pending[index];
         try {
+          // Recheck old durable entries before transport. A known content rejection is
+          // retained visibly; network/auth/storage failures stay pending and are retried.
+          validateReaderMutation(change);
           await send(structuredClone(change));
         } catch (error) {
-          if (!isConflict(error)) throw error;
+          const invalid = isInvalidChange(error);
+          if (!invalid && !isConflict(error)) throw error;
           const next = structuredClone(this.state);
           next.pending.splice(index, 1);
-          addConflict(next, change, asError(error).message);
+          if (invalid) addInvalidConflict(next, change, asError(error).message);
+          else addConflict(next, change, asError(error).message);
           await this.persist(next);
           continue;
         }
@@ -205,6 +211,7 @@ export class ReaderJournal {
         message: conflict.message,
         resolvedAt: new Date().toISOString(),
         resolution: 'accepted-remote',
+        ...(conflict.disposition ? { disposition: conflict.disposition } : {}),
       });
       await this.persist(next);
     });
@@ -221,6 +228,7 @@ export class ReaderJournal {
       const conflict = this.state.conflicts[conflictIndex];
 
       if (replacementChange) {
+        validateReaderMutation(replacementChange);
         if (replacementChange.id === conflict.change.id) throw new Error('A replacement needs a new change identifier.');
         if (replacementChange.threadId !== conflict.change.threadId) throw new Error('A replacement must belong to the same thread.');
         if (findKnownFingerprint(this.state, replacementChange.id)) throw new Error('A replacement needs a new change identifier.');
@@ -251,6 +259,7 @@ export class ReaderJournal {
         message: conflict.message,
         resolvedAt: new Date().toISOString(),
         resolution: replacementChange ? 'replaced' : 'accepted-remote',
+        ...(conflict.disposition ? { disposition: conflict.disposition } : {}),
         ...(replacementChange ? { replacement: structuredClone(replacementChange) } : {}),
       });
       await this.persist(next);
@@ -347,6 +356,7 @@ function normalizeState(state: JournalState): JournalState {
     const previous = conflicts.get(conflict.change.id);
     if (previous && !sameMutation(previous.change, conflict.change)) duplicateIdError();
     if (!previous) conflicts.set(conflict.change.id, conflict);
+    else if (conflict.disposition) previous.disposition = conflict.disposition;
   }
   cloned.conflicts = [...conflicts.values()];
 
@@ -388,13 +398,18 @@ function reconcileStates(durable: JournalState, local: JournalState): JournalSta
   }
 
   for (const draft of local.pending) {
-    assertValidMutation(draft);
-    addConflict(reconciled, draft, 'Local storage changed before this draft was saved. Review the current saved version before replacing it.');
+    // Matching durable intent is not newly recovered work. This also avoids resurrecting
+    // an acknowledgement/resolution. The failed-ack overlap above remains conservative.
+    if (durableIdentities.has(draft.id)) continue;
+    try {
+      validateReaderMutation(draft);
+      addConflict(reconciled, draft, 'Local storage changed before this draft was saved. Review the current saved version before replacing it.');
+    } catch (error) {
+      if (!isInvalidChange(error)) throw error;
+      addInvalidConflict(reconciled, draft, asError(error).message);
+    }
   }
-  for (const conflict of local.conflicts) {
-    assertValidMutation(conflict.change);
-    mergeConflict(reconciled, conflict);
-  }
+  for (const conflict of local.conflicts) mergeConflict(reconciled, conflict);
 
   const resolutionFingerprints = new Set((reconciled.resolutions ?? []).map(resolution => canonicalJson(resolution)));
   for (const resolution of local.resolutions ?? []) {
@@ -418,10 +433,11 @@ function reconcileStates(durable: JournalState, local: JournalState): JournalSta
 function mergeConflict(state: JournalState, conflict: JournalConflict) {
   const existing = state.conflicts.find(item => item.change.id === conflict.change.id);
   if (!existing) {
-    addConflict(state, conflict.change, conflict.message);
+    addConflict(state, conflict.change, conflict.message, conflict.disposition);
     return;
   }
   if (!sameMutation(existing.change, conflict.change)) duplicateIdError();
+  if (conflict.disposition) existing.disposition = conflict.disposition;
   if (existing.message !== conflict.message && !existing.message.includes(conflict.message)) {
     existing.message = `${existing.message}\n\nRecovered local conflict: ${conflict.message}`;
   }
@@ -496,48 +512,6 @@ class RecoverableMutationConflict extends Error {
   }
 }
 
-function assertValidMutation(mutation: ReaderMutation) {
-  const value = mutation as unknown as Record<string, unknown>;
-  if (!value || typeof value !== 'object' || !nonEmptyString(value.id) || !nonEmptyString(value.threadId)) invalidMutation();
-  if (value.kind === 'keep') {
-    const capture = value.capture as Record<string, unknown> | undefined;
-    const anchor = value.anchor as Record<string, unknown> | undefined;
-    if (!capture || typeof capture !== 'object' || !anchor || typeof anchor !== 'object' ||
-      !['url', 'title', 'pageType', 'text', 'capturedAt', 'extractionVersion'].every(key => typeof capture[key] === 'string') ||
-      !['exact', 'prefix', 'suffix'].every(key => typeof anchor[key] === 'string') ||
-      typeof anchor.start !== 'number' || !Number.isInteger(anchor.start) ||
-      typeof anchor.end !== 'number' || !Number.isInteger(anchor.end) ||
-      (anchor.kind !== undefined && !['quote', 'section', 'whole-page'].includes(String(anchor.kind))) ||
-      (value.note !== undefined && typeof value.note !== 'string')) invalidMutation();
-    return;
-  }
-  if (value.kind === 'note') {
-    if (!nonEmptyString(value.noteId) || typeof value.text !== 'string' || !validRevision(value.expectedRevision, 0)) invalidMutation();
-    return;
-  }
-  if (value.kind === 'thread-state') {
-    if (!['open', 'parked', 'done', 'archived'].includes(String(value.state)) || !validRevision(value.expectedRevision, 1)) invalidMutation();
-    return;
-  }
-  if (value.kind === 'remove') {
-    if (typeof value.removed !== 'boolean' || !validRevision(value.expectedRevision, 1)) invalidMutation();
-    return;
-  }
-  invalidMutation();
-}
-
-function nonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
-}
-
-function validRevision(value: unknown, minimum: number) {
-  return typeof value === 'number' && Number.isInteger(value) && value >= minimum;
-}
-
-function invalidMutation(): never {
-  throw new Error('This change is malformed.');
-}
-
 function mergeRemoteThreads(state: JournalState, remote: Thread[], protectedOverride?: Set<string>) {
   const protectedThreads = protectedOverride ?? new Set([
     ...state.pending.map(change => change.threadId),
@@ -552,13 +526,14 @@ function mergeRemoteThreads(state: JournalState, remote: Thread[], protectedOver
   return structuredClone(merged);
 }
 
-function addConflict(state: JournalState, change: ReaderMutation, message: string) {
+function addConflict(state: JournalState, change: ReaderMutation, message: string, disposition?: 'invalid-change') {
   const existing = state.conflicts.find(conflict => conflict.change.id === change.id);
   if (existing) {
     if (!sameMutation(existing.change, change)) throw new Error('This change identifier was already used for different content.');
+    if (disposition) existing.disposition = disposition;
     return;
   }
-  state.conflicts.push({ change: structuredClone(change), message });
+  state.conflicts.push({ change: structuredClone(change), message, ...(disposition ? { disposition } : {}) });
 }
 
 function findKnownFingerprint(state: JournalState, id: string): string | undefined {
@@ -613,4 +588,12 @@ function isConflict(error: unknown) {
 
 function asError(error: unknown) {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function addInvalidConflict(state: JournalState, change: ReaderMutation, reason: string) {
+  addConflict(state, change, `This saved change cannot be uploaded: ${reason} Your draft is kept for review.`, 'invalid-change');
+}
+function isInvalidChange(error: unknown) {
+  return error instanceof Error && (error.name === 'InvalidReaderMutation' ||
+    (error as Error & { code?: string }).code === 'INVALID_READER_MUTATION');
 }
