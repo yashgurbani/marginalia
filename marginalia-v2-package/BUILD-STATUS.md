@@ -12,6 +12,8 @@ T02 Pro commit `e979312` is integrated as `eefb8b6`. Chief inspected all five pa
 
 T18's exact Pro patch (SHA-256 `31f65ff1a2b7ee6e242546869829d61751794c1189b00d0922e34a1f2efe33e9`) is integrated as `57ad295`, after chief inspection of its ten allowed paths. The owner independently ran Node 24/TypeScript 5.9.3 checks: 13/13 including six actual Chrome scenarios, narrow typecheck and production build passed. The fix preserves unrelated DOM/focus during sample checks, avoids non-finite plot coordinates, separates unchecked authored descriptions from result headings and improves readiness copy. Full typecheck remains blocked by other tickets. Host highlighting arbitration, real sidecar delivery and complete reader flow remain open; see [verification](docs/evidence/T18-consolidated-pro-fixes-verification.md).
 
+T11's combined Pro/Sol patch `cd808dc` is integrated as `d79bc63`. Pro authored the library lifecycle correction; one dynamically routed MCP worker, runtime-verified as Sol Medium, corrected only NodeList iteration and the daemon parameter-property syntax. Chief inspected all five paths and ran the current checkout's library suite: 31/31 passed. These use a controlled DOM surface and adapters, not actual-browser acceptance. T05 entry/return wiring, complete export and sanitized diagnostics remain required.
+
 Ten ticket owners have completed or are reconciling exact-source 6Pro reviews and have submitted bounded implementation follow-ups. Pro is producing fixes and regression tests on isolated branches or patch/ZIP artifacts. Astra owners inspect those outputs; chief controls integration. The [combined Pro review](https://chatgpt.com/c/6aab9618-74b8-83eb-9518-da28543f1429) remains active against the same revision, full spec, whitepaper and both design passes. Its initial write scope is review documents only, under `docs/evidence/pro-consolidated/`.
 
 The combined reviewer has now published all six report documents; they are integrated through `3955424`. Its verdict is CHANGES NEEDED / not release-ready. [Chief reconciliation](docs/evidence/COMBINED-PRO-RECONCILIATION.md) accounts for F01–F21, current fixes and the remaining full product scope. A newly identified once-grant transaction-boundary defect is assigned jointly to T06/T13. The report preserves all 21 tickets, 71 inventory items and R1–R30; its older Windows-first evidence phrasing is explicitly superseded by the user's all-platform direction.
@@ -40,14 +42,14 @@ Integrated means committed for review, not that the full reader experience passe
 | T01 | Helper and pairing | Pro diagnostics correction integrated as 39ff68c, 9/9 focused owner checks on Node 24; T06 canonical identity wiring and live recovery remain |
 | T02 | App-server and MCP adapters | Pro continuation/not-sent correction integrated as eefb8b6; 49/49 local focused checks pass; T06 integration and real authenticated asking/recovery remain |
 | T03 | Reply contract/host authority | Integrated with samples binding; Pro contract corrections/tests active; real host records and delivery remain |
-| T04 | Extension capture/private host | Integrated with section metadata; Pro extension fixes active; hostile-page, worker recovery, port/identity and live Ask checks remain |
+| T04 | Extension capture/private host | Pro review delivered, implementation ended with Thinking failed and no artifact; accepted eight fixes reassigned to isolated Sol Medium via dynamic MCP; actual host/recovery gates remain |
 | T05 | Margin/design | Saved replies and recovery history integrated; Pro persistence/lifecycle, reading-position UI and library mount fixes active; browser/visual acceptance remains |
 | T06 | Jobs/cancellation/helper APIs | Integrated; Pro lifecycle, prepare types and continuation fixes active; shared runtime, admission and restart/cancel gates remain |
 | T07 | Store/threads/journal | Integrated through migration 4; Pro conflict/migration safety corrections active; preservation/recovery acceptance remains |
 | T08 | Contextual definition | Queued; depends on real provider, margin and consent flow |
 | T09 | Simulation | Queued; real new passage through jobs and renderer required |
 | T10 | WebMCP | Queued; typed replies and honest unsupported behavior required |
-| T11 | Library/settings | Modules integrated; Pro lifecycle/portability tests and fixes active; T05 mounts, T06 wires APIs; full export/diagnostics remain |
+| T11 | Library/settings | Pro lifecycle + two Sol MCP compatibility corrections integrated as d79bc63; 31/31 focused checks pass; T05 entry/return flow, full export and diagnostics remain |
 | T12 | Launch | Queued; fresh-machine gates, video and evidence-based listing required |
 | T13 | Consent/provider boundaries | Integrated; Pro consent hashing, policy portability and focus fixes active; actual runtime isolation remains unverified |
 | T14 | Evidence | Queued; dated claim-level support and abstention required |
