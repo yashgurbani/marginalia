@@ -1,3 +1,4 @@
+import { ProviderNotSentError } from '../../contracts/job-runner.ts';
 import type { AuditedPolicy, JobRunner, ProviderAudit, ProviderHandle, ProviderHooks, ProviderRequest } from '../../contracts/job-runner.ts';
 import type { RpcTransport } from './stdio.ts';
 import { pages } from './preflight.ts';
@@ -70,7 +71,9 @@ export class AppServerRunner implements JobRunner {
     if (this.handles.has(request.jobId)) throw new Error('attempt-already-dispatched');
     if (request.workspace !== this.audit.workspace) throw new Error('provider-process-cwd-mismatch');
     if (request.mode === 'structured-final' && !request.outputSchema) throw new Error('output-schema-required');
-    const policy = await this.hooks.authorize(request, this.audit, 'bootstrap'); checkPolicy(request, policy);
+    let policy: AuditedPolicy;
+    try { policy = await this.hooks.authorize(request, this.audit, 'bootstrap'); checkPolicy(request, policy); }
+    catch (error) { throw new ProviderNotSentError('app-server', request.jobId, error); }
     let h: ProviderHandle = { jobId: request.jobId, provider: 'app-server', workspace: request.workspace,
       policyKey: request.policyKey, auditScope: policy.auditScope, providerInstanceId: this.instanceId, mode: request.mode, model: request.model, state: 'starting', tombstone: false };
     h = await this.save(h); this.requests.set(h.jobId, request);
@@ -120,19 +123,30 @@ export class AppServerRunner implements JobRunner {
     const h = this.current(handle);
     if (h.workspace !== this.audit.workspace) throw new Error('provider-process-cwd-mismatch');
     await this.hooks.authorizeRecovery(h, this.audit);
+    if (resume && (h.state !== 'completed' || h.tombstone || !h.threadId || !h.turnId)) throw new Error('followup-requires-confirmed-completion');
     if (!h.turnId && ['failed', 'cancelled'].includes(h.state)) return h;
     if (!h.threadId || !h.turnId) return this.save({ ...h, state: 'outcome_unknown', reason: 'missing-provider-identifiers' });
     try {
       await this.rpc.request('thread/read', { threadId: h.threadId, includeTurns: false });
       const turns = await pages(this.rpc, 'thread/turns/list', { threadId: h.threadId, itemsView: 'notLoaded' });
       const turn = turns.find(turn => turn.id === h.turnId);
-      if (!turn) return this.save({ ...h, state: 'outcome_unknown', reason: 'recorded-turn-not-found' });
+      if (!turn) {
+        if (resume) throw new Error('recorded-turn-not-found');
+        return this.save({ ...h, state: 'outcome_unknown', reason: 'recorded-turn-not-found' });
+      }
       if (resume) {
+        if (turn.status !== 'completed') throw new Error('followup-requires-confirmed-completion');
         const response = await this.rpc.request('thread/resume', { threadId: h.threadId, cwd: h.workspace, approvalPolicy: 'never', excludeTurns: true });
         await this.hooks.verifyThread(h, response, this.audit);
+        // Verify the completed predecessor without rewriting its terminal host record.
+        // Reconcile cancellation that arrived during the read/load/authorization awaits.
+        return this.current(h);
       }
       return await this.observe(h, turn);
-    } catch { return this.save({ ...h, state: 'outcome_unknown', reason: 'provider-state-unavailable' }); }
+    } catch (error) {
+      if (resume) throw error; // A failed continuation check must not mutate its parent either.
+      return this.save({ ...h, state: 'outcome_unknown', reason: 'provider-state-unavailable' });
+    }
   }
   resume(h: ProviderHandle, followup?: ProviderRequest): Promise<ProviderHandle> { h = structuredClone(h); followup = followup && structuredClone(followup); return this.serial(async () => {
     const recovered = await this.recover(h, !!followup);
@@ -143,7 +157,9 @@ export class AppServerRunner implements JobRunner {
     if (this.successorByAttempt.has(recovered.jobId)) throw new Error('thread-advanced');
     const latest = await pages(this.rpc, 'thread/turns/list', { threadId: recovered.threadId, sortDirection: 'desc', itemsView: 'notLoaded' });
     if (latest[0]?.id !== recovered.turnId || latest.some(t => t.status === 'inProgress')) throw new Error('thread-advanced-or-active');
-    const policy = await this.hooks.authorize(followup, this.audit, 'dispatch'); checkPolicy(followup, policy);
+    let policy: AuditedPolicy;
+    try { policy = await this.hooks.authorize(followup, this.audit, 'dispatch'); checkPolicy(followup, policy); }
+    catch (error) { throw new ProviderNotSentError('app-server', followup.jobId, error); }
     if (followup.mode === 'structured-final' && !followup.outputSchema) throw new Error('output-schema-required');
     let next = await this.save({ ...recovered, revision: undefined, providerInstanceId: this.instanceId, auditScope: policy.auditScope, jobId: followup.jobId, mode: followup.mode, turnId: undefined,
       output: undefined, state: 'starting', reason: 'turn-dispatch-pending' });

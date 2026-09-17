@@ -29,6 +29,21 @@ export interface ProviderRequest {
   mode: 'structured-final' | 'workspace-files';
   outputSchema?: Record<string, unknown>;
 }
+/** This invocation rejected authorization before its inference-bearing RPC was called.
+ * Host-only classification: match provider/attempt and preserve durable terminal/CAS fences.
+ * Not proof that another invocation did not dispatch; never permission for automatic replay.
+ * Checkpoint/duplicate failures and post-launch uncertainty must not use this error. */
+export class ProviderNotSentError extends Error {
+  readonly code = 'provider-not-sent' as const;
+  readonly provider: ProviderKind;
+  readonly attemptId: string;
+  constructor(provider: ProviderKind, attemptId: string, cause: unknown) {
+    super('provider-authorization-rejected-before-inference', { cause });
+    this.name = 'ProviderNotSentError';
+    this.provider = provider;
+    this.attemptId = attemptId;
+  }
+}
 export interface ProviderCapabilities {
   interrupt: 'turn-interrupt' | 'abandon-and-tombstone';
   recovery: 'thread-state' | 'unsupported';
