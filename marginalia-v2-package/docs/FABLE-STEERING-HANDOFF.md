@@ -1,5 +1,13 @@
 # Marginalia steering handoff — 17 September 2026
 
+## Active Pro review — 18 September 2026
+
+Fresh independent T06 review submitted once, with visible model **6 Pro**. Conversation: https://chatgpt.com/g/g-p-6aabdbd64d848191bf91223b096ffb3f-marginalia/c/6aac70c6-e44c-83eb-bdae-9645c45f5b8a . Browser confirmed “Pro thinking” and Stop answering. Do not duplicate this assignment or retry the exhausted MCP sessions below.
+
+Review base is published combined candidate `2e77f3a12163270c08df059814069c66398f3f99` on `codex/final-pro-combined-check`; accepted integration is `56c7aaf`. Pro owns only new branch `codex/pro-t06-integration-review`, if corrections are necessary. It must independently trace the T06 source and its T05/T08/T20 interactions, implement concrete corrections, run meaningful checks and deliver a verdict with exact SHAs or a base-pinned patch/ZIP. It received the 669-pass/2-skip native combined evidence and explicit limits on runtime claims. This is still running, not an acceptance verdict.
+
+After accepted T06 consolidation and push, submit the separate comprehensive assignment in `PRO-CONSOLIDATED-REVIEW-PROMPT.md` with the final GitHub SHA. That assignment remains prepared, not sent. It covers every ticket, source document, feature, merge/conflict and implementation improvement. Preserve existing source requirements and distinguish source acceptance from complete product acceptance.
+
 ## Latest accepted checkpoint and remaining review — 18 September 2026
 
 T05 merged through96eef734; receipt/canonical independent report at4a497d0. Final correction41207c4 preserves saved question key and gates retry/error status; independent closure51655d8 accepts source/history behavior and withdraws stale Q1/R1/T1 findings. Combined final-pro-combined-check includes finalT05+T06 source;669tests pass,2skip,0fail; app/extensionbuilds and extensiontypecheck pass; prior fulltypecheck passed. Historical current-source-equality proposal was correctly rejected: saved replies retain original source and navigation safely reattaches/refuses.
