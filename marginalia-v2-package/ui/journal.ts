@@ -5,7 +5,11 @@ export type ConflictResolution = {
   change: ReaderMutation;
   message: string;
   resolvedAt: string;
-  resolution: 'accepted-remote' | 'replaced';
+  resolution: 'accepted-remote' | 'replaced' | 'kept-device' | 'device-choice-recovered';
+  /** Snapshot selected locally, not a helper acknowledgement or an upload. Null preserves absence. */
+  deviceVersion?: Thread | null;
+  /** Explicitly superseded choices; references make history independent of merge order. */
+  releasesDeviceChoices?: string[];
   replacement?: ReaderMutation;
   disposition?: 'invalid-change';
 };
@@ -196,8 +200,17 @@ export class ReaderJournal {
     });
   }
 
-  /** Caller must hold the same cross-tab lock used for the reconciliation operation. */
+  /** Compatibility alias for Keep device version, never acceptance of the helper version. */
   async acceptCurrentConflict(changeId: string): Promise<void> {
+    return this.keepDeviceVersion(changeId);
+  }
+
+  /**
+   * Keep the current device thread across helper lists and reloads, without inventing an
+   * upload or changing pending work. Caller holds the shared cross-tab lock. A later
+   * explicit resolveConflict against helper state releases this local-only choice.
+   */
+  async keepDeviceVersion(changeId: string): Promise<void> {
     await this.enqueue(async () => {
       await this.ensureDurableStateInitialized();
       this.requireDurable();
@@ -210,13 +223,16 @@ export class ReaderJournal {
         change: structuredClone(conflict.change),
         message: conflict.message,
         resolvedAt: new Date().toISOString(),
-        resolution: 'accepted-remote',
+        resolution: 'kept-device',
+        deviceVersion: structuredClone(next.threads.find(thread => thread.id === conflict.change.threadId) ?? null),
+        releasesDeviceChoices: deviceChoices(next).filter(choice => choice.change.threadId === conflict.change.threadId).map(choice => choice.change.id),
         ...(conflict.disposition ? { disposition: conflict.disposition } : {}),
       });
       await this.persist(next);
     });
   }
 
+  /** Explicit helper-state/replacement selection; releases local-only protection for this thread. */
   async resolveConflict(changeId: string, remoteThreads: Thread[], replacement?: ReaderMutation) {
     const remote = structuredClone(remoteThreads);
     const replacementChange = replacement === undefined ? undefined : structuredClone(replacement);
@@ -243,7 +259,9 @@ export class ReaderJournal {
         addConflict(next, draft, 'This draft depends on an edit that changed elsewhere. Review the saved version before replacing it.');
       }
 
+      const releasedChoices = deviceChoices(next).filter(choice => choice.change.threadId === conflict.change.threadId).map(choice => choice.change.id);
       const protectedThreads = new Set([
+        ...deviceChoices(next).map(choice => choice.change.threadId),
         ...next.pending.map(change => change.threadId),
         ...next.conflicts.map(({ change }) => change.threadId),
       ]);
@@ -259,6 +277,7 @@ export class ReaderJournal {
         message: conflict.message,
         resolvedAt: new Date().toISOString(),
         resolution: replacementChange ? 'replaced' : 'accepted-remote',
+        ...(releasedChoices.length ? { releasesDeviceChoices: releasedChoices } : {}),
         ...(conflict.disposition ? { disposition: conflict.disposition } : {}),
         ...(replacementChange ? { replacement: structuredClone(replacementChange) } : {}),
       });
@@ -415,7 +434,14 @@ function reconcileStates(durable: JournalState, local: JournalState): JournalSta
   for (const resolution of local.resolutions ?? []) {
     const fingerprint = canonicalJson(resolution);
     if (!resolutionFingerprints.has(fingerprint)) {
-      (reconciled.resolutions ??= []).push(structuredClone(resolution));
+      if (resolution.resolution === 'kept-device' || resolution.releasesDeviceChoices?.length) {
+        // A choice whose save failed is not allowed to overwrite another tab's newer
+        // device state. Retain the snapshot and reopen just that decision for review.
+        const { releasesDeviceChoices: _release, ...recovered } = structuredClone(resolution);
+        (reconciled.resolutions ??= []).push({ ...recovered, resolution: 'device-choice-recovered' });
+        addConflict(reconciled, resolution.change,
+          'Your device-version decision was not saved before local storage changed elsewhere. The chosen version is kept in recovery history. Review the device version before choosing again.', resolution.disposition);
+      } else (reconciled.resolutions ??= []).push(structuredClone(resolution));
       resolutionFingerprints.add(fingerprint);
     }
   }
@@ -512,15 +538,29 @@ class RecoverableMutationConflict extends Error {
   }
 }
 
+function deviceChoices(state: JournalState): ConflictResolution[] {
+  const released = new Set((state.resolutions ?? []).flatMap(resolution => resolution.releasesDeviceChoices ?? []));
+  return (state.resolutions ?? []).filter(resolution => resolution.resolution === 'kept-device' && !released.has(resolution.change.id));
+}
+
 function mergeRemoteThreads(state: JournalState, remote: Thread[], protectedOverride?: Set<string>) {
+  const choices = deviceChoices(state);
   const protectedThreads = protectedOverride ?? new Set([
     ...state.pending.map(change => change.threadId),
     ...state.conflicts.map(({ change }) => change.threadId),
+    ...choices.map(choice => choice.change.threadId),
   ]);
   const local = new Map(state.threads.map(thread => [thread.id, thread]));
-  const merged = remote.map(thread => protectedThreads.has(thread.id) && local.has(thread.id) ? local.get(thread.id)! : thread);
+  const keptAbsent = new Set<string>();
+  for (const choice of choices) {
+    if (!protectedThreads.has(choice.change.threadId) || local.has(choice.change.threadId)) continue;
+    if (choice.deviceVersion) local.set(choice.change.threadId, choice.deviceVersion);
+    else keptAbsent.add(choice.change.threadId);
+  }
+  const merged = remote.filter(thread => !keptAbsent.has(thread.id))
+    .map(thread => protectedThreads.has(thread.id) && local.has(thread.id) ? local.get(thread.id)! : thread);
   const present = new Set(merged.map(thread => thread.id));
-  for (const thread of state.threads) {
+  for (const thread of local.values()) {
     if (protectedThreads.has(thread.id) && !present.has(thread.id)) merged.push(thread);
   }
   return structuredClone(merged);

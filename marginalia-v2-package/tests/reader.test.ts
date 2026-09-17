@@ -59,3 +59,286 @@ test('T07 F7 shared validation enforces source, section, anchor, identity and mu
   assert.doesNotThrow(() => validate({ id: 'x'.repeat(100), threadId: 'thread', kind: 'note', noteId: 'n', text: 'x'.repeat(20000), expectedRevision: Number.MAX_SAFE_INTEGER }));
   assert.doesNotThrow(() => validate({ id: 'state', threadId: 'thread', kind: 'thread-state', expectedRevision: 0, state: 'open' }));
 });
+
+// Bounded T07 continuation contracts. Native SQLite imports stay inside their tests,
+// so journal semantics remain executable when the native dependency is unavailable.
+import { ReaderJournal, type JournalState } from '../ui/journal.ts';
+import type { ReaderMutation } from '../contracts/reader.ts';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
+
+function continuationKeep(id: string): ReaderMutation {
+  return { id, threadId: id, kind: 'keep', capture: { url: `https://example.org/${id}`, title: 'Source', pageType: 'article',
+    text: 'Source text.', capturedAt: '2026-09-17T00:00:00Z', extractionVersion: 'v1' }, anchor: wholePageAnchor(), note: 'Helper version' };
+}
+async function deviceFixture() {
+  let saved: JournalState | undefined, fail = false;
+  const persistence = {
+    load: async () => structuredClone(saved),
+    save: async (value: JournalState) => {
+      if (fail) { fail = false; throw new Error('Storage full'); }
+      saved = structuredClone(value);
+    },
+  };
+  const journal = new ReaderJournal(persistence);
+  await journal.change(continuationKeep('chosen'));
+  await journal.change(continuationKeep('other'));
+  await journal.sync(async () => {}, async () => journal.state.threads);
+  const helper = structuredClone(journal.state.threads);
+  const edit: ReaderMutation = { id: 'chosen-edit', threadId: 'chosen', kind: 'note', noteId: 'chosen-note', expectedRevision: 1, text: 'Device version' };
+  await journal.change(edit);
+  await journal.sync(async () => { throw Object.assign(new Error('Helper changed'), { name: 'Conflict' }); }, async () => helper);
+  return { journal, helper, persistence, edit, fail: () => { fail = true; },
+    read: () => structuredClone(saved!), write: (value: JournalState) => { saved = structuredClone(value); } };
+}
+
+test('T07 continuation device choice survives the next helper list, reload and later device edits', async () => {
+  const { journal, helper, persistence, edit } = await deviceFixture();
+  await journal.acceptCurrentConflict(edit.id); // The unchanged T05 caller path.
+  assert.equal(journal.state.resolutions?.at(-1)?.resolution, 'kept-device');
+  assert.equal(journal.state.resolutions?.at(-1)?.deviceVersion?.notes[0].text, 'Device version');
+  assert.deepEqual(journal.state.pending, [], 'keeping locally must not invent an upload');
+  let sent = 0;
+  await journal.sync(async () => { sent++; }, async () => helper);
+  const reopened = new ReaderJournal(persistence);
+  await reopened.load();
+  await reopened.sync(async () => { sent++; }, async () => helper);
+  assert.equal(reopened.state.threads.find(t => t.id === 'chosen')?.notes[0].text, 'Device version');
+  assert.equal(sent, 0);
+  await reopened.change({ ...edit, id: 'later-edit', expectedRevision: 2, text: 'Later device version' });
+  await reopened.sync(async () => { sent++; }, async () => helper);
+  assert.equal(reopened.state.threads.find(t => t.id === 'chosen')?.notes[0].text, 'Later device version');
+  assert.equal(reopened.state.resolutions?.[0].deviceVersion?.notes[0].text, 'Device version', 'history is immutable, not the current working copy');
+  assert.equal(sent, 1);
+  await reopened.sync(async () => { sent++; }, async () => []);
+  assert.equal(reopened.state.threads.find(t => t.id === 'chosen')?.notes[0].text, 'Later device version');
+});
+
+test('T07 continuation device choice preserves same-thread pending intent and other conflicts', async () => {
+  const { journal, helper, persistence, edit } = await deviceFixture();
+  await journal.change({ id: 'park-chosen', threadId: 'chosen', kind: 'thread-state', expectedRevision: 2, state: 'parked' });
+  await assert.rejects(journal.change({ id: 'other-conflict', threadId: 'other', kind: 'note', noteId: 'other-note', expectedRevision: 0, text: 'Other retained draft' }));
+  await journal.change(continuationKeep('unrelated'));
+  const pending = structuredClone(journal.state.pending), otherConflict = structuredClone(journal.state.conflicts[1]);
+  await journal.keepDeviceVersion(edit.id);
+  assert.deepEqual(journal.state.pending, pending);
+  assert.deepEqual(journal.state.conflicts, [otherConflict]);
+  const reopened = new ReaderJournal(persistence), sent: string[] = [];
+  await reopened.sync(async change => { sent.push(change.id); }, async () => helper);
+  assert.deepEqual(sent, ['park-chosen', 'unrelated']);
+  assert.deepEqual(reopened.state.conflicts, [otherConflict]);
+  assert.equal(reopened.state.threads.find(t => t.id === 'chosen')?.state, 'parked');
+  assert.equal(reopened.state.threads.find(t => t.id === 'chosen')?.notes[0].text, 'Device version');
+  assert.equal(reopened.state.pending.length, 0);
+});
+
+test('T07 continuation device choice persistence failure blocks sync until explicit durable retry', async () => {
+  const fixture = await deviceFixture();
+  const before = fixture.read();
+  fixture.fail();
+  await assert.rejects(fixture.journal.keepDeviceVersion(fixture.edit.id), /Storage full/);
+  assert.deepEqual(fixture.read(), before, 'the last successful physical save is unchanged');
+  assert.equal(fixture.journal.unsaved, true);
+  assert.equal(fixture.journal.state.resolutions?.at(-1)?.resolution, 'kept-device');
+  let sent = 0, listed = 0;
+  await assert.rejects(fixture.journal.sync(async () => { sent++; }, async () => { listed++; return fixture.helper; }), /not durable/);
+  assert.deepEqual([sent, listed], [0, 0]);
+  await fixture.journal.retryPersistence();
+  const reopened = new ReaderJournal(fixture.persistence);
+  await reopened.sync(async () => { sent++; }, async () => fixture.helper);
+  assert.equal(reopened.state.threads[0].notes[0].text, 'Device version');
+  assert.equal(reopened.unsaved, false);
+});
+
+test('T07 continuation device absence and explicit helper acceptance are distinct durable decisions', async () => {
+  const fixture = await deviceFixture();
+  const absent = fixture.read();
+  absent.threads = absent.threads.filter(t => t.id !== 'chosen');
+  fixture.write(absent);
+  const journal = new ReaderJournal(fixture.persistence);
+  await journal.keepDeviceVersion(fixture.edit.id);
+  await journal.sync(async () => assert.fail('No upload was chosen'), async () => fixture.helper);
+  assert.equal(journal.state.resolutions?.at(-1)?.deviceVersion, null);
+  assert.equal(journal.state.threads.some(t => t.id === 'chosen'), false);
+  const reopened = new ReaderJournal(fixture.persistence);
+  await reopened.load();
+  await assert.rejects(reopened.change({ ...fixture.edit, id: 'review-again' }), /draft was kept/);
+  await reopened.resolveConflict('review-again', fixture.helper);
+  await reopened.sync(async () => {}, async () => fixture.helper);
+  assert.equal(reopened.state.threads.find(t => t.id === 'chosen')?.notes[0].text, 'Helper version');
+  assert.equal(reopened.state.resolutions?.at(-1)?.resolution, 'accepted-remote');
+  assert.deepEqual(reopened.state.resolutions?.at(-1)?.releasesDeviceChoices, [fixture.edit.id]);
+});
+
+test('T07 continuation device failed choice is recoverable without overwriting another tabs saved version', async () => {
+  const fixture = await deviceFixture();
+  fixture.fail();
+  await assert.rejects(fixture.journal.keepDeviceVersion(fixture.edit.id), /Storage full/);
+  const other = new ReaderJournal(fixture.persistence);
+  await other.load();
+  await other.resolveConflict(fixture.edit.id, fixture.helper);
+  await fixture.journal.reconcilePersistence();
+  assert.equal(fixture.journal.state.threads.find(t => t.id === 'chosen')?.notes[0].text, 'Helper version');
+  const recovered = fixture.journal.state.resolutions?.find(r => r.resolution === 'device-choice-recovered');
+  assert.equal(recovered?.deviceVersion?.notes[0].text, 'Device version');
+  assert.equal(fixture.journal.state.conflicts[0].change.id, fixture.edit.id);
+  assert.match(fixture.journal.state.conflicts[0].message, /decision was not saved/);
+  const reopened = new ReaderJournal(fixture.persistence);
+  await reopened.load();
+  assert.deepEqual(reopened.state.resolutions, fixture.journal.state.resolutions);
+});
+
+test('T07 continuation device releases only the explicitly selected thread and does not relabel legacy history', async () => {
+  const fixture = await deviceFixture();
+  await fixture.journal.keepDeviceVersion(fixture.edit.id);
+  await fixture.journal.change({ ...fixture.edit, id: 'other-edit', threadId: 'other', noteId: 'other-note', text: 'Other device version' });
+  await fixture.journal.sync(async () => { throw Object.assign(new Error('Changed'), { name: 'Conflict' }); }, async () => fixture.helper);
+  await fixture.journal.keepDeviceVersion('other-edit');
+  await assert.rejects(fixture.journal.change({ ...fixture.edit, id: 'release-chosen', expectedRevision: 0 }));
+  await fixture.journal.resolveConflict('release-chosen', fixture.helper);
+  await fixture.journal.sync(async () => {}, async () => fixture.helper);
+  assert.equal(fixture.journal.state.threads.find(t => t.id === 'chosen')?.notes[0].text, 'Helper version');
+  assert.equal(fixture.journal.state.threads.find(t => t.id === 'other')?.notes[0].text, 'Other device version');
+  const legacy = fixture.read();
+  legacy.resolutions = [{ change: fixture.edit, message: 'Legacy decision', resolvedAt: '2026-09-17T00:00:00Z', resolution: 'accepted-remote' }];
+  fixture.write(legacy);
+  const reopened = new ReaderJournal(fixture.persistence);
+  await reopened.sync(async () => {}, async () => fixture.helper);
+  assert.equal(reopened.state.resolutions?.[0].resolution, 'accepted-remote');
+  assert.deepEqual(reopened.state.threads, fixture.helper);
+});
+
+// On-disk tests use only a new temporary directory and SQLite-created snapshots.
+async function migrationFixture(run: (context: {
+  ReaderStore: typeof import('../daemon/store.ts').ReaderStore;
+  Database: typeof import('better-sqlite3').default;
+  filename: string; root: string; directory: string;
+}) => void) {
+  const { ReaderStore } = await import('../daemon/store.ts');
+  const { default: Database } = await import('better-sqlite3');
+  const directory = mkdtempSync(join(tmpdir(), 'marginalia-t07-upgrade-'));
+  const filename = join(directory, "readers work's.sqlite");
+  try { run({ ReaderStore, Database, filename, root: `${filename}.backups`, directory }); }
+  finally { rmSync(directory, { recursive: true, force: true }); }
+}
+function backups(root: string, prefix: string) {
+  return existsSync(root) ? readdirSync(root).filter(name => name.startsWith(prefix)).sort().map(name => join(root, name)) : [];
+}
+const sha256File = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
+
+test('T07 continuation SQLite rejects unknown markers before writes or backups', async () => {
+  await migrationFixture(({ ReaderStore, Database, filename, root }) => {
+    for (const marker of ['INSERT INTO migrations VALUES(5)', 'INSERT INTO migrations VALUES(7002)', 'PRAGMA user_version=1', 'PRAGMA application_id=42', 'ALTER TABLE migrations ADD COLUMN future TEXT', 'DROP TABLE migrations']) {
+      if (existsSync(filename)) rmSync(filename);
+      new ReaderStore(filename).close();
+      const setup = new Database(filename);
+      setup.pragma('journal_mode = DELETE');
+      setup.exec(marker); setup.close();
+      const before = readFileSync(filename);
+      assert.throws(() => new ReaderStore(filename), { name: 'UnsupportedReaderSchema' });
+      assert.deepEqual(readFileSync(filename), before);
+      assert.equal(existsSync(root), false);
+    }
+  });
+});
+
+test('T07 continuation SQLite backup includes committed WAL data and predates the atomic upgrade', async () => {
+  await migrationFixture(({ ReaderStore, Database, filename, root }) => {
+    const seed = new ReaderStore(filename); seed.apply(continuationKeep('source')); seed.close();
+    const writer = new Database(filename);
+    try {
+      writer.pragma('wal_autocheckpoint = 0');
+      writer.exec('DELETE FROM migrations WHERE version=7001; DROP INDEX source_versions_material_identity; INSERT OR IGNORE INTO migrations VALUES(3),(13)');
+      writer.prepare('INSERT INTO settings VALUES(?,?)').run('wal-proof', 'committed before snapshot');
+      const before = writer.prepare('SELECT * FROM source_versions').all();
+      const migrated = new ReaderStore(filename);
+      try {
+        assert.equal(migrated.db.prepare('SELECT version FROM migrations WHERE version=7001').get() !== undefined, true);
+        assert.deepEqual(migrated.db.prepare('SELECT * FROM source_versions').all(), before);
+        assert.deepEqual(migrated.db.prepare('PRAGMA foreign_key_check').all(), []);
+      } finally { migrated.close(); }
+      const routine = backups(root, 'routine-');
+      assert.equal(routine.length, 1); assert.deepEqual(backups(root, 'recovery-'), []);
+      const snapshot = join(routine[0], 'reader.sqlite'), manifest = JSON.parse(readFileSync(join(routine[0], 'verified.json'), 'utf8'));
+      assert.equal(sha256File(snapshot), manifest.sha256);
+      const check = new Database(snapshot, { readonly: true, fileMustExist: true });
+      try {
+        assert.deepEqual(check.prepare('PRAGMA integrity_check').all(), [{ integrity_check: 'ok' }]);
+        assert.equal(check.prepare('SELECT version FROM migrations WHERE version=7001').get(), undefined);
+        assert.deepEqual(check.prepare('SELECT value FROM settings WHERE key=?').get('wal-proof'), { value: 'committed before snapshot' });
+        assert.deepEqual(check.prepare('SELECT * FROM source_versions').all(), before);
+      } finally { check.close(); }
+      new ReaderStore(filename).close();
+      assert.equal(backups(root, 'routine-').length, 1, 'opening an already-current schema does not back up again');
+    } finally { writer.close(); }
+  });
+});
+
+test('T07 continuation SQLite retains two routine backups and protects failure recovery until explicitly resolved', async () => {
+  await migrationFixture(({ ReaderStore, Database, filename, root }) => {
+    const seed = new ReaderStore(filename); seed.apply(continuationKeep('source')); seed.close();
+    const setup = new Database(filename);
+    setup.exec(`DELETE FROM migrations WHERE version=7001; DROP INDEX source_versions_material_identity;
+      CREATE TRIGGER fail_upgrade BEFORE INSERT ON migrations WHEN NEW.version=7001 BEGIN SELECT RAISE(ABORT,'migration interrupted'); END;`);
+    setup.close();
+    let protectedPath = '';
+    assert.throws(() => new ReaderStore(filename), (error: unknown) => {
+      const failure = error as Error & { backupPath: string; backupVerified: boolean };
+      assert.equal(failure.name, 'ReaderMigration'); assert.equal(failure.backupVerified, true);
+      protectedPath = failure.backupPath; return true;
+    });
+    const failed = new Database(filename);
+    assert.equal(failed.prepare('SELECT version FROM migrations WHERE version=7001').get(), undefined);
+    assert.equal(failed.prepare("SELECT name FROM sqlite_master WHERE name='source_versions_material_identity'").get(), undefined);
+    assert.equal((failed.prepare('SELECT count(*) AS n FROM threads').get() as { n: number }).n, 1);
+    failed.exec('DROP TRIGGER fail_upgrade'); failed.close();
+    const protectedDigest = sha256File(join(protectedPath, 'reader.sqlite'));
+    for (let i = 0; i < 4; i++) {
+      const writer = new Database(filename);
+      writer.exec('DELETE FROM migrations WHERE version=7001; DROP INDEX IF EXISTS source_versions_material_identity');
+      writer.prepare('INSERT OR REPLACE INTO settings VALUES(?,?)').run('generation', String(i)); writer.close();
+      new ReaderStore(filename).close();
+      assert.ok(backups(root, 'routine-').length <= 2);
+      assert.ok(existsSync(protectedPath));
+      assert.equal(sha256File(join(protectedPath, 'reader.sqlite')), protectedDigest);
+    }
+    assert.equal(backups(root, 'routine-').length, 2);
+    const generations = backups(root, 'routine-').map(directory => {
+      const check = new Database(join(directory, 'reader.sqlite'), { readonly: true });
+      try { return (check.prepare('SELECT value FROM settings WHERE key=?').get('generation') as { value: string }).value; }
+      finally { check.close(); }
+    }).sort();
+    assert.deepEqual(generations, ['2', '3']);
+    const resolved = ReaderStore.resolveRecoveryBackup(filename, basename(protectedPath));
+    assert.equal(existsSync(protectedPath), false); assert.ok(existsSync(resolved));
+    assert.equal(backups(root, 'routine-').length, 2);
+    assert.equal(backups(root, 'recovery-').length, 0);
+  });
+});
+
+test('T07 continuation SQLite backup failure refuses upgrade and unverified recovery is never rotated away', async () => {
+  await migrationFixture(({ ReaderStore, Database, filename, root }) => {
+    new ReaderStore(filename).close();
+    const setup = new Database(filename);
+    setup.exec('DELETE FROM migrations WHERE version=7001; DROP INDEX source_versions_material_identity'); setup.close();
+    writeFileSync(root, 'occupied backup location');
+    assert.throws(() => new ReaderStore(filename));
+    const check = new Database(filename, { readonly: true });
+    try { assert.equal(check.prepare('SELECT version FROM migrations WHERE version=7001').get(), undefined); }
+    finally { check.close(); }
+    rmSync(root); mkdirSync(root);
+    const protectedName = 'recovery-1-00000000-0000-0000-0000-000000000000', protectedPath = join(root, protectedName);
+    mkdirSync(protectedPath); writeFileSync(join(protectedPath, 'reader.sqlite'), 'interrupted, unverified snapshot');
+    new ReaderStore(filename).close();
+    assert.equal(readFileSync(join(protectedPath, 'reader.sqlite'), 'utf8'), 'interrupted, unverified snapshot');
+    assert.throws(() => ReaderStore.resolveRecoveryBackup(filename, protectedName));
+    assert.ok(existsSync(protectedPath));
+    assert.throws(() => ReaderStore.resolveRecoveryBackup(filename, '../outside'));
+    const memory = new ReaderStore(':memory:');
+    try { assert.equal(memory.db.memory, true); assert.throws(() => ReaderStore.resolveRecoveryBackup(':memory:', protectedName)); }
+    finally { memory.close(); }
+    assert.equal(backups(root, 'routine-').length, 1);
+  });
+});
