@@ -2,6 +2,17 @@
 
 This is the current coordination entry point. It supersedes older active-owner tables and the earlier Pro-access blocker in `CLAUDE-STEERING-HANDOFF.md`. Codex is still coordinating: the user subsequently asked it to resume implementation. Do not start a second chief or duplicate these workers without an explicit handover. Read [the whole-project stocktake](PROJECT-CONSOLIDATION-REVIEW.md) for all-ticket direction, integration order and drift risks.
 
+## Current handoff — T20 merged; final T05/T06 artifacts needed
+
+Integration product head is 4466e32. T20 review closure d2a67b5 accepts the bounded module after a8a3a34 corrections. All tested production paths match combined candidate be69eae: 550 tests passed, one existing skip, full typecheck passed. T05 and T06 final Pro responses have been read; neither final artifact is yet integrated. Their browser download controls did not yield accessible files. The user has a pending request for local ZIP paths. Preserve both isolated final-consolidation worktrees and do not restart Pro. Details, hashes and next steps are in PRO-FINAL-DELIVERIES.md. The following checkpoint is historical.
+
+## Latest consolidation checkpoint — T08 accepted, T20 correction underway
+
+This section supersedes the historical owner and SHA tables below. Integration is `1859681`, with T08 source merged through `8a08853`. All four Luna regression slices, the capture correction, and the corrected Evidence/Explore modules are already integrated. T08's reviewed plan stays visible during work and its connection labels are readable; fresh integrated 56 asking tests and full typecheck pass. T05 mounting and T06 live provider/runtime composition still need acceptance.
+
+T20 Opus source `fda8dba` has an independent Luna Max review committed at `3bdbe7c` on `codex/opus5-t20-host-adapters`. It found two merge blockers: the adapter accepts a historical non-producing attempt, and releaseClaim has no explicit confirmation of claim removal. Sol Medium through dynamic MCP is correcting these on the same isolated branch, with focused retry/identity regressions. Do not duplicate this worker or merge the unchecked source. The combined pre-correction candidate passed 208 asking/solver tests and typecheck; that does not close the review findings.
+
+The T20 module remains unmounted. Committed artifact bindings, a durable non-egress execution gate, observed confinement evidence and real reader/runtime verification remain separate integration work. Local recompute must not consume another cloud grant or invoke a model. See `CONSOLIDATION-CHECKPOINT.md` for chronological receipts. Preserve existing Pro T05/T06 ownership; this consolidation pass has not polled or restarted those chats.
 ## Repository and source authority
 
 - Repository: https://github.com/yashgurbani/marginalia. Integration: `codex/marginalia-v2`; last product checkpoint `dc0f963684fa616599cbe67ff183eebe6058ba7d`, documentation checkpoint `51e2473f5d26dd3a7e63d6823c9a89528b9d6ad3` before this handoff.
