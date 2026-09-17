@@ -93,4 +93,10 @@
   --m-s1: 4px; --m-s2: 8px; --m-s3: 12px; --m-s4: 16px; --m-s5: 24px; --m-s6: 32px;
   --m-radius: 6px;       /* reply card, ask card, floating panel */
   --m-radius-s: 4px;     /* inputs, buttons */
+  --m-indent: 16px;      /* replies beneath notes */
+  --m-target: 28px;      /* min interactive height (>= 24px) */
+  --m-ease: cubic-bezier(0.16, 1, 0.3, 1);   /* ease-out-expo */
+  --m-fast: 150ms; --m-base: 200ms; --m-slow: 250ms;
+  --m-z-base: 0; --m-z-rail: 10; --m-z-dock: 20; --m-z-card: 30; --m-z-popover: 40; --m-z-toast: 50; --m-z-float: 60;
 }
+

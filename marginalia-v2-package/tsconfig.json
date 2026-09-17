@@ -7,9 +7,23 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
-    "lib": ["ES2023", "DOM"],
-    "types": ["node"],
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "types": [
+      "node"
+    ],
     "skipLibCheck": true
   },
-  "include": ["contracts/**/*.ts", "daemon/**/*.ts", "kernel/**/*.ts", "tests/**/*.ts", "fixtures/**/*.ts"]
+  "include": [
+    "contracts/**/*.ts",
+    "daemon/**/*.ts",
+    "kernel/**/*.ts",
+    "tests/**/*.ts",
+    "fixtures/**/*.ts",
+    "ui/**/*.ts",
+    "webapp/**/*.ts",
+    "renderer/**/*.ts"
+  ]
 }
