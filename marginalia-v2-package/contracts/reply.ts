@@ -72,6 +72,8 @@ export type SamplesBlock = BlockBase & {
   type: 'samples'; model: string;
   envelope: {
     axes: { name: string; min: number; max: number; count: number }[];
+    /** Values held constant when this grid was generated. Optional only for persisted v1 compatibility. */
+    fixedInputs?: Record<string, number>;
     interpolation: 'nearest' | 'linear'; errorEvidence: string;
     forbiddenRegions: { expression: string; reason: string }[];
   };
@@ -371,8 +373,19 @@ function validateSamples(block: Record<string, unknown>, path: string, parameter
   keys(block, ['id', 'type', 'model', 'envelope', 'samples'], path, errors); idValue(block.model, `${path}.model`, errors);
   const axes: string[] = [];
   if (objectValue(block.envelope, `${path}.envelope`, errors)) {
-    const envelope = block.envelope; keys(envelope, ['axes', 'interpolation', 'errorEvidence', 'forbiddenRegions'], `${path}.envelope`, errors);
-    if (arrayValue(envelope.axes, `${path}.envelope.axes`, errors, 6) && envelope.axes.length > 0) envelope.axes.forEach((axis, n) => { const p = `${path}.envelope.axes[${n}]`; if (!objectValue(axis, p, errors)) return; keys(axis, ['name', 'min', 'max', 'count'], p, errors); if (idValue(axis.name, `${p}.name`, errors)) { axes.push(axis.name); if (!parameterNames.includes(axis.name)) errors.push(`${p}.name: unknown parameter.`); } const min = finite(axis.min, `${p}.min`, errors); const max = finite(axis.max, `${p}.max`, errors); if (min && max && (axis.min as number) >= (axis.max as number)) errors.push(`${p}: min must be below max.`); if (!finite(axis.count, `${p}.count`, errors, 2, 200) || !Number.isInteger(axis.count)) errors.push(`${p}.count: expected an integer.`); });
+    const envelope = block.envelope; keys(envelope, ['axes', 'fixedInputs', 'interpolation', 'errorEvidence', 'forbiddenRegions'], `${path}.envelope`, errors, ['axes', 'interpolation', 'errorEvidence', 'forbiddenRegions']);
+    if (arrayValue(envelope.axes, `${path}.envelope.axes`, errors, 6) && envelope.axes.length > 0) envelope.axes.forEach((axis, n) => { const p = `${path}.envelope.axes[${n}]`; if (!objectValue(axis, p, errors)) return; keys(axis, ['name', 'min', 'max', 'count'], p, errors); if (idValue(axis.name, `${p}.name`, errors)) { if (axes.includes(axis.name)) errors.push(`${p}.name: duplicate sample axis.`); axes.push(axis.name); if (!parameterNames.includes(axis.name)) errors.push(`${p}.name: unknown parameter.`); } const min = finite(axis.min, `${p}.min`, errors); const max = finite(axis.max, `${p}.max`, errors); if (min && max && (axis.min as number) >= (axis.max as number)) errors.push(`${p}: min must be below max.`); if (!finite(axis.count, `${p}.count`, errors, 2, 200) || !Number.isInteger(axis.count)) errors.push(`${p}.count: expected an integer.`); });
+    if (Object.hasOwn(envelope, 'fixedInputs') && objectValue(envelope.fixedInputs, `${path}.envelope.fixedInputs`, errors)) {
+      const fixedNames = Object.keys(envelope.fixedInputs);
+      if (fixedNames.length > REPLY_LIMITS.parameters) errors.push(`${path}.envelope.fixedInputs: object exceeds ${REPLY_LIMITS.parameters} entries.`);
+      for (const [name, value] of Object.entries(envelope.fixedInputs)) {
+        if (!identifier.test(name)) errors.push(`${path}.envelope.fixedInputs.${name}: invalid name.`);
+        if (!parameterNames.includes(name)) errors.push(`${path}.envelope.fixedInputs.${name}: unknown parameter.`);
+        if (axes.includes(name)) errors.push(`${path}.envelope.fixedInputs.${name}: fixed inputs and axes must be disjoint.`);
+        finite(value, `${path}.envelope.fixedInputs.${name}`, errors);
+      }
+      for (const parameter of parameterNames) if (!axes.includes(parameter) && !Object.hasOwn(envelope.fixedInputs, parameter)) errors.push(`${path}.envelope.fixedInputs.${parameter}: every non-axis parameter requires its generation value.`);
+    }
     if (envelope.interpolation !== 'nearest' && envelope.interpolation !== 'linear') errors.push(`${path}.envelope.interpolation: invalid interpolation method.`);
     stringValue(envelope.errorEvidence, `${path}.envelope.errorEvidence`, errors, { max: 4096, safeText: true });
     if (arrayValue(envelope.forbiddenRegions, `${path}.envelope.forbiddenRegions`, errors, 32)) envelope.forbiddenRegions.forEach((region, n) => { const p = `${path}.envelope.forbiddenRegions[${n}]`; if (!objectValue(region, p, errors)) return; keys(region, ['expression', 'reason'], p, errors); validateExpression(region.expression, axes, `${p}.expression`, errors); stringValue(region.reason, `${p}.reason`, errors, { max: 1024, safeText: true }); });
@@ -429,6 +442,7 @@ export function validateReply(input: unknown, context: ValidationContext): Valid
     if (cap && context.capabilities && !context.capabilities.includes(cap)) errors.push(`${path}: capability ${cap} is unavailable.`);
     if ('from' in block && !blockIds.has(block.from)) errors.push(`${path}.from: unknown block reference.`);
     if ('model' in block && typeof block.model === 'string' && !blockIds.has(block.model)) errors.push(`${path}.model: unknown model reference.`);
+    if (block.type === 'samples' && blocks.find((candidate) => candidate.id === block.model)?.type !== 'model') errors.push(`${path}.model: expected a model block reference.`);
     if (block.type === 'compare') for (const [v, variant] of block.variants.entries()) for (const [b, reference] of variant.blocks.entries()) if (!blockIds.has(reference) || reference === block.id) errors.push(`${path}.variants[${v}].blocks[${b}]: invalid block reference.`);
     if (block.type === 'solver') for (const [b, reference] of block.outputBlocks.entries()) if (!blockIds.has(reference) || reference === block.id) errors.push(`${path}.outputBlocks[${b}]: invalid block reference.`);
     if (block.type === 'classification' && block.check && !checkIds.has(block.check)) errors.push(`${path}.check: unknown requested check.`);
