@@ -31,8 +31,9 @@ export function projectPage() {
     root.append(document.createTextNode(value)); size += value.length;
   }
   const starts = Array.from(document.querySelectorAll('h1,h2,h3')).filter(safeNode).slice(0, 299).flatMap(heading => {
-    const title = (heading.textContent ?? '').trim().slice(0, 200);
-    const first = nodes.find(entry => entry.end > entry.start && heading.contains(entry.node));
+    const admitted = nodes.filter(entry => entry.end > entry.start && heading.contains(entry.node));
+    const title = admitted.map(entry => entry.node.textContent ?? '').join('').trim().slice(0, 200);
+    const first = admitted[0];
     return title && first && first.start < size ? [{ title, start: first.start, heading }] : [];
   }).filter((section, index, all) => index === 0 || section.start > all[index - 1].start);
   const leading = size && (!starts.length || starts[0].start > 0) ? [{ title: 'Beginning', start: 0 }] : [];

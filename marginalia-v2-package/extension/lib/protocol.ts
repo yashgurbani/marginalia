@@ -35,8 +35,9 @@ export function validSnapshot(v: unknown): v is Snapshot {
   const c = v.capture;
   if (!allowedPage(c.url) || !text(c.title, 500) || !text(c.pageType, 80) || !text(c.text, MAX_TEXT) || !text(c.capturedAt, 40) || !Number.isFinite(Date.parse(c.capturedAt)) || c.extractionVersion !== 'dom-safe-text-v1' || v.position > c.text.length) return false;
   if (!validSections(v.sections, c.text.length, 300, 200)) return false;
-  if (c.sections !== undefined && (!validSections(c.sections, c.text.length, 2000, 1000) || c.sections.length !== v.sections.length || c.sections.some((section, index) => {
-    const outer = v.sections[index];
+  const sections = v.sections;
+  if (c.sections !== undefined && (!validSections(c.sections, c.text.length, 2000, 1000) || c.sections.length !== sections.length || c.sections.some((section, index) => {
+    const outer = sections[index];
     return section.title !== outer.title || section.start !== outer.start || section.end !== outer.end;
   }))) return false;
   return v.anchor === null || validAnchor(v.anchor, c.text);

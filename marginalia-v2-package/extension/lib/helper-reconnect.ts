@@ -1,9 +1,10 @@
 import { localPersistence } from '../../ui/persistence.ts';
 import { ReaderJournal } from '../../ui/journal.ts';
 import { HelperClient } from '../../ui/helper.ts';
+import { HELPER_ORIGIN_KEY, helperOrigin } from './helper-origin.ts';
+import { browser } from 'wxt/browser';
 
 const STORAGE = 'marginalia-extension-reader';
-const ORIGIN = 'http://127.0.0.1:43120';
 type Replay = { token: string; after: number };
 
 /** Rebuildable worker transport. Only explicit local-sync opt-in enables it.
@@ -14,12 +15,18 @@ export function helperReconnect() {
   let socket: WebSocket | undefined, connecting = false, retryAt = 0, backoff = 1000;
   let state = 'Local helper updates are off.';
   let generation = 0;
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !changes[HELPER_ORIGIN_KEY]) return;
+    ++generation; socket?.close(); socket = undefined; retryAt = 0;
+    state = 'Helper address changed. Pair again in Settings, then reconnect.';
+  });
   async function enabled() { return await persistence.read<boolean>('extension-helper-enabled') === true; }
   async function synchronize(token: string) {
+    const origin = await helperOrigin();
     await navigator.locks.request(STORAGE, async () => {
       const pairing = await persistence.read<{ origin: string; token: string }>('pairing');
-      if (!await enabled() || pairing?.origin !== ORIGIN || pairing.token !== token) throw new Error('Pair with the local helper again.');
-      const helper = new HelperClient(ORIGIN); helper.token = token;
+      if (!await enabled() || pairing?.origin !== origin || pairing.token !== token) throw new Error('Pair with the local helper again.');
+      const helper = new HelperClient(origin); helper.token = token;
       const journal = new ReaderJournal(persistence.journal); await journal.load();
       // Background replay never authorizes outbound source/note mutations. The
       // browser-owned margin's explicit Save action owns that separate boundary.
@@ -31,7 +38,7 @@ export function helperReconnect() {
     if (socket?.readyState !== WebSocket.OPEN) return;
     void (async () => {
       const pairing = await persistence.read<{ origin: string; token: string }>('pairing');
-      if (pairing?.origin === ORIGIN && await enabled()) await synchronize(pairing.token);
+      if (pairing?.origin === await helperOrigin() && await enabled()) await synchronize(pairing.token);
     })().catch(() => { state = 'Some local changes still need to be saved. Review Settings.'; });
   });
   async function wake() {
@@ -40,12 +47,13 @@ export function helperReconnect() {
     try {
       if (!await enabled()) { socket?.close(); socket = undefined; state = 'Local helper updates are off.'; return; }
       const pairing = await persistence.read<{ origin: string; token: string }>('pairing');
-      if (pairing?.origin !== ORIGIN || !/^[A-Za-z0-9_-]{43}$/.test(pairing.token)) { socket?.close(); socket = undefined; state = 'Pair in Settings before connecting saved work.'; return; }
+      const origin = await helperOrigin();
+      if (pairing?.origin !== origin || !/^[A-Za-z0-9_-]{43}$/.test(pairing.token)) { socket?.close(); socket = undefined; state = 'Pair in Settings before connecting saved work.'; return; }
       if (socket || Date.now() < retryAt) return;
       const token = pairing.token, thisGeneration = ++generation;
       const saved = await persistence.read<Replay>('extension-helper-replay');
       let after = saved?.token === token && Number.isSafeInteger(saved.after) && saved.after >= 0 ? saved.after : 0;
-      const ws = new WebSocket('ws://127.0.0.1:43120/events'); socket = ws;
+      const ws = new WebSocket(origin.replace(/^http:/, 'ws:') + '/events'); socket = ws;
       state = 'Connecting to the local helper…';
       let processing = Promise.resolve();
       ws.onopen = () => { if (thisGeneration === generation) ws.send(JSON.stringify({ token, after })); };
@@ -67,7 +75,7 @@ export function helperReconnect() {
       ws.onclose = event => {
         if (thisGeneration !== generation) return;
         socket = undefined; retryAt = Date.now() + backoff; backoff = Math.min(30000, backoff * 2);
-        if (event.code === 1008) { state = 'Pair again or reconnect to resume local updates.'; void persistence.write('extension-helper-enabled', false); }
+        if (event.code === 1008) { state = 'The helper declined this connection. Check pairing in Settings, then reconnect.'; void persistence.write('extension-helper-enabled', false); }
       };
     } catch { state = 'Local helper unavailable. Your notes remain on this device.'; }
     finally { connecting = false; }

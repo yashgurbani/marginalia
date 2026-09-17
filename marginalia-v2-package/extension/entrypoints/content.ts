@@ -1,6 +1,6 @@
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { browser } from 'wxt/browser';
-import { respondAsync } from '../lib/respond.ts';
+import { readReply, respondAsync } from '../lib/respond.ts';
 import { captureSelection, locate, type SectionMarker } from '../lib/capture.ts';
 import { allowedPage, isMessage, pageIdentity, validAnchor, type Snapshot } from '../lib/protocol.ts';
 
@@ -19,11 +19,11 @@ export default defineContentScript({
       const other = right[index];
       return section.title === other.title && section.start === other.start && section.end === other.end;
     });
-    async function permitted() { const result = await browser.runtime.sendMessage({ type: 'policy', version: 1 }); return result?.allowed === true; }
+    async function permitted() { const result = readReply(await browser.runtime.sendMessage({ type: 'policy', version: 1 })) as { allowed?: boolean }; return result?.allowed === true; }
     async function open() {
       if (host?.isConnected) return;
       host = null;
-      const response = await browser.runtime.sendMessage({ type: 'open', version: 1 });
+      const response = readReply(await browser.runtime.sendMessage({ type: 'open', version: 1 })) as { allowed?: boolean; panel?: boolean; capability?: string };
       if (!response?.allowed || response.panel || typeof response.capability !== 'string' || host) return;
       host = document.createElement('div'); host.id = 'marginalia-host-' + crypto.randomUUID();
       host.style.setProperty('all', 'initial', 'important');
@@ -44,19 +44,20 @@ export default defineContentScript({
         if (snapshot && snapshot.capture.url !== pageIdentity(location.href)) clear();
         const next = captureSelection(documentId, ++revision, true, rememberSections);
         if (!next?.anchor) return;
-        snapshot = next; dirty = false; lastProjection = Date.now(); await open();
+        snapshot = next; dirty = false; lastProjection = Date.now(); readingPosition(); await open();
       } catch (error) { console.warn('Marginalia capture unavailable:', error instanceof Error ? error.message : 'unknown'); }
       finally { busy = false; }
     }
     ctx.addEventListener(document, 'pointerup', event => { if (event.isTrusted) void select(); });
     ctx.addEventListener(document, 'keyup', event => { if (event.isTrusted && (event.key === 'Shift' || event.key.startsWith('Arrow'))) void select(); });
-    ctx.addEventListener(window, 'scroll', () => {
-      if (!snapshot || dirty) return;
+    function readingPosition() {
+      if (!snapshot) return;
       snapshot.position = 0;
       sectionMarkers.forEach(({ heading, start }) => {
         if (heading.isConnected && heading.getBoundingClientRect().top <= innerHeight * .4) snapshot!.position = start;
       });
-    }, { passive: true });
+    }
+    ctx.addEventListener(window, 'scroll', readingPosition, { passive: true });
     for (const type of ['pageshow', 'resize']) ctx.addEventListener(window, type, () => { dirty = true; });
     ctx.addEventListener(document, 'load', () => { dirty = true; }, { capture: true });
     browser.runtime.onMessage.addListener((message, sender, respond) => respondAsync(() => {
@@ -65,7 +66,7 @@ export default defineContentScript({
       if (isMessage(message, 'excluded')) { clear(); return Promise.resolve(true); }
       if (isMessage(message, 'activate')) return (async () => {
         if (!await permitted()) return;
-        snapshot = captureSelection(documentId, ++revision, false, rememberSections); dirty = false; lastProjection = Date.now();
+        snapshot = captureSelection(documentId, ++revision, false, rememberSections); dirty = false; lastProjection = Date.now(); readingPosition();
         if (!message.panel) await open();
         return true;
       })();
@@ -74,6 +75,7 @@ export default defineContentScript({
         if (dirty || Date.now() - lastProjection > 5000) {
           const fresh = captureSelection(documentId, revision, false, rememberSections); dirty = false; lastProjection = Date.now();
           if (fresh && snapshot && (fresh.capture.text !== snapshot.capture.text || !sameSections(fresh.sections, snapshot.sections))) { fresh.revision = ++revision; snapshot = fresh; }
+          readingPosition();
         }
         return snapshot;
       })();

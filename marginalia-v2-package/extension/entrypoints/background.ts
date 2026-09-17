@@ -1,8 +1,9 @@
 import { defineBackground } from 'wxt/utils/define-background';
 import { browser } from 'wxt/browser';
-import { respondAsync } from '../lib/respond.ts';
+import { readReply, respondAsync } from '../lib/respond.ts';
 import { helperReconnect } from '../lib/helper-reconnect.ts';
 import { allowedPage, isMessage, pageIdentity, validAnchor, validSnapshot } from '../lib/protocol.ts';
+import { requestCaptureIdentity } from '../lib/surface-identity.ts';
 import { attachQuote, type QuoteAnchor } from '../../contracts/reader.ts';
 
 export default defineBackground(() => {
@@ -35,7 +36,7 @@ export default defineBackground(() => {
     if (!tab.url || !await permitted(tab.url, tab.incognito)) throw new Error('This page is excluded.');
     const before = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
     if (!before?.documentId || before.documentLifecycle !== 'active' || (expectedDocument && before.documentId !== expectedDocument)) throw new Error('This page is not active.');
-    const data = await browser.tabs.sendMessage(tabId, { type: 'snapshot', version: 1 }, { documentId: before.documentId, frameId: 0 });
+    const data = readReply(await browser.tabs.sendMessage(tabId, { type: 'snapshot', version: 1 }, { documentId: before.documentId, frameId: 0 }));
     const after = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
     if (!validSnapshot(data) || before.documentId !== after?.documentId || after.documentLifecycle !== 'active' || pageIdentity(after.url) !== data.capture.url || !await permitted(after.url, tab.incognito)) throw new Error('The page changed. Select the passage again.');
     return { ...data, browserDocument: before.documentId };
@@ -51,15 +52,15 @@ export default defineBackground(() => {
       return (async () => {
         if (!await permitted(sender.url!, sender.tab?.incognito)) return { allowed: false };
         const active = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
-        if (active?.documentId !== sender.documentId || active.documentLifecycle !== 'active') return { allowed: false };
+        if (active?.documentId !== sender.documentId || active?.documentLifecycle !== 'active') return { allowed: false };
         if (await opening) return { allowed: true, panel: true };
         return navigator.locks.request('marginalia-frame:' + tabId, async () => {
           const current = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
-          if (current?.documentId !== sender.documentId || current.documentLifecycle !== 'active') return { allowed: false };
+          if (current?.documentId !== sender.documentId || current?.documentLifecycle !== 'active') return { allowed: false };
           const key = 'frame:' + tabId;
           const old = (await browser.storage.session.get(key))[key] as { capability: string; document: string; url: string; frameDocument: string | null } | undefined;
           const frames = await browser.webNavigation.getAllFrames({ tabId });
-          if (old?.document === sender.documentId && old.url === pageIdentity(sender.url!) && (!old.frameDocument || frames?.some(frame => frame.documentId === old.frameDocument && frame.documentLifecycle === 'active'))) return { allowed: true, panel: false, capability: old.capability };
+          if (old && old.document === sender.documentId && old.url === pageIdentity(sender.url!) && (!old.frameDocument || frames?.some(frame => frame.documentId === old.frameDocument && frame.documentLifecycle === 'active'))) return { allowed: true, panel: false, capability: old.capability };
           const capability = crypto.randomUUID();
           await browser.storage.session.set({ [key]: { capability, document: sender.documentId, url: pageIdentity(sender.url!), frameDocument: null } });
           return { allowed: true, panel: false, capability };
@@ -70,19 +71,23 @@ export default defineBackground(() => {
     const trustedPanel = senderPath === panelUrl || senderPath === workspaceUrl;
     if (!trustedPanel || !isMessage(message, 'surface')) return;
     return (async () => {
-      let tabId: number;
+      let tabId!: number;
       let sourceDocument: string | undefined;
       let embedded = false;
       if (senderPath === workspaceUrl) {
-        if (typeof message.workspace !== 'string' || message.workspace.length > 64 || !sender.documentId || sender.frameId !== 0 || sender.tab?.id === undefined || sender.tab.incognito) throw new Error('Open this margin from the source.');
+        if (typeof message.workspace !== 'string' || !/^[0-9a-f-]{36}$/.test(message.workspace) || sender.url !== workspaceUrl + '#workspace=' + message.workspace || !sender.documentId || sender.frameId !== 0 || sender.tab?.id === undefined || sender.tab.incognito) throw new Error('Open this margin from the source.');
         const key = 'workspace:' + message.workspace;
-        const binding = (await browser.storage.session.get(key))[key] as { tabId: number; sourceDocument: string; url: string; surfaceTab: number; surfaceDocument?: string } | undefined;
-        if (!binding || binding.surfaceTab !== sender.tab.id || (binding.surfaceDocument && binding.surfaceDocument !== sender.documentId)) throw new Error('Reopen this margin from the source.');
-        const frame = await browser.webNavigation.getFrame({ tabId: binding.tabId, frameId: 0 });
-        if (frame?.documentId !== binding.sourceDocument || frame.documentLifecycle !== 'active' || pageIdentity(frame.url) !== binding.url || !await permitted(frame.url)) throw new Error('The source changed. Reopen the margin from that page.');
-        tabId = binding.tabId;
-        sourceDocument = binding.sourceDocument;
-        if (!binding.surfaceDocument) await browser.storage.session.set({ [key]: { ...binding, surfaceDocument: sender.documentId } });
+        await navigator.locks.request(key, async () => {
+          const binding = (await browser.storage.session.get(key))[key] as { tabId: number; sourceDocument: string; url: string; surfaceTab: number; surfaceDocument?: string } | undefined;
+          if (!binding || binding.surfaceTab !== sender.tab!.id) throw new Error('Reopen this margin from the source.');
+          const surface = await browser.webNavigation.getFrame({ tabId: binding.surfaceTab, frameId: 0 });
+          if (surface?.documentId !== sender.documentId || surface?.documentLifecycle !== 'active' || surface?.url !== sender.url) throw new Error('Reopen this margin from the source.');
+          const frame = await browser.webNavigation.getFrame({ tabId: binding.tabId, frameId: 0 });
+          if (frame?.documentId !== binding.sourceDocument || frame.documentLifecycle !== 'active' || pageIdentity(frame.url) !== binding.url || !await permitted(frame.url)) throw new Error('The source changed. Reopen the margin from that page.');
+          tabId = binding.tabId;
+          sourceDocument = binding.sourceDocument;
+          if (binding.surfaceDocument !== sender.documentId) await browser.storage.session.set({ [key]: { ...binding, surfaceDocument: sender.documentId } });
+        });
       } else if (sender.tab?.id !== undefined) {
         embedded = true;
         tabId = sender.tab.id;
@@ -91,9 +96,13 @@ export default defineBackground(() => {
         sourceDocument = stored.document;
         const tab = await browser.tabs.get(tabId);
         if (!tab.url || pageIdentity(tab.url) !== stored.url || !await permitted(tab.url, tab.incognito)) throw new Error('This page is excluded or changed.');
-        // Verify the original top-level browser document, not just its URL.
-        const identity = await browser.tabs.sendMessage(tabId, { type: 'identity', version: 1 }, { documentId: stored.document, frameId: 0 });
-        if (!identity) throw new Error('Reopen the margin after navigation.');
+        // Target the stored browser document and recheck it after the content
+        // capture identity reply. The two IDs intentionally do not match.
+        await requestCaptureIdentity(
+          stored.document,
+          () => browser.webNavigation.getFrame({ tabId, frameId: 0 }),
+          async browserDocument => readReply(await browser.tabs.sendMessage(tabId, { type: 'identity', version: 1 }, { documentId: browserDocument, frameId: 0 })),
+        );
         await navigator.locks.request('marginalia-frame:' + tabId, async () => {
           const latest = (await browser.storage.session.get(key))[key] as typeof stored;
           if (!latest || latest.capability !== message.capability || latest.document !== stored.document || (latest.frameDocument && latest.frameDocument !== sender.documentId)) throw new Error('Reopen the margin.');
@@ -127,7 +136,7 @@ export default defineBackground(() => {
         const nextPolicy = [...new Set([...(Array.isArray(excludedHosts) ? excludedHosts : []), new URL(snapshot.capture.url).hostname])];
         cachePolicy(nextPolicy);
         await browser.storage.local.set({ excludedHosts: nextPolicy });
-        await browser.tabs.sendMessage(tabId, { type: 'excluded', version: 1 }, { frameId: 0 });
+        readReply(await browser.tabs.sendMessage(tabId, { type: 'excluded', version: 1 }, { frameId: 0 }));
         return { excluded: true };
       }
       if ((message.action === 'highlight' || message.action === 'scroll') && typeof message.document === 'string' && (message.anchor === null || validAnchor(message.anchor))) {
@@ -137,7 +146,7 @@ export default defineBackground(() => {
           const attachment = attachQuote(message.anchor as QuoteAnchor, snapshot.capture.text);
           if (!['exact', 'moved'].includes(attachment.state) || attachment.candidates.length !== 1) throw new Error('This passage could not be located safely on the current page.');
         }
-        await browser.tabs.sendMessage(tabId, { type: message.action, version: 1, document: snapshot.document, anchor: message.anchor }, { documentId: snapshot.browserDocument, frameId: 0 });
+        if (readReply(await browser.tabs.sendMessage(tabId, { type: message.action, version: 1, document: snapshot.document, anchor: message.anchor }, { documentId: snapshot.browserDocument, frameId: 0 })) !== true) throw new Error('The source action failed.');
         return { ok: true };
       }
       throw new Error('Unsupported margin request.');
@@ -150,7 +159,7 @@ export default defineBackground(() => {
     void permitted(tab.url!, tab.incognito).then(async allowed => {
       if (!allowed) return;
       const panel = await opening;
-      await browser.tabs.sendMessage(tabId, { type: 'activate', version: 1, panel }, { frameId: 0 });
+      readReply(await browser.tabs.sendMessage(tabId, { type: 'activate', version: 1, panel }, { frameId: 0 }));
     }).catch(() => {});
   });
   browser.tabs.onRemoved.addListener(tabId => { void navigator.locks.request('marginalia-frame:' + tabId, () => browser.storage.session.remove('frame:' + tabId)); });
