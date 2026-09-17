@@ -1,5 +1,15 @@
 # Chief consolidation checkpoint
 
+## Accepted group 2 and overall position
+
+All four Luna regression branches are now consolidated. Capture source380c51c was applied as eebf770, followed by Sol repair8daa4f5 applied as14b63c7. Chief reviewed the narrow anchor control-flow fix and reuse of existing ambient declarations. Repair removes undeclared/extraneous linkedom reliance. Fresh integration checks at14b63c7:16capture/protocol tests pass, full package typecheck exit0. Earlier T07/T11/T18 eight-test checkpoint remains valid. These are local contract regressions, not real-browser/platform acceptance.
+
+Two original Sol product tasks: Evidence053a203 remains candidate-only pending independent source acceptance; Explorebead552 requires correction. New bounded same-branch Sol correction exec22 removes transient WeakMap identity/blanket current-reading restrictions so saved/reopened valid shelves remain usable with original return context. Explicit clicking and URL validation remain. No new feature scope.
+
+T08 independent reviewer ended prematurely with a generic readiness response; its partial report was recovered and same-session continuation sent (01a0b0d8-29ed-7c62-a9bf-d7ace0405f36, exec20). Final Pro sourcea9a6a08 remains isolated until actual-interface review finishes. Known unmounted status belongs to T05 integration, not a fabricated module failure. T05 remote advanced03a7e7c; T06 last observedd8cbc32; neither running Pro task interrupted.
+
+Opus5 is actively editing solver service and new adapters/tests in its owned branch. No final report/commit yet; preserve its work. Original Opus4.8 c4a6744 and candidate124solver tests are module evidence only. Overall project still lacks accepted real reader->provider->durable reply->saved-recompute journey. Next acceptance order remains T08 module, corrected transforms, then coherent T05/T06/T20 composition. Historical branches must be classified by patch-equivalence/supersession before merging, not bulk-merged by branch count.
+
 ## Post-crash continuation
 
 T08 final response recovered visibly in Chrome and GitHub final head verified a9a6a08db8e9c09a996e1136796bf9981f23b3c6 (22files). It is merged only into codex/t08-final-integration basedc0df51f, not chief integration. Fresh Windows Node24 test53/53 and complete package typecheck pass. Independent dynamic Luna Max source/interface review running exec13, report docs/evidence/T08-asking/INDEPENDENT-INTEGRATION-REVIEW.md. Main T05/T06 Pro runs left uninterrupted per user.
