@@ -1,5 +1,11 @@
 # Chief consolidation checkpoint
 
+## Accepted group 1
+
+Chief integrated three test-only commits after reviewing their public-behavior assertions: source55e89c2 -> integration4866d65 (T07), sourcee5a1864 ->81540f8 (T11), source37bd4c4 ->68338fc (T18). Fresh checks on68338fc: eight new tests passed, zero failures/skips; full package TypeScript check exit0. User root CONTEXT.md/README.md edits preserved. No product runtime changed and no ticket is closed.
+
+The isolated candidate c1204a5 independently exercised by chief passed163focused Evidence/Explore/solver/new regression tests. This is not authority to merge all candidates. Capture typecheck implications, Explore saved/reopened shelf behavior and T20 host dependencies remain review holds. The verifier's outer exec cell disappeared before a final report was saved; preserve its assembled branch and do not represent it as an independent completed review. Opus5 launch has no final handoff yet; latest visible output is source review, with no tracked source edits. Recover its actual session state before any replacement writer.
+
 User direction: prioritize slowly consolidating all branches and chief review. No new unrelated ticket assignments. Keep accepted source intent and reader journey ahead of module volume.
 
 ## Active work
