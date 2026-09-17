@@ -33,7 +33,7 @@ Integrated means code is committed; it does not mean the full user-facing accept
 | T08 | Contextual definition | Queued | T02, T05 and T13; unseen term through real provider |
 | T09 | Simulation | Queued | T06 and T18; real new passage, not fixture-only |
 | T10 | WebMCP adapter | Queued | Stable T05 integration; typed replies and honest unsupported state |
-| T11 | Library and settings | Frozen after Pro corrections; bounded Sol Medium chief source review active | T05 mount/T06 routes/T13 permission wiring; verification deferred |
+| T11 | Library and settings | Pro corrections complete; five bounded chief-review fixes active, Sol Medium | Stale permission feedback, callback errors, restored identity, unavailable models and inert export preview; then T05 mount/T06 wiring; verification deferred |
 | T12 | Launch | Queued | Actual release gates, fresh-machine run, video and honest listing |
 | T13 | Consent and session boundaries | Pure policy integrated 3901dfe; full ticket active, Sol Medium | Durable grants/exclusions, consent UI, adapter-aware policy and retrieval; actual isolation remains unverified |
 | T14 | Evidence | Queued | T13; claim-level dated support and abstention |
