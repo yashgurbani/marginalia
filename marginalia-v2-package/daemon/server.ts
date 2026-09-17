@@ -71,19 +71,25 @@ export async function startServer(options: { database: string; port?: number; we
         // Browser same-origin GETs omit Origin. Fetch Metadata cannot be set by
         // page JavaScript, and the token must still be bound to this exact host.
         const authOrigin = requestOrigin ?? (request.method === 'GET' && request.headers['sec-fetch-site'] === 'same-origin' ? origin : undefined);
-        if (!authOrigin || !pairing.valid(tokenFrom(request), authOrigin)) return send(response, 401, { error: 'Pair with the local helper to reopen saved work.' });
+        const token = tokenFrom(request);
+        const requireCurrentPairing = () => authOrigin && pairing.valid(token, authOrigin);
+        if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to reopen saved work.' });
         if (url.pathname === '/api/revoke' && request.method === 'POST') {
-          const token = tokenFrom(request);
           pairing.revoke(token);
           for (const [ws, session] of sessions) if (session.token === token) ws.close(1008, 'Pairing revoked');
           return send(response, 200, { revoked: true });
         }
         if (url.pathname === '/api/threads' && request.method === 'GET') return send(response, 200, { threads: store.list(url.searchParams.get('url') ?? undefined, url.searchParams.get('removed') === 'true') });
-        if (url.pathname === '/api/change' && request.method === 'POST') return send(response, 200, store.apply(await body(request) as ReaderMutation));
+        if (url.pathname === '/api/change' && request.method === 'POST') {
+          const input = await body(request) as ReaderMutation;
+          if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to reopen saved work.' });
+          return send(response, 200, store.apply(input));
+        }
         if (url.pathname === '/api/reattach' && request.method === 'POST') {
           const input = await body(request);
+          if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to reopen saved work.' });
           if (typeof input.threadId !== 'string' || typeof input.text !== 'string' || input.text.length > 1000000 || typeof input.tabCapture !== 'string' || input.tabCapture.length > 100) throw new Error('Invalid page capture.');
-          return send(response, 200, store.reattach(input.threadId, input.text, input.tabCapture));
+          return send(response, 200, store.reattach(input.threadId, input.text, input.tabCapture, input.capture));
         }
         if (url.pathname === '/api/export' && request.method === 'GET') return send(response, 200, store.exportThread(url.searchParams.get('thread') ?? ''));
         if (url.pathname === '/api/events' && request.method === 'GET') {
