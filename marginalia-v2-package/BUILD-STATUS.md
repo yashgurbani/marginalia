@@ -1,10 +1,10 @@
 # Marginalia overall build report
 
-Updated 17 September 2026 after integration of 1c5a1f0. Chief task: 01a0adaf-dd71-7583-8307-b877547c9189.
+Updated 17 September 2026 after integration of 70f21a4. Chief task: 01a0adaf-dd71-7583-8307-b877547c9189.
 
 ## Current position
 
-The helper, corrected durable storage/journal, both Codex provider adapters, basic reader margin, extension capture/hosts, corrected samples contract and typed reply renderer/kernel are integrated and published through 1c5a1f0. Chief source review resolved the margin/extension anchor mismatch and two sample-binding defects. A bounded Sol Medium review found no actionable P0/P1 in the frozen renderer scope. T05 now owns real saved-reply mounting, T18 the new sample-readiness consumer, T06 durable jobs/authenticated APIs, and T13 consent/provider sessions. No end-to-end live inference or release gate is complete.
+The helper, corrected durable storage/journal, both Codex provider adapters, basic reader margin, extension capture/hosts, corrected samples contract and typed reply renderer/kernel are integrated. The samples consumer is now integrated as 70f21a4 after chief source inspection and a match against all 20 frozen file hashes. T05 owns real saved-reply mounting, T06 durable jobs/authenticated APIs, T13 consent/provider sessions, and T11 the library/settings modules. No end-to-end live inference or release gate is complete.
 
 **User direction: leave all testing for later.** New test writing, test execution and browser QA are deferred across tasks. Historical evidence below is retained only for the versions it covered. Subsequent implementation is unverified. Source review, Pro advisory, implementation and coordination continue; deferral does not turn an open gate into a pass.
 
@@ -25,7 +25,7 @@ Integrated means code is committed; it does not mean the full user-facing accept
 | T00 | Correct numerical fixture | Integrated foundation | Final rendered fixture and live flow |
 | T01 | Local helper and pairing | Integrated 302fe52 + Pro corrections e61389e | Extension lifecycle and runtime isolation remain open; final fixes untested |
 | T02 | Codex app-server + MCP adapters | Integrated 889fb27 | Real authenticated inference, T06 integration, recovery and independent runtime evidence |
-| T03 | Reply contract and host checks | Foundation plus samples binding integrated fc9a258 | Renderer readiness consumer and actual host record persistence/delivery remain |
+| T03 | Reply contract and host checks | Foundation plus samples binding integrated fc9a258; consumer integrated 70f21a4 | Actual host generation-record creation, persistence and delivery remain |
 | T04 | Extension capture and private margin host | Integrated 078d265, including chief source corrections | Final worker recovery, hostile-page, native panel and live Ask gates deferred |
 | T05 | Margin and design | Basic margin integrated aee5750; saved-reply integration active, Astra Medium | Real reply/view APIs, cross-mount persistence and lifecycle, consent/jobs/solver callbacks; verification deferred |
 | T06 | Durable jobs, cancellation and progressive replies | Active, Sol Medium | Persisted attempts, atomic cancellation/commit, authenticated routes and deferred live gates |
@@ -33,14 +33,14 @@ Integrated means code is committed; it does not mean the full user-facing accept
 | T08 | Contextual definition | Queued | T02, T05 and T13; unseen term through real provider |
 | T09 | Simulation | Queued | T06 and T18; real new passage, not fixture-only |
 | T10 | WebMCP adapter | Queued | Stable T05 integration; typed replies and honest unsupported state |
-| T11 | Library and settings | Queued; T07 foundation available | Thread browsing, grants, vocabulary and export |
+| T11 | Library and settings | Active, Sol Medium; SQLite-backed library/settings and UI modules drafted | Exact-source Pro review, T05 mount/T06 routes/T13 permission wiring; verification deferred |
 | T12 | Launch | Queued | Actual release gates, fresh-machine run, video and honest listing |
 | T13 | Consent and session boundaries | Pure policy integrated 3901dfe; full ticket active, Sol Medium | Durable grants/exclusions, consent UI, adapter-aware policy and retrieval; actual isolation remains unverified |
 | T14 | Evidence | Queued | T13; claim-level dated support and abstention |
 | T15 | Explore | Queued | T13; useful linked shelf parked by default |
 | T16 | Full note workflow and vocabulary | Queued; basic notes in T05 | Note-version Ask, origin/deletion and full persistence flow |
 | T17 | Page header | Queued | T05/T13; local identity, granted enrichment, return position |
-| T18 | Complete renderer and kernel | Baseline integrated 1c5a1f0; samples consumer follow-up active | Trusted host sidecar delivery and real margin/helper plumbing; all runtime verification deferred |
+| T18 | Complete renderer and kernel | Baseline integrated 1c5a1f0; samples consumer integrated 70f21a4 | Trusted host sidecar delivery and real margin/helper plumbing; all runtime verification deferred |
 | T19 | Install and recovery | Queued | T01/T11; fresh-machine and sign-out recovery |
 | T20 | Saved solver execution | Queued | T02/T06; sandboxed rerun with zero model turns |
 
@@ -54,13 +54,14 @@ Chief owns dispatch, dependency decisions, source fidelity, integration, evidenc
 |---|---|---|---|
 | T02 | 01a0add5-2436-7231-9727-63a11ab0c75a | daemon/providers, job-runner contract, provider evidence | [Provider advisory](https://chatgpt.com/c/6aab7cff-9ba4-83eb-9ad5-8e3a536800f8) reconciled; fixes source-reviewed |
 | T04 | 01a0add2-39b2-7591-b86b-9635b85c5d1c | extension and extension evidence | [Extension review](https://chatgpt.com/c/6aab7d11-52c4-83eb-99e4-2b649e28c0dc) reconciled; frozen |
-| T05 | 01a0adc8-a066-7d11-8248-9cb5a63cd737 | ui except journal, webapp, package/build wiring | [Margin review](https://chatgpt.com/c/6aab7cb6-cd84-83eb-ac23-6941621ab496) reconciled; frozen |
+| T05 | 01a0adc8-a066-7d11-8248-9cb5a63cd737 | margin/helper/persistence UI and webapp main; excludes T11 library and T13 consent modules | Basic [margin review](https://chatgpt.com/c/6aab7cb6-cd84-83eb-ac23-6941621ab496) reconciled; saved-reply follow-up active |
 | T18 | 01a0addb-ef93-77e0-8a57-45873cead42e | renderer and kernel | [Renderer advisory](https://chatgpt.com/c/6aab7cd5-31fc-83ed-9125-c1c2057277e2) and two code reviews reconciled; final fixes untested |
 | T01 | 01a0adc8-8f4d-73a3-9e13-abdb015c842b | helper main/server/pairing/diagnostics | Fresh 6 Pro verified; consolidated chief review avoids duplication |
 | T07 | 01a0adcb-25bd-7451-831f-40197dade46a | store, reader contract, journal | Fresh 6 Pro verified; consolidated chief review avoids duplication |
 | T03 samples | 01a0ae01-0695-7b61-bd4d-0bacdbce172f | reply.ts/schema, CONTRACT.md, optional sample-provenance.ts | Chief higher-order advice supplied; own bounded review assigned |
 | T06 | 01a0ae02-dc03-7ec2-ae86-26b6be5bf319 | contracts/jobs.ts, daemon/jobs, helper server/main integration | Own lifecycle advisory and exact source review assigned |
 | T13 | 01a0ae07-41af-7b83-ae7f-d73ecb608090 | daemon/consent, retrieval, codex-policy, provider policy-gate, contracts/consent, modular consent UI | Chief higher-order profile decision supplied; own Pro advisory and scoped execution allowed |
+| T11 | 01a0ae11-2eb5-7461-9caa-0446092f6a92 | webapp/library, ui/library, daemon/library.ts, contracts/library.ts and ticket evidence | Exact-source Pro review active; T05 owns main mount, T06 owns server wiring, T13 owns grants |
 
 [Chief Pro conversation](https://chatgpt.com/c/6aab6e88-3804-83ed-9f27-3f02572b2d98) completed T01/T07 review and higher-order advice on headline authority, sample-grid inputs and provider evidence. All four T01/T07 findings have source fixes integrated. The samples correction is assigned; the adapter-aware policy correction remains T13 work. Pro was instructed to defer tests and work from sources and existing evidence.
 
@@ -87,12 +88,13 @@ Counts are historical snapshots, not additive, not a current full-build pass. Re
 1. Dedicated Codex runtime is signed out. Protocol preflight works for both transports, but no authenticated definition or simulation has run. Do not copy credentials or manufacture evidence. App-server and MCP remain required with their distinct cancellation/recovery capabilities.
 2. T13 must implement the accepted adapter-aware evidence profile: pinned reviewed built-in tool allowlist, observed effective configuration and actual applicable confinement evidence. Catalog observation can be unavailable/incomplete without inventing a per-request veto; authentication, grants and required isolation evidence still gate dispatch. No development bypass was approved.
 3. Preserve current headline authority: browser independent checks alone cannot authorize a headline. T18 accepts a genuinely bound host report and optional zero-inference host resealing callback. A separate local-calculation authority would require an explicit spec decision and has not been adopted. T03 adds complete axis/fixed input binding; unknown generation values must never be guessed from defaults.
-4. T18's bounded source review and T03's chief corrections are integrated. Finish the sample-readiness consumer and T05 saved-reply mounting while T06 and T13 converge on actual authenticated job/grant APIs. Reply wiring must serialize view writes across mounts and prevent destroyed mounts' async callbacks from changing a newer mount. T11 library remains next using its agreed independent mounting boundary. Rich replies, note-version Ask, saved solver and the full inventory remain required.
+4. T18's bounded source review, T03's chief corrections and the sample-readiness consumer are integrated. Finish T05 saved-reply mounting while T06 and T13 converge on actual authenticated job/grant APIs. Reply wiring must serialize view writes across mounts and prevent destroyed mounts' async callbacks from changing a newer mount. T11 is active using its agreed independent mounting boundary. Rich replies, note-version Ask, saved solver and the full inventory remain required.
 5. No launch-ready claim: fresh-machine install, live consent/inference, cancellation, saved solver and final release demonstrations remain open. The challenge sets priority, not permission to remove capabilities.
+6. Chief found the active T06 workspace serialized full captured source into provider-readable packet.json while the prompt was assembled separately. T06/T13 are assigned one bounded outgoing packet shared by preview, digest, prompt and workspace: selection at most 4,000 characters, adjacent context at most 12,000, real page facts and explicit omissions. Full source remains private validation data. The blanket workspace instruction against executable code must also preserve the required T20 saved-solver path while excluding browser/interface code. These are source findings against unfinished code, not observed transmissions.
 
 ## Integration record
 
-Repository: https://github.com/yashgurbani/marginalia. Branch: codex/marginalia-v2. Code published through 1c5a1f0. Key implementation commits: 302fe52 helper; 3901dfe Pro policy; 3c72429 durable reader history/journal; e61389e helper Pro fixes; 33aa698 reader conflict and attachment fixes; 889fb27 provider adapters; aee5750 basic durable margin; 078d265 extension capture and trusted surfaces; fc9a258 immutable samples binding; 1c5a1f0 typed renderer/kernel. These latest integrations were source-reviewed without executing checks, as requested. T05/T04/T18 freeze hashes matched before integration. Active renderer-consumer/UI/jobs/consent follow-ups remain separately owned and may be uncommitted.
+Repository: https://github.com/yashgurbani/marginalia. Branch: codex/marginalia-v2. Key implementation commits: 302fe52 helper; 3901dfe Pro policy; 3c72429 durable reader history/journal; e61389e helper Pro fixes; 33aa698 reader conflict and attachment fixes; 889fb27 provider adapters; aee5750 basic durable margin; 078d265 extension capture and trusted surfaces; fc9a258 immutable samples binding; 1c5a1f0 typed renderer/kernel; 70f21a4 samples consumer. These latest integrations were source-reviewed without executing checks, as requested. T05/T04/T18 freeze hashes matched before integration. Active UI/jobs/consent/library follow-ups remain separately owned and may be uncommitted.
 
 All tasks share the requested checkout with disjoint ownership. Chief stages exact frozen paths only; no branch switches/resets, broad staging or unrelated root edits. Runtime databases, credentials and browser profiles are excluded. A ticket closes only when its source requirement, delivered implementation, review disposition and eventual acceptance evidence are explicit.
 
