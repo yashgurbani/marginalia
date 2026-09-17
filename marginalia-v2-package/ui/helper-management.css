@@ -1,1 +1,6 @@
-.m-helper-management { margin-block: 16px; padding-block-start: 12px; border-top: 1px solid var(--m-rule); }.m-helper-management h3 { font-size: var(--m-t0); font-weight: 600; margin-block: 12px 6px; }.m-helper-management output { display: block; font: 24px/1.5 var(--m-mono); letter-spacing: .15em; margin-block: 8px; user-select: all; }.m-helper-management ul { list-style: none; padding: 0; margin: 8px 0; }.m-helper-management li { border-top: 1px solid var(--m-rule); padding-block: 10px; overflow-wrap: anywhere; }.m-helper-management button { text-decoration: underline; text-underline-offset: 3px; }
+.m-helper-management { margin-block: 16px; padding-block-start: 12px; border-top: 1px solid var(--m-rule); }
+.m-helper-management h3 { font-size: var(--m-t0); font-weight: 600; margin-block: 12px 6px; }
+.m-helper-management output { display: block; font: 24px/1.5 var(--m-mono); letter-spacing: .15em; margin-block: 8px; user-select: all; }
+.m-helper-management ul { list-style: none; padding: 0; margin: 8px 0; }
+.m-helper-management li { border-top: 1px solid var(--m-rule); padding-block: 10px; overflow-wrap: anywhere; }
+.m-helper-management button { text-decoration: underline; text-underline-offset: 3px; }

@@ -25,6 +25,8 @@ export type MarginOptions = {
   /** Authenticated library snapshot for viewing, never a second authoritative journal. */
   savedThread?: Thread; draftScope?: string; onLibrary?: () => void;
   askingMount?: AskingMountFactory;
+  /** Legacy injected-host spelling retained for the branch's entry fixtures. */
+  asking?: AskingMountFactory;
 };
 const id = () => crypto.randomUUID();
 const excerpt = (text: string, length = 82) => text.length > length ? text.slice(0, length) + '\u2026' : text;
@@ -369,7 +371,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       if (!thread || thread.deletedAt) throw new Error('This saved thread is unavailable. Your question remains here.');
       selection.sourceVersionId = thread.sourceVersionId;
       retainQuestion(selection); await questionBuffer.save(selection); await ensureContextSaved(selection);
-      asking ??= (options.askingMount ?? createT08Mount())(askingSlot, {
+      asking ??= (options.askingMount ?? options.asking ?? createT08Mount())(askingSlot, {
         helper: trustedHelper, signal, authorize: async url => { await helperForSource(url); }, currentThread,
         ensureContextSaved, persistence, track,
         read: key => persistence.read(questionKey + ':' + key),

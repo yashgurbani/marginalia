@@ -31,6 +31,8 @@ export type AskingContext = {
   prepareReplyView?(threadId: string, replyVersionId: string): Promise<void>;
   onClosed?(): void;
   onState?(state: { phase: string }): void;
+  /** Compatibility hook for the branch's activity fixture; does not authorize or send. */
+  activity?(state: { phase: string; sending?: boolean; elapsedSeconds?: number }): void;
   retainedQuestion?(selection: AskingSelection): void;
 };
 export const createAskingHost = (context: AskingContext) => context;
@@ -219,7 +221,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
           mountingReply = result.reply.id;
           const session = readers.get(result.reply.id);
           if (!session) throw new Error('The saved reply view is not ready.');
-          return { initialState: session.record.local, capabilities: ['samples', 'followup'],
+          return { initialState: session.record.local, capabilities: ['samples'],
             sampleGenerationRecords: session.record.sampleGenerationRecords,
             onSourceHighlight: binding => context.highlight(binding, result.source.text),
             onSourceNavigate: binding => context.navigate(binding, result.source.text) };
