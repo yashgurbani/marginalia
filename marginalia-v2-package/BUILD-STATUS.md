@@ -66,7 +66,7 @@ Integrated means committed for review, not that the full reader experience passe
 | T17 | Page header | Queued; local identity, granted enrichment and return position required |
 | T18 | Renderer/kernel | Pro corrections integrated as 57ad295; 13/13 owner checks including browser scenarios and build pass; host arbitration, real sidecar delivery and complete reader flow remain |
 | T19 | Install/recovery | Opus experience slice delivered; C1–C15 routed; installers and fresh-machine recovery on all platforms remain |
-| T20 | Saved solver | Opus 5 correction returned; chief independently reran 88 tests, all passed. Source review, dependency implementations, route mounting and real recompute verification remain; not accepted |
+| T20 | Saved solver | Chief reran 88 tests, all passed, then found preparation, idempotency/result-authority and transport gaps. Same Opus 5 session is correcting them; dependencies, route mounting and real recompute verification remain; not accepted |
 
 ## Ownership and model routing
 
@@ -87,7 +87,7 @@ Chief owns source fidelity, dispatch, receipts, cross-ticket decisions, integrat
 
 Each owner operates its own Pro chat and returns exact source artifacts, review disposition and test evidence. No duplicate operator or overlapping Sol writer while Pro owns a fix. GitHub writes are preferred where exposed; ZIP/diff fallback is authorized. A claimed commit or passing test is not accepted until the returned artifact is inspected. [Pro collaboration rules](wayfinder/PRO-COLLABORATION.md) retain the handoff details.
 
-T20 worktree: `D:\Projects\Marginalia-worktrees\t20-saved-solver`, branch `codex/opus-t20-saved-solver`, advanced to `6987e64`. Session `163a228c-e0a6-4723-9a7d-285c8bda36a2`, correction execution handle 60311 completed with exit 0. First-party Claude Max login was rechecked successfully after the user repaired login. Chief reran the three saved-solver suites: 88 passed, zero failures or skips. The corrected artifact awaits source review and integration; no real Codex execution or platform isolation is established. Owned new files: `contracts/solver.ts`, `daemon/solver/**`, `tests/saved-solver*.test.ts`, `docs/evidence/T20/**`, receipt T20. It must propose shared integration changes as artifacts rather than edit T05/T06 paths. Claude always uses first-party account authentication.
+T20 worktree: `D:\Projects\Marginalia-worktrees\t20-saved-solver`, branch `codex/opus-t20-saved-solver`, advanced to `6987e64`. Session `163a228c-e0a6-4723-9a7d-285c8bda36a2`, correction execution handle 60311 completed with exit 0. First-party Claude Max login was rechecked successfully after the user repaired login. Chief reran the three saved-solver suites: 88 passed, zero failures or skips. Chief source review found five correction areas in [T20 review](docs/evidence/T20-CHIEF-REVIEW.md). The same verified Opus 5 session is executing that correction under handle 58369. No real Codex execution or platform isolation is established. Owned new files: `contracts/solver.ts`, `daemon/solver/**`, `tests/saved-solver*.test.ts`, `docs/evidence/T20/**`, receipt T20. It must propose shared integration changes as artifacts rather than edit T05/T06 paths. Claude always uses first-party account authentication.
 
 ## Main integration risks
 
