@@ -390,7 +390,7 @@ export class JobStore {
       current.cancelRequested || current.state !== expected.state || !['queued', 'preparing'].includes(current.state) ||
       now.state !== before.state || !['queued', 'preparing'].includes(now.state) ||
       now.revision !== before.revision || now.handoffMarked || now.dispatchClaimed || !now.workspacePrepared || !before.workspacePrepared ||
-      !now.deadlineAt || now.deadlineAt !== before.deadlineAt || Date.parse(now.deadlineAt) <= Date.now() ||
+      !now.deadlineAt || now.deadlineAt !== before.deadlineAt || !Number.isFinite(Date.parse(now.deadlineAt)) || Date.parse(now.deadlineAt) <= Date.now() ||
       current.packetDigest !== expected.packetDigest || current.preparedPayloadDigest !== expected.preparedPayloadDigest ||
       current.policyKey !== expected.policyKey || current.grantId !== expected.grantId || current.provider !== expected.provider ||
       current.model !== expected.model || current.mode !== expected.mode || packetDigest(current.context) !== packetDigest(expected.context) ||

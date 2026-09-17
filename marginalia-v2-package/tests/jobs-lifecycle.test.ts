@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { ReaderStore } from '../daemon/store.ts';
 import { JobService } from '../daemon/jobs/service.ts';
 import { JobStore } from '../daemon/jobs/store.ts';
+import { ConsentSessionService } from '../daemon/consent/service.ts';
 import { prepareContinuationWorkspace, prepareWorkspace, restoreCompletedWorkspace } from '../daemon/jobs/workspace.ts';
 import { JOB_WORKSPACE_INSTRUCTIONS } from '../daemon/jobs/envelope.ts';
 import type { AuthorizedRuntimeFactory } from '../daemon/jobs/runtime.ts';
@@ -157,6 +158,67 @@ test('runner uncertainty after handoff stays unknown with one finalization', asy
     assert.equal(jobs.get('uncertain-job')?.attempts[0].handoffMarked, true);
     assert.equal(finalized, 1);
     assert.equal(starts, 1);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('real once grant stays spent and handoff marked after uncertain transport', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-jobs-'));
+  const reader = fixture(), consent = new ConsentSessionService({ db: reader.db });
+  let starts = 0;
+  const runtimeFactory: AuthorizedRuntimeFactory = { dispatchReady: true, consent,
+    create: async () => ({ close: () => undefined, runner: {
+      capabilities: { interrupt: 'turn-interrupt', recovery: 'thread-state', structuredFinal: true, schemaEnforced: true, liveEvents: true },
+      start: async () => { starts++; throw new Error('transport outcome unconfirmed'); },
+      resume: async () => { throw new Error('Unexpected resume.'); },
+      inspect: async () => { throw new Error('Unexpected inspect.'); },
+      cancel: async () => { throw new Error('Unexpected cancel.'); },
+    } }) };
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: [] }, runtimeFactory });
+  try {
+    const prepared = await jobs.prepare({ id: 'real-uncertain', idempotencyKey: 'real-uncertain-key',
+      threadId: 'thread-job-test', intent: 'explore', question: 'Explain.' });
+    const preview = consent.prepare(prepared.consent);
+    const grant = consent.decide({ previewId: preview.id, expectedRevision: preview.revision, choice: 'this-time' },
+      { surface: 'localhost-settings', pairingId: 'pair', origin: 'http://127.0.0.1:43120' });
+    await jobs.create({ ...prepared.job, grantId: grant.id });
+    for (let i = 0; i < 30 && jobs.get('real-uncertain')?.state !== 'outcome_unknown'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    const current = jobs.get('real-uncertain')!;
+    assert.equal(current.state, 'outcome_unknown');
+    assert.equal(current.attempts[0].handoffMarked, true);
+    assert.equal((reader.db.prepare('SELECT consumedAttemptId FROM consent_grant_state WHERE grantId=?').get(grant.id) as { consumedAttemptId: string }).consumedAttemptId, current.latestAttemptId);
+    assert.equal((reader.db.prepare('SELECT count(*) n FROM consent_attempt_authorizations WHERE attemptId=?').get(current.latestAttemptId) as { n: number }).n, 1);
+    assert.equal((reader.db.prepare('SELECT count(*) n FROM egress_events WHERE attemptId=?').get(current.latestAttemptId) as { n: number }).n, 1);
+    await jobs.recover();
+    assert.equal(jobs.get('real-uncertain')?.state, 'outcome_unknown');
+    assert.equal(starts, 1);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('real once grant survives asynchronous runtime preparation failure', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-jobs-'));
+  const reader = fixture(), consent = new ConsentSessionService({ db: reader.db });
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: [] },
+    runtimeFactory: { dispatchReady: true, consent, create: async () => { throw new Error('runtime preparation failed'); } } });
+  try {
+    const prepared = await jobs.prepare({ id: 'real-prep-failure', idempotencyKey: 'real-prep-failure-key',
+      threadId: 'thread-job-test', intent: 'explore', question: 'Explain.' });
+    const preview = consent.prepare(prepared.consent);
+    const grant = consent.decide({ previewId: preview.id, expectedRevision: preview.revision, choice: 'this-time' },
+      { surface: 'localhost-settings', pairingId: 'pair', origin: 'http://127.0.0.1:43120' });
+    await jobs.create({ ...prepared.job, grantId: grant.id });
+    for (let i = 0; i < 30 && jobs.get('real-prep-failure')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    const current = jobs.get('real-prep-failure')!;
+    assert.equal(current.state, 'failed');
+    assert.equal(current.attempts[0].handoffMarked, false);
+    assert.equal((reader.db.prepare('SELECT consumedAttemptId FROM consent_grant_state WHERE grantId=?').get(grant.id) as { consumedAttemptId: string | null }).consumedAttemptId, null);
+    assert.equal((reader.db.prepare('SELECT count(*) n FROM consent_attempt_authorizations').get() as { n: number }).n, 0);
+    assert.equal((reader.db.prepare('SELECT count(*) n FROM egress_events').get() as { n: number }).n, 0);
+    const nextAttempt = jobs.store.createAttempt(current.id);
+    const eligible = await consent.revalidate(jobs.get(current.id)!, 'dispatch');
+    assert.equal(jobs.get(current.id)!.latestAttemptId, nextAttempt.id);
+    assert.match(eligible.eligibilityFingerprint ?? '', /^[a-f0-9]{64}$/);
   } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
 
