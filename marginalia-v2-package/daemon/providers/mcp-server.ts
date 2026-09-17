@@ -1,4 +1,5 @@
-import type { JobRunner, ProviderAudit, ProviderHandle, ProviderHooks, ProviderRequest } from '../../contracts/job-runner.ts';
+import { ProviderNotSentError } from '../../contracts/job-runner.ts';
+import type { AuditedPolicy, JobRunner, ProviderAudit, ProviderHandle, ProviderHooks, ProviderRequest } from '../../contracts/job-runner.ts';
 import type { RpcTransport } from './stdio.ts';
 import { checkPolicy } from './app-server.ts';
 import { pages, PINNED_CODEX_VERSION } from './preflight.ts';
@@ -68,8 +69,11 @@ export class McpServerRunner implements JobRunner {
     if (request.workspace !== this.audit.workspace) throw new Error('provider-process-cwd-mismatch');
     if ([...this.handles.values()].some(h => !['completed', 'failed', 'cancelled'].includes(h.state))) throw new Error('mcp-dedicated-transport-busy');
     if (request.mode === 'structured-final' && !request.outputSchema) throw new Error('output-schema-required');
-    const policy = await this.hooks.authorize(request, this.audit, 'dispatch'); checkPolicy(request, policy);
-    if (policy.mcp.cwd !== request.workspace || policy.mcp['approval-policy'] !== 'never') throw new Error('mcp-policy-binding-mismatch');
+    let policy: AuditedPolicy;
+    try {
+      policy = await this.hooks.authorize(request, this.audit, 'dispatch'); checkPolicy(request, policy);
+      if (policy.mcp.cwd !== request.workspace || policy.mcp['approval-policy'] !== 'never') throw new Error('mcp-policy-binding-mismatch');
+    } catch (error) { throw new ProviderNotSentError('mcp-server', request.jobId, error); }
     const h = await this.save({ jobId: request.jobId, provider: 'mcp-server', workspace: request.workspace,
       policyKey: request.policyKey, auditScope: policy.auditScope, providerInstanceId: this.instanceId, mode: request.mode, model: request.model, state: 'running', tombstone: false });
     if (this.fenced(h).tombstone) return this.save({ ...h, state: 'cancelled', tombstone: true });
@@ -138,7 +142,9 @@ export class McpServerRunner implements JobRunner {
       if (this.handles.has(followup.jobId)) throw new Error('attempt-already-dispatched');
       if (this.latestByThread.get(h.threadId) !== h.jobId) throw new Error('thread-advanced');
       if ([...this.handles.values()].some(other => !['completed', 'failed', 'cancelled'].includes(other.state))) throw new Error('mcp-dedicated-transport-busy');
-      const policy = await this.hooks.authorize(followup, this.audit, 'dispatch'); checkPolicy(followup, policy);
+      let policy: AuditedPolicy;
+      try { policy = await this.hooks.authorize(followup, this.audit, 'dispatch'); checkPolicy(followup, policy); }
+      catch (error) { throw new ProviderNotSentError('mcp-server', followup.jobId, error); }
       if (followup.mode === 'structured-final' && !followup.outputSchema) throw new Error('output-schema-required');
       const next = await this.save({ ...h, revision: undefined, auditScope: policy.auditScope, providerInstanceId: this.instanceId, jobId: followup.jobId, mode: followup.mode, state: 'running', output: undefined, reason: undefined });
       if (this.fenced(next).tombstone) return this.save({ ...next, state: 'cancelled', tombstone: true });
