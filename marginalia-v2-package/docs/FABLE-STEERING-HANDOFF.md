@@ -1,6 +1,6 @@
 # Marginalia steering handoff — 17 September 2026
 
-This is the current coordination entry point. It supersedes older active-owner tables and the earlier Pro-access blocker in `CLAUDE-STEERING-HANDOFF.md`. Codex is still coordinating: the user subsequently asked it to resume implementation. Do not start a second chief or duplicate these workers without an explicit handover.
+This is the current coordination entry point. It supersedes older active-owner tables and the earlier Pro-access blocker in `CLAUDE-STEERING-HANDOFF.md`. Codex is still coordinating: the user subsequently asked it to resume implementation. Do not start a second chief or duplicate these workers without an explicit handover. Read [the whole-project stocktake](PROJECT-CONSOLIDATION-REVIEW.md) for all-ticket direction, integration order and drift risks.
 
 ## Repository and source authority
 
@@ -27,11 +27,16 @@ All paths below are relative to the package. Pro model was visibly `6 Pro` at ea
 | T06 Pro | `codex/pro-t06-full-recovery`; [conversation](https://chatgpt.com/g/g-p-6aabdbd64d848191bf91223b096ffb3f-marginalia/c/6aabdcaf-f6bc-83ed-bc66-df4d621fe32e) | Running. Full T06 reconciliation, actual-send boundary, lifecycle and evidence-backed composition. Owns jobs/job-runner contracts, jobs/providers, main/diagnostics, T06 portions of server; minimal consent service/evidence adaptation; associated tests/evidence/T06 receipt. No other runtime collector may overlap. |
 | T05 Pro | `codex/pro-t05-full-recovery`; [conversation](https://chatgpt.com/g/g-p-6aabdbd64d848191bf91223b096ffb3f-marginalia/c/6aabdd09-e160-83ed-81f7-62035edcdbfe) | Running; branch existence observed at51e2473. Owns margin/helper/persistence/helper-management, webapp main/service worker, T05 tests/receipt/evidence. Sole mount owner for asking/library. Reconcile old 17-file package and helper UI; wire integrated T07 keep-device semantics. |
 | T08 Pro | `codex/pro-t08-full-recovery`; [conversation](https://chatgpt.com/g/g-p-6aabdbd64d848191bf91223b096ffb3f-marginalia/c/6aabde38-af2c-83ed-926e-e41976f3afb4) | Running. Owns ui/asking, asking tests, skills/define if needed, T08 evidence/receipt. Recover existing artifact first, finish definition/consent/ask controller and public mount contract. No T05 mount edits. |
-| T14/T15 Opus | `codex/opus-t14-t15-evidence-explore`; claim pushed `cd58e7a`; local `D:\Projects\Marginalia-worktrees\t14-t15-evidence-explore` | Running, session `a46d658f-b846-49ef-9dbc-fd7c8d579611`. Owns skills/evidence, skills/explore, daemon/transforms/evidence and explore, dedicated tests, T14/T15 receipts/evidence. No shared contracts/broker/backend/UI edits. [Published brief](https://github.com/yashgurbani/marginalia/blob/codex/opus-t14-t15-evidence-explore/marginalia-v2-package/docs/evidence/T14-T15-opus/BRIEF.md). |
+| T14/T15 Opus | `codex/opus-t14-t15-evidence-explore`; published `86d658191cb6e8a6c1bd8bac45ec453c80a964e5`; local `D:\Projects\Marginalia-worktrees\t14-t15-evidence-explore` | Worker completed; merge HELD for Evidence authority and Explore public-contract/navigation corrections. Session `a46d658f-b846-49ef-9dbc-fd7c8d579611` is available for a bounded later correction. [Review disposition](evidence/T14-T15-CHIEF-RECONCILIATION.md). |
+| T20 Opus | `codex/opus-t20-completion`; transferred source `ddbe72d`, brief `ea4ab42`; local `D:\Projects\Marginalia-worktrees\t20-completion` | Running, first-party Opus4.8Medium, session `af738698-b39f-422c-9112-1ab5a8266650`. Owns solver contract/modules/tests/evidence/receipt only; no T06 provider/main/server or T05 mount edits. Existing WIP is being completed, not replaced. [Brief](https://github.com/yashgurbani/marginalia/blob/codex/opus-t20-completion/marginalia-v2-package/docs/evidence/T20/OPUS-48-CONTINUATION.md). |
 
 T05/T06 attempted an unrelated Agora MCPX workspace request; chief denied it and both resumed. Their authorized route is GitHub. Do not grant unrelated connector access merely to keep a worker moving. Capture their next result before any follow-up. Branch creation or progress text is not delivered implementation.
 
-Opus local report target: package `docs/evidence/T14-T15-opus/REPORT.md`; launch state/result under worktree `.local/opus-worker`. Unified-exec session40974 was running at this checkpoint. Existing package dependencies were supplied through an ignored node_modules junction to the chief package, without a new install. Do not allow package-manager mutation of that shared target. Read runtime report before raw logs; never copy credentials or hidden reasoning into GitHub.
+T14/T15 local report: package `docs/evidence/T14-T15-opus/REPORT.md`; launch state/result under that worktree `.local/opus-worker`; exec40974 completed successfully. T20 uses package `docs/evidence/T20/REPORT.md` and its worktree `.local/opus-worker`; exec38458 was running at launch. Both use existing package dependencies through ignored node_modules junctions without new installs. Do not allow package-manager mutation of the shared target. Read reports before raw logs; never copy credentials or hidden reasoning into GitHub.
+
+Independent T14/T15 Luna review: runtime-confirmed `gpt-5.6-luna/max`, thread `01a0af66-87d7-76c1-b566-36920079d7bc`. Focused13+11 tests/typecheck reported passed, but visible probes found defects. The session disappeared before final report and one continuation returned Session not found. Preserved report folder: `D:\Projects\Marginalia\.local\t14-t15-luna-verification`. Bounded report-recovery run `01a0af83-c2bb-7971-8f90-3891295ffa3b` completed without repeating tests: [final review](evidence/T14-T15-LUNA-FINAL-REVIEW.md), verdict HOLD—CHANGES NEEDED. Chief accepted the concrete authority/navigation defects but rejected unnecessary open-permission machinery and forbidding useful thin-shelf links; read [the reconciled correction](evidence/T14-T15-CHIEF-RECONCILIATION.md).
+
+The user requested leaving the three Pro chats working and checking in about half an hour. One follow-up was scheduled as `check-marginalia-pro-ticket-progress`; inspect the automation/current run before duplicating checks. Use this time for whole-project consolidation and independent review.
 
 ## Accepted work and preserved unfinished work
 
@@ -41,7 +46,7 @@ Opus local report target: package `docs/evidence/T14-T15-opus/REPORT.md`; launch
 
 **T08 recovery:** [exact artifact/hash record](evidence/T08-PRO-RECOVERY.md). Existing patch `/mnt/data/T08-asking-checkpoint.patch`, generated root `/mnt/data/marginalia-t08/marginalia-v2-package`,14files1786additions against1517433. Old branch did not advance. New Pro is instructed to recover before reconstructing. Generated hashes are not proof of GitHub publication.
 
-**T20 preserved, inactive:** `codex/opus-t20-saved-solver` at `c144506f32b67a27f2487426c24b79e4f606af16`, worktree `D:\Projects\Marginalia-worktrees\t20-saved-solver`. Do not resume historical Opus5 automatically. Its `prepareCommit()/commit()` interface and awaited `gate.finalize()` call site are inconsistent; five host dependencies/mount and real execution acceptance remain. Historical123tests do not prove real solver confinement. Read branch `docs/evidence/T20/HANDOFF-CHECKPOINT.md` and `PENDING-CHIEF-REVIEW.md` before a new assignment. Reconcile T06 final handoff contract first.
+**T20 original preserved, new continuation active:** original `codex/opus-t20-saved-solver` at `c144506f32b67a27f2487426c24b79e4f606af16`, worktree `D:\Projects\Marginalia-worktrees\t20-saved-solver`, remains untouched. New Opus4.8Medium continuation is listed above. Its starting `prepareCommit()/commit()` interface and awaited `gate.finalize()` call site are inconsistent; five host dependencies/mount and real execution acceptance remain. Historical123tests do not prove real solver confinement. The worker must reconcile T06's public handoff contract without editing T06-owned files.
 
 Historical whole-suite baseline at0111589:282total,281pass,0fail,1optional browser skip. It is not a current-head full-suite result. See [integrated evidence](evidence/INTEGRATED-VERIFICATION.md).
 
@@ -63,13 +68,13 @@ Historical whole-suite baseline at0111589:282total,281pass,0fail,1optional brows
 | T11 | Library/settings services and some UI implemented; T05 entry wiring, global export and full real flows remain. |
 | T12 | Not launch-ready: installers, fresh-machine demonstrations, failure/cancel/video/listing evidence required. |
 | T13 | Policy/consent groundwork integrated; observed runtime evidence and actual-send integration remain. |
-| T14 | Active Opus Evidence transform implementation; real brokered journey and mount remain external gates. |
-| T15 | Active Opus Explore transform implementation; authentic useful links/explicit-open journey remain external gates. |
+| T14 | Published86d6581, merge held after independent review; fix semantic authority/attribution, then brokered journey and mount. |
+| T15 | Published86d6581, merge held after independent review; fix public open/provenance/URL contract, then real explicit-open journey. |
 | T16 | Basic notes; full frozen attachment/versioned replies/vocabulary/recovery acceptance remains. |
 | T17 | Local page identity and explicit-grant enrichment/header work remains. |
 | T18 | Renderer/kernel partly verified; real host sample generation/delivery/highlight arbitration remain. |
 | T19 | Install/recovery spec and C1–C15 dispositions exist; live diagnostics/export/registration/installers/docs and cross-platform acceptance not all complete. |
-| T20 | Preserved unfinished solver branch above; no real zero-model recompute acceptance. |
+| T20 | New Opus4.8Medium completion run on current-base isolated branch; original preserved; no real zero-model recompute acceptance. |
 
 Use [detailed ticket review](PROJECT-STATUS-AND-TICKET-REVIEW.md), [build report](../BUILD-STATUS.md), and each Wayfinder receipt for historical findings; apply this handoff's newer ownership/status. No honest overall completion percentage is claimed.
 
@@ -78,6 +83,6 @@ Use [detailed ticket review](PROJECT-STATUS-AND-TICKET-REVIEW.md), [build report
 1. Read the current Pro outputs and Opus report without restarting active turns. Resolve each published head and compare its diff to its declared base/ownership. Record any source deviation before integration.
 2. Fetch a returned commit into an isolated worktree. Route exact-SHA native verification through `C:\Users\reader\.codex\skills\codex-mcp-router\SKILL.md`, explicitly `gpt-5.6-luna/max`, dynamic complementary accounts, no native fallback or recursive workers. Report requested vs observed model separately.
 3. Return substantive failures to the same owner in a consolidated correction prompt; do not spend Pro turns on routine acknowledgments. Merge only verified owned changes, then test changed cross-ticket entry points and update receipts/handoff with exact SHAs and remaining gates.
-4. Prioritize T06 → real evidence-backed runtime → T05/T08 reader Ask/reply, then T20 and remaining transforms/install/release. Opus T14/T15 proceeds independently. Do not ship a disabled action or a fixture as a completed feature.
+4. Prioritize T06 → real evidence-backed runtime → T05/T08 reader Ask/reply, then T20 and remaining transforms/install/release. Opus T20 proceeds within solver-only ownership; T14/T15 correction follows its review hold. Do not ship a disabled action or a fixture as a completed feature. Apply the Standards + Spec review and simplicity guardrails in the whole-project stocktake.
 
 The goal is active and unfinished. No running job's progress text or branch claim substitutes for completed, verified and integrated code.

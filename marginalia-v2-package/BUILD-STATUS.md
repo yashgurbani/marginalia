@@ -1,120 +1,32 @@
 # Marginalia overall build report
 
-## Chief integration checkpoint — 17 September, after the parallel Pro run
+## Current checkpoint — 17 September 2026, whole-project consolidation
 
-Integrated and pushed T07 at `dc0f963684fa616599cbe67ff183eebe6058ba7d`, merging verified Pro head `2464ce63862d70f6ec702f759f2bdd88e054839c`. The routed Luna Max verifier passed 42 native reader/store/journal tests on identical runtime code and the final project-config typecheck. [Native verification](docs/evidence/pro-t07-fixes/NATIVE-VERIFICATION.md) records exact revisions, commands and Windows-only limits. This is a tested storage checkpoint, not whole-ticket, browser, cross-platform or release acceptance. The three Pro-authored steering documents were integrated earlier at `2a43c32`.
+The project has substantial implemented foundations but is not launch-ready. No accepted real reader-to-provider-to-saved-solver journey exists yet. All T00–T20 and the full feature inventory remain scope. The priority is composing and verifying the real reader journey, not accumulating isolated modules or redesigning the architecture.
 
-T05's current-base continuation ended **Thinking failed**; T08 ended **You've hit your limit**. Their checkpoint branches still resolved to `1517433` when checked; no current-base implementation from either was integrated. Preserve their existing chats and staged work. T06 remains running, with reported transport tests but no completed publication/acceptance receipt yet. Retrieve that existing output before starting another request.
+- Integrated product: T07 merge `dc0f963`, source `2464ce6`; documentation checkpoint `b4ad04d` before this review update. T07's42native tests and final project typecheck are exact-scope evidence, not whole-ticket/platform acceptance.
+- Active Pro: `codex/pro-t05-full-recovery` (reader and all mounts), `codex/pro-t06-full-recovery` (jobs/providers plus evidence-backed runtime composition), `codex/pro-t08-full-recovery` (asking module). Shared project histories recovered; GitHub is the authorized common update point. No new source from these runs has been accepted at this checkpoint.
+- T14/T15 Opus: published `86d6581`; worker finished, merge HELD for Evidence authority and Explore public-contract/navigation findings. Luna's final bounded review is complete, HOLD—CHANGES NEEDED, preserving earlier checks as historical evidence. Chief's correction rejects speculative authorization machinery and any ban on opening useful thin-shelf items. Do not wire the current supported verdict into the product.
+- Active Opus4.8Medium: `codex/opus-t20-completion`, existing c144506 work transferred asddbe72d, scoped brief ea4ab42. First-party authentication, explicit user stale-meter override. Solver-owned files only; original worktree preserved.
+- Independent verification: dynamic MCP Luna Max on isolated fixed-SHA worktrees; failures go back to the owner before merge. No automatic model/account fallback, recursive workers or duplicate work after timeout.
 
-After refreshing the chief chat, the model menu explicitly showed **Pro disabled** and an advanced-usage reset tomorrow after 1:46 PM. This is an observed model restriction, not inference from the older workspace-credit banner. Do not purchase credits, change accounts, substitute models, or repeatedly replay failed requests. Continue available verification/publication recovery; resume Pro implementation when the authorized route becomes available. All-ticket scope and the source/design decisions remain unchanged. The ownership and detailed assessment below remain useful; this checkpoint supersedes their earlier active/unmerged status statements.
+The user requested a half-hour Pro progress check, scheduled as `check-marginalia-pro-ticket-progress`. Current work meanwhile is independent review and project consolidation.
 
-## Current position — 17 September 2026
+## Current reports and decision authority
 
-**Current integration baseline: `1517433968d03cdde054a70376ca26c2d9221315`, `codex/marginalia-v2`. Product incomplete; not launch-ready. All T00–T20, R1–R30 and all 71 feature-inventory items remain required.** The GitHub connector re-resolved this exact integration ref for the present documentation handoff. No new source review or test run was performed for this update.
+- [Whole-project stocktake and every-ticket assessment](docs/PROJECT-CONSOLIDATION-REVIEW.md): product position, direction changes, requirements and acceptance order.
+- [Steering handoff](docs/FABLE-STEERING-HANDOFF.md): exact active chats, branch/path ownership, worker IDs, recovery and next actions.
+- [Fable continuation prompt](docs/FABLE-CONTINUATION-PROMPT.md): takeover only after coordination with current chief.
+- [T14/T15 review hold](docs/evidence/T14-T15-CHIEF-RECONCILIATION.md), [T07 native verification](docs/evidence/pro-t07-fixes/NATIVE-VERIFICATION.md), and [historical integrated checks](docs/evidence/INTEGRATED-VERIFICATION.md).
+- [Wayfinder collaboration rules](wayfinder/PRO-COLLABORATION.md), [SPEC-FINAL](wayfinder/SPEC-FINAL.md), [stage plan](wayfinder/BUILD-PLAN-24H.md), [feature inventory](wayfinder/FEATURE-INVENTORY.md).
 
-**Current user direction:** continue all tickets through separate parallel 6Pro chats. Astra chief steers only; dynamically routed MCP Luna Max verifies independently. No new Sol/Opus implementation. Earlier outgoing-chief stop, T05-only restrictions, old Astra implementation exceptions and old Sol/Opus routing are superseded, not active instructions.
+Current documents replace old active-owner tables. Historical receipts below remain evidence for their stated revisions, not instructions to restart old workers or proof that current tickets are complete.
 
-The coordination update lives on `codex/pro-build-steering-20260917`, based on the exact integration SHA above, and changes only this file, `docs/CLAUDE-STEERING-HANDOFF.md` and `docs/PROJECT-STATUS-AND-TICKET-REVIEW.md`. It does not update integration, implementation, tests, dependencies or receipts.
+## Integration direction
 
-Start with [current steering/ownership](docs/CLAUDE-STEERING-HANDOFF.md) and [current all-ticket assessment](docs/PROJECT-STATUS-AND-TICKET-REVIEW.md). Basis: the latest user coordination facts and the accepted current-revision advisory in [this conversation](https://chatgpt.com/c/6aab9618-74b8-83eb-9518-da28543f1429). The original combined review remains pinned to `2c35157`; the current advisory reconciled specific findings against `1517433`. Historical paragraphs/counts later in this report are revision-scoped evidence, not current worker state or feature completion.
+Complete T06's actual-send and real runtime evidence, mount T08 through T05, and demonstrate exact-payload explicit consent, meaningful reply, honest failure/cancellation/unknown states and durable recovery. Then integrate saved recomputation through the same host/UI contracts with zero model turns. Correct T14/T15 before combining them. Continue remaining simulation, renderer, library, install/platform and launch gates without dropping scope.
 
-**Critical path:** actual-send correctness → usable evidence-backed dedicated product runtime → explicit Ask/live source-bound reply through the existing margin → real interactive computation and durable return. Recovery and the rest of the product continue in disjoint lanes. Do not replace missing entry-point behavior with component test counts or another architecture exercise.
-
-## Live coordination board
-
-| Lane | Chat / branch | Current ownership and gate |
-|---|---|---|
-| **T05** | [Existing 6Pro](https://chatgpt.com/c/6aab9408-941c-83ed-b5ea-8e8a7ea14b7d), `codex/pro-t05-integration-checkpoint` | Reconciling old 17-file patch plus helper UI to `1517433`. Sole writer for margin/helper/persistence/helper-management/webapp-main/SW and T05 tests; sole mount owner. Preserve integrated C6. No combined checkpoint acceptance claimed. |
-| **T06** | [Existing 6Pro](https://chatgpt.com/c/6aab9381-d8c4-83eb-be12-75907bebd4c1), `codex/pro-t06-send-checkpoint` | Implementing actual-send after the host transaction. Its current provider write scope is broad. T02/T13 review without overlapping implementation. **Runtime collector must WAIT until chief explicitly narrows/releases the relevant ownership.** |
-| **T07** | [Existing 6Pro](https://chatgpt.com/c/6aab93df-8f84-83eb-b0b7-d5780aef4e22), `codex/pro-t07-integration-checkpoint` | Current-base checkpoint `3b24063191daad872fd5312714f8de688e86069b`, exact parent `1517433968d03cdde054a70376ca26c2d9221315`, independently fetched by chief: nine files, +1,037/-24, continuation only, not merged. Owns reader contract/store/journal and tests. Original c9c2b27 verification continues through registered dynamic MCP Luna Max with confirmed model/effort; no pass or acceptance claimed. |
-| **T08** | [Active 6Pro](https://chatgpt.com/c/6aabcb52-f988-83eb-8448-b54ad98298ce), visible 6Pro verified | Own ONLY `ui/asking/**`, `tests/asking*.test.ts`, `docs/evidence/T08-asking/**` and receipt T08. T05 alone mounts it. No completed module or mounted-flow acceptance claimed. |
-| **Runtime collector/composition** | Accepted future 6Pro contract; **WAIT** | Do not use the earlier proposed split to override T06's actual issued reservation. Begin only after explicit path/interface handoff. |
-| **T20** | Preserved `codex/opus-t20-saved-solver`, `c144506f32b67a27f2487426c24b79e4f606af16` | Unfinished and unaccepted; no active Opus. Later bounded 6Pro continuation must preserve existing code and coordinate T06/T07/T13/T18/T05 rather than recreate it. |
-
-All scopes are package-relative. Reconciliation branch names describe assigned destinations unless an exact published checkpoint is stated; publication does not establish acceptance. No new lane may take reserved paths or recreate an existing owner's work. T05 and T07 must agree their device-choice/persistence interface without writing each other's files. T08 is a module owner, not a second margin owner. T20 host adapters/transactions cannot expand into T06 or T07 by implication. Testing is authorized, but this handoff performs none.
-
-## Current evidence and uncertainty
-
-| Evidence | Reported result / origin | What it does not establish |
-|---|---|---|
-| Historical integration `0111589` | Outgoing chief: Windows Node 24.14.1, 282 tests: 281 pass, 0 fail, 1 optional browser skip, 0 cancelled; associated typecheck/build and Chromium local-reader records. | Not a newly run suite on `1517433`, new checkpoints, all three OSes or real provider/solver/confinement acceptance. |
-| Helper UI `e2fb6c2b61cce004c2c2964f9db146f73fac32fc` | Latest user says `.local/t05-luna-verification/REPORT.md` exists: focused 8/8 and 18/18, typecheck, webapp and extension builds pass. Isolated Chromium 147 visible Show/Renew → Pair → safe List → Forget → 401, local note retained, expiry, 360 px narrow state and no browser errors. | Reported exact-checkpoint verification, not combined T05 acceptance. Original runtime model metadata was not independently exposed. This author did not run or independently fetch the local report. Do not sum overlapping groups as a unique total. |
-| T07 original `c9c2b2764e574ee670337ee3010e64930f9aaa5e`, parent `4552b65`; current-base `3b24063191daad872fd5312714f8de688e86069b` | Chief independently fetched the new checkpoint on exact parent `1517433968d03cdde054a70376ca26c2d9221315`: nine files, +1,037/-24, only continuation transferred. Verification was dispatched through registered dynamic Codex MCP, explicitly `gpt-5.6-luna/max`; runtime `turn_context` independently confirmed `gpt-5.6-luna`, effort `max`, thread `01a0af0b-ec6a-7dd2-8df4-7034e9f49bcc`. | No pass or acceptance claimed; current-base checkpoint is not merged. Verification must identify its exact tested SHA; results for c9c2b27 do not automatically verify 3b24063. This is a routed MCP worker, not a native desktop worker. |
-| T20 c144506 | Historical chief reported 123/123 solver checks after stopping the writer. | No revision-4 completion receipt, final integration acceptance, mounted route, real solver execution or platform isolation. |
-| Accepted current-source advisory | Read-only source observations at `1517433`, preserved solver branch separately inspected at c144506. | No tests, implementation or whole-ticket closure. The present task publishes documentation only. |
-
-T07 operational status, per chief: the outer MCP `tools/call` timed out at 300 seconds but the session continued; no duplicate was launched. Chief corrected a nested advisory invoked against the no-delegation instruction. Direct native Node 24 / better-sqlite3 verification continues inside the routed MCP session, with no acceptance claimed.
-
-The earlier integrated local-reader checks proved selected capture/pairing/save/reload/offline behaviors, not a complete reading-to-Ask-to-interactive-reply journey. Helper verification is scoped to its checkpoint; it must be repeated as needed on the reconciled combined UI rather than transferred by assertion.
-
-## Current source findings — advisory carried forward
-
-### Critical defects and missing implementation
-
-**T06 actual send remains a P1 lifecycle correction.** `JobService.dispatch()` invokes `withDispatchHandoff()` before runner entry, after which adapter serialization, evidence, thread setup/verification and checkpoints can await before the inference RPC. The first F20 slice correctly made grant use/authorization/egress and the host handoff atomic, with same-connection and immutable-context checks. The remaining fix is to finish non-consuming asynchronous preparation before one synchronous final authorization/attempt claim and immediate prepared transport handoff. Preserve cancellation, deadline, CAS, thread leases and no-auto-retry behavior.
-
-**Runtime readiness is a code gap as well as an evidence gap.** The bundled `daemon/main.ts` still constructs `unavailablePolicyHostEvidence()` and `dispatchReady: false`; the default host evidence returns empty observations. Signing in alone cannot make the bundled composition operational. The existing evidence interface needs a real implementation and readiness wiring after ownership handoff; simply changing the flag or copying requested values into observed evidence is not acceptable.
-
-**Ask and design are not fully connected.** Current `ui/margin.ts` retains a local preview and disabled sending controls; `webapp/main.ts` mounts the margin only. Composer-above-scroll and two map representations remain in current integrated source. Existing T05 reconciles those files; T08 supplies a separate asking module using host-prepared consent/job interfaces. Do not open another writer or present a local preview as the actual authorized outgoing manifest.
-
-**T20 is an unfinished migration.** Its preserved contract declares `prepareCommit()`/synchronous `commit()`, but execution still calls awaited `gate.finalize()` and separate journal persistence before transport. The route and context/authority/evidence/generation/attempt/journal adapters remain absent. The advisory did not run a typecheck. Local recomputation and cache reads must never consume cloud-inference grants or start a model turn.
-
-### Old failures now visibly corrected
-
-The accepted advisory confirmed source corrections for F01 empty-selector termination; F02 workspace-specific policy preparation; F03 completed-workspace recovery before settlement; F04 read-only completed-predecessor verification; F05 narrowly identity-bound terminal stop-fence acknowledgment; F15 matching durable pending intent; and the first F20 non-consuming-eligibility/shared-DB host-handoff transaction. These are not untouched bugs and must not be implemented again. Their remaining real-provider, recovery and whole-ticket gates are distinct.
-
-On c144506, canonical base64/sticky malformed-output handling, empty input tuple admission and a digest state-key contract already exist. Preserve those changes while reconciling call sites and host/renderer integration. A preserved branch correction is neither an integrated correction nor proof that the complete recompute experience works.
-
-Other old review dispositions, including current-request hashes, mutation admission, material source versions, contract/numerical semantics and library operation ownership, have historical integration receipts below. Do not mechanically replay the original F01–F21 backlog. [The current ticket review](docs/PROJECT-STATUS-AND-TICKET-REVIEW.md) distinguishes source-confirmed corrections from historical reports and remaining integration acceptance.
-
-## Current ticket board
-
-Every row remains open at some implementation or acceptance boundary. Queued means required work awaiting a bounded assignment, not removed scope.
-
-| Ticket | Current position and remaining gate |
-|---|---|
-| T00 | Fixture foundation exists; final checked rendered/live acceptance through the reader path remains. |
-| T01 | Dedicated diagnostics/pairing/management backend exists; combined T05 helper UI, registration, installed recovery and usable runtime composition remain. |
-| T02 | Adapter continuation/not-sent fixes exist; T06 owns current send changes; real authenticated two-adapter lifecycle remains. |
-| T03 | Contract/host-authority corrections exist; real host records, resealing and bound live delivery remain. |
-| T04 | Selected Chromium local-reader flows verified historically; exclusion sync, SW/reconnect, full provider path, Firefox and all-platform evidence remain. |
-| T05 | Active current-base UI/helper reconciliation; reading-position editor, one complete map, actual mounts and combined design/reader acceptance remain. |
-| T06 | Active actual-send implementation; first host transaction is preserved, not the end of the boundary. Real runtime/recovery evidence remains. |
-| T07 | Current-base continuation 3b24063 published on exact parent 1517433, independently fetched, not merged; routed verification continues with no pass, combined recovery acceptance remains. |
-| T08 | Narrow asking-module chat ACTIVE with visible 6Pro verified; T05 mount, real consent/definition/reply and no-send lifecycle acceptance remain. |
-| T09 | Real new-passage model-authored checked interactive output remains; kernel/fixture alone is not this journey. |
-| T10 | WebMCP capability remains required; no bypass of product runtime/consent or false completion from stubs. |
-| T11 | Library/settings components exist; T05 entry/return, full export and sanitized diagnostics remain. |
-| T12 | Not launch-ready; fresh-machine gates, actual demo/video, reader/publication decisions and truthful listing remain. |
-| T13 | Consent/policy/retrieval foundations and first transaction exist; actual send, exclusion sync and real evidence-backed confinement remain. |
-| T14 | Evidence flow remains: dated claim-level support, observed fetches, narrower grant and honest insufficient-evidence state. |
-| T15 | Explore flow remains: useful reasoned parked items, deliberate open and preserved reading context. |
-| T16 | Basic notes work; exact version-bound Ask, frozen attachment, vocabulary origins/deletion and full recovery remain. |
-| T17 | Local identity foundation exists; page-type truth, position/return and correctly granted enrichment remain. |
-| T18 | Renderer/kernel corrections exist; host highlight arbitration, authentic sidecars and complete interactive delivery remain. |
-| T19 | Experience review/C1–C15 and several fixes exist; full recovery/export/diagnostics/registration and three-OS installers/acceptance remain. |
-| T20 | c144506 preserved, inactive, unaccepted; gate/call-site migration, host dependencies, route and genuine zero-model recompute remain. |
-
-## Next integration sequence and conflict owners
-
-1. Retrieve current T05/T06/T07 outputs without duplicate requests. Check exact parent, changed paths and receipts. T07's current-base checkpoint transfers only its continuation, not the already integrated first slice. T05 reconciles both the older design patch and helper checkpoint while retaining C6. No checkpoint is proposed for merge solely on an older report or passing tests.
-2. Complete T06's actual-send checkpoint. Verify native SQLite race/rollback and prepared-request single-use/generation tests, both adapters, start/continuation and cancel/revoke during preparation. Known pre-send rejection consumes nothing; ambiguous post-commit failure remains unknown without refund or automatic replay. Preserve earlier restart/terminal cleanup fixes.
-3. Chief explicitly narrows or hands off T06's relevant provider/runtime paths. **Until then, collector implementation waits.** Then a separate 6Pro owner implements the existing host-evidence/readiness composition and supplies genuine lifecycle/confinement evidence; no architecture expansion or readiness bypass.
-4. Continue the active bounded T08 module in parallel where its paths are disjoint; do not dispatch a duplicate. T05 remains sole mount owner. Use exact host-prepared consent and note-version binding; fence stale preview/mount/pairing and duplicate actions. Selection, local definition, denial, dismissal and '?' send no inference request. Validate provisional/committed and cancel/unknown states.
-5. On the resulting reviewed revision, prove the real reader loop through the actual mount: local Keep/note → explicit Ask → host preview/permission → provider result → local interaction → reload/reattachment, plus cancellation/recovery and an unseen page. Mocks exercise state machines, not launch inference evidence.
-6. Continue preserved T20 with a later bounded 6Pro assignment and then the remaining transforms/library/platform/release work. Real saved-solver invocation is zero model turns and separate from cloud Ask-again. T05 owns UI handshake; T06/T07/T13 own their host/store/authority seams until explicitly handed off.
-
-Astra chief steers scope, dependency, receipt and integration decisions, with no new implementation. Independent Luna verification records actual model/effort when exposed, route, exact SHA, environment, commands and observable behavior. A missing runtime model field stays unverified. Implementation, aggregate tests, real browser/provider behavior, per-OS confinement and human launch gates are separate acceptance records.
-
-## Source and vision — unchanged
-
-Current direct user decisions take precedence, then [SPEC-FINAL](wayfinder/SPEC-FINAL.md), [SPEC / R1–R30](wayfinder/SPEC.md) and all 71 [FEATURE-INVENTORY](wayfinder/FEATURE-INVENTORY.md) entries, then [build-stage sequencing](wayfinder/BUILD-PLAN-24H.md). Whitepaper, MAP, closed ticket decisions and designs retain their rationale/traceability roles. Challenge timing changes sequence, not scope. [Scope coverage](docs/SCOPE-COVERAGE.md) and [design reconciliation](docs/DESIGN-PASS-2-RECONCILIATION.md) remain reference maps, not completed-feature evidence.
-
-Marginalia is a margin beside whatever the reader is reading. Source stays unchanged; notes are senior; the work belongs to the reader; explicit frozen anchors, durable return, help beyond summary, inspectable interactive outputs and calm states remain required. Reading-position editor and one complete map preserving density, sections, marks and current position are settled decisions. Do not replace the margin with a chatbot or administrative dashboard.
-
-Preserve four computation paths: packaged local evaluation; recorded samples only inside their envelope; explicit saved solver with zero model turns; explicit cloud Ask again for interpretation/model revision. A deterministic authenticated loopback check may be zero-model work; external/model/retrieval traffic is not. Never spend cloud permission for local recompute/cache work. Candidate claims and browser calculations do not become host-certified scientific results by relabelling.
-
-Windows, Linux and macOS are equal targets from the outset. Available hardware changes evidence scheduling, not requirements. Retain data by default on uninstall, offer export before deliberate deletion and preserve two verified SQLite pre-upgrade backups plus any unresolved recovery copy. Minimal public health and protected diagnostics remain. User sign-in, access to remaining machines, reader evaluation and publication choices are external/human gates. Collectors, installers, migration/export/diagnostic tooling and recording preparation remain engineering work.
+Keep the original reading experience: untouched source, notes primary, editor at reading position, one informative map, no implicit sending. Fetched is not supported; paired is not ready; code exists is not mounted; passing fixtures are not live acceptance. Reuse the current store, contracts, broker and renderer. Ask Matt's implementation and Standards+Spec review applies; no new planning framework or speculative abstractions.
 
 ## Historical integration chronology — evidence, not active instructions
 
