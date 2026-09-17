@@ -1,10 +1,10 @@
 # Marginalia overall build report
 
-Updated 17 September 2026 after integration of 889fb27. Chief task: 01a0adaf-dd71-7583-8307-b877547c9189.
+Updated 17 September 2026 after integration of 078d265. Chief task: 01a0adaf-dd71-7583-8307-b877547c9189.
 
 ## Current position
 
-The helper, corrected durable storage/journal, both Codex provider adapters, reply contract and initial numerical foundation are integrated and published through 889fb27. Margin and extension implementations are frozen for chief source review and integration. The renderer is finishing its Pro corrections and genuine host-report seam. New Sol Medium tasks own the additive samples-contract correction and durable jobs. No end-to-end live inference or release gate is complete.
+The helper, corrected durable storage/journal, both Codex provider adapters, basic reader margin, extension capture/hosts, reply contract and initial numerical foundation are integrated through 078d265. Chief source review found and resolved a margin/extension anchor mismatch, including moved and whole-page navigation. The renderer is frozen after Pro review and receiving a bounded Sol Medium integration review. Sol Medium tasks own the additive samples-contract correction, durable jobs, and consent/provider-session integration. No end-to-end live inference or release gate is complete.
 
 **User direction: leave all testing for later.** New test writing, test execution and browser QA are deferred across tasks. Historical evidence below is retained only for the versions it covered. Subsequent implementation is unverified. Source review, Pro advisory, implementation and coordination continue; deferral does not turn an open gate into a pass.
 
@@ -26,8 +26,8 @@ Integrated means code is committed; it does not mean the full user-facing accept
 | T01 | Local helper and pairing | Integrated 302fe52 + Pro corrections e61389e | Extension lifecycle and runtime isolation remain open; final fixes untested |
 | T02 | Codex app-server + MCP adapters | Integrated 889fb27 | Real authenticated inference, T06 integration, recovery and independent runtime evidence |
 | T03 | Reply contract and host checks | Foundation integrated; samples correction active, Sol Medium | Fixed generation inputs and host provenance binding; renderer/live integration |
-| T04 | Extension capture and private margin host | Frozen, awaiting chief integration | Final Pro corrections unverified; worker recovery and hostile-page gates deferred |
-| T05 | Margin and design | Frozen, awaiting chief integration | Rich replies, consent and jobs integration; later visual/interaction verification |
+| T04 | Extension capture and private margin host | Integrated 078d265, including chief source corrections | Final worker recovery, hostile-page, native panel and live Ask gates deferred |
+| T05 | Margin and design | Basic durable margin integrated aee5750 | Rich replies, consent and jobs integration; mount lifecycle correction and later visual/interaction verification |
 | T06 | Durable jobs, cancellation and progressive replies | Active, Sol Medium | Persisted attempts, atomic cancellation/commit, authenticated routes and deferred live gates |
 | T07 | Durable store, threads and journal | Integrated 3c72429 + Pro corrections 33aa698 | Final conflict/reattachment fixes source-reviewed, untested; browser gate open |
 | T08 | Contextual definition | Queued | T02, T05 and T13; unseen term through real provider |
@@ -35,12 +35,12 @@ Integrated means code is committed; it does not mean the full user-facing accept
 | T10 | WebMCP adapter | Queued | Stable T05 integration; typed replies and honest unsupported state |
 | T11 | Library and settings | Queued; T07 foundation available | Thread browsing, grants, vocabulary and export |
 | T12 | Launch | Queued | Actual release gates, fresh-machine run, video and honest listing |
-| T13 | Consent and session boundaries | Pure policy integrated 3901dfe | Consent UI, grants, observed retrieval and actual isolation still required |
+| T13 | Consent and session boundaries | Pure policy integrated 3901dfe; full ticket active, Sol Medium | Durable grants/exclusions, consent UI, adapter-aware policy and retrieval; actual isolation remains unverified |
 | T14 | Evidence | Queued | T13; claim-level dated support and abstention |
 | T15 | Explore | Queued | T13; useful linked shelf parked by default |
 | T16 | Full note workflow and vocabulary | Queued; basic notes in T05 | Note-version Ask, origin/deletion and full persistence flow |
 | T17 | Page header | Queued | T05/T13; local identity, granted enrichment, return position |
-| T18 | Complete renderer and kernel | Active, Sol Medium | All block types, four compute paths, safety and accessibility verification deferred |
+| T18 | Complete renderer and kernel | Frozen after Pro review; bounded Sol Medium source review active | Samples-contract consumer follow-up and real margin/helper plumbing; all runtime verification deferred |
 | T19 | Install and recovery | Queued | T01/T11; fresh-machine and sign-out recovery |
 | T20 | Saved solver execution | Queued | T02/T06; sandboxed rerun with zero model turns |
 
@@ -55,11 +55,12 @@ Chief owns dispatch, dependency decisions, source fidelity, integration, evidenc
 | T02 | 01a0add5-2436-7231-9727-63a11ab0c75a | daemon/providers, job-runner contract, provider evidence | [Provider advisory](https://chatgpt.com/c/6aab7cff-9ba4-83eb-9ad5-8e3a536800f8) reconciled; fixes source-reviewed |
 | T04 | 01a0add2-39b2-7591-b86b-9635b85c5d1c | extension and extension evidence | [Extension review](https://chatgpt.com/c/6aab7d11-52c4-83eb-99e4-2b649e28c0dc) reconciled; frozen |
 | T05 | 01a0adc8-a066-7d11-8248-9cb5a63cd737 | ui except journal, webapp, package/build wiring | [Margin review](https://chatgpt.com/c/6aab7cb6-cd84-83eb-ac23-6941621ab496) reconciled; frozen |
-| T18 | 01a0addb-ef93-77e0-8a57-45873cead42e | renderer and kernel | [Renderer advisory](https://chatgpt.com/c/6aab7cd5-31fc-83ed-9125-c1c2057277e2) received; reconciling |
+| T18 | 01a0addb-ef93-77e0-8a57-45873cead42e | renderer and kernel | [Renderer advisory](https://chatgpt.com/c/6aab7cd5-31fc-83ed-9125-c1c2057277e2) and two code reviews reconciled; final fixes untested |
 | T01 | 01a0adc8-8f4d-73a3-9e13-abdb015c842b | helper main/server/pairing/diagnostics | Fresh 6 Pro verified; consolidated chief review avoids duplication |
 | T07 | 01a0adcb-25bd-7451-831f-40197dade46a | store, reader contract, journal | Fresh 6 Pro verified; consolidated chief review avoids duplication |
 | T03 samples | 01a0ae01-0695-7b61-bd4d-0bacdbce172f | reply.ts/schema, CONTRACT.md, optional sample-provenance.ts | Chief higher-order advice supplied; own bounded review assigned |
 | T06 | 01a0ae02-dc03-7ec2-ae86-26b6be5bf319 | contracts/jobs.ts, daemon/jobs, helper server/main integration | Own lifecycle advisory and exact source review assigned |
+| T13 | 01a0ae07-41af-7b83-ae7f-d73ecb608090 | daemon/consent, retrieval, codex-policy, provider policy-gate, contracts/consent, modular consent UI | Chief higher-order profile decision supplied; own Pro advisory and scoped execution allowed |
 
 [Chief Pro conversation](https://chatgpt.com/c/6aab6e88-3804-83ed-9f27-3f02572b2d98) completed T01/T07 review and higher-order advice on headline authority, sample-grid inputs and provider evidence. All four T01/T07 findings have source fixes integrated. The samples correction is assigned; the adapter-aware policy correction remains T13 work. Pro was instructed to defer tests and work from sources and existing evidence.
 
@@ -86,12 +87,12 @@ Counts are historical snapshots, not additive, not a current full-build pass. Re
 1. Dedicated Codex runtime is signed out. Protocol preflight works for both transports, but no authenticated definition or simulation has run. Do not copy credentials or manufacture evidence. App-server and MCP remain required with their distinct cancellation/recovery capabilities.
 2. T13 must implement the accepted adapter-aware evidence profile: pinned reviewed built-in tool allowlist, observed effective configuration and actual applicable confinement evidence. Catalog observation can be unavailable/incomplete without inventing a per-request veto; authentication, grants and required isolation evidence still gate dispatch. No development bypass was approved.
 3. Preserve current headline authority: browser independent checks alone cannot authorize a headline. T18 accepts a genuinely bound host report and optional zero-inference host resealing callback. A separate local-calculation authority would require an explicit spec decision and has not been adopted. T03 adds complete axis/fixed input binding; unknown generation values must never be guessed from defaults.
-4. Integrate frozen T04/T05 after bounded source review; finish T18 Pro followup. T06 and T03 samples are active. Then dispatch T13 consent/policy and T11 library using separate owned modules; T05 has supplied a library mounting boundary. Rich replies, note-version Ask, saved solver and the full inventory remain required.
+4. Finish T18's bounded source review and T03's chief corrections before wiring the new sample consumer: imported records must not assert observed execution, and asynchronous binding must use detached immutable data throughout. T06 and T13 are active. T05's basic margin and T04 extension are integrated; later reply wiring must serialize view writes across mounts and prevent destroyed mounts' async callbacks from changing a newer mount. T11 library remains next using its agreed independent mounting boundary. Rich replies, note-version Ask, saved solver and the full inventory remain required.
 5. No launch-ready claim: fresh-machine install, live consent/inference, cancellation, saved solver and final release demonstrations remain open. The challenge sets priority, not permission to remove capabilities.
 
 ## Integration record
 
-Repository: https://github.com/yashgurbani/marginalia. Branch: codex/marginalia-v2. Published through 889fb27. Key implementation commits: 302fe52 helper; 3901dfe Pro policy; 3c72429 durable reader history/journal; e61389e helper Pro fixes; 33aa698 reader conflict and attachment fixes; 889fb27 provider adapters. These latest integrations were source-reviewed without executing checks, as requested. Frozen UI/extension and active renderer/contract/jobs code remain partly uncommitted.
+Repository: https://github.com/yashgurbani/marginalia. Branch: codex/marginalia-v2. Code integrated through 078d265. Key implementation commits: 302fe52 helper; 3901dfe Pro policy; 3c72429 durable reader history/journal; e61389e helper Pro fixes; 33aa698 reader conflict and attachment fixes; 889fb27 provider adapters; aee5750 basic durable margin; 078d265 extension capture and trusted surfaces. These latest integrations were source-reviewed without executing checks, as requested. T05/T04 freeze hashes matched before integration. Active renderer/contract/jobs/consent code remains partly uncommitted.
 
 All tasks share the requested checkout with disjoint ownership. Chief stages exact frozen paths only; no branch switches/resets, broad staging or unrelated root edits. Runtime databases, credentials and browser profiles are excluded. A ticket closes only when its source requirement, delivered implementation, review disposition and eventual acceptance evidence are explicit.
 
