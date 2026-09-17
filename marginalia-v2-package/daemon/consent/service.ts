@@ -354,9 +354,12 @@ export class ConsentSessionService implements JobConsentAuthority {
 
   private eligibilityFingerprint(job: Readonly<JobSnapshot>, attemptId: string, grant: GrantRow, site: string,
       scope: ConsentScope, sitePermissionEpoch: number): string {
-    return hash(canonical({ version: 'marginalia.dispatch-eligibility.v1', grantId: grant.id, grantRevision: grant.revision,
+    // Match the JSON form persisted by JobStore: absent optional context fields are omitted.
+    const immutable = JSON.parse(JSON.stringify({ jobId: job.id, threadId: job.threadId, packetDigest: job.packetDigest,
+      model: job.model, mode: job.mode, context: job.context })) as unknown;
+    return hash(canonical({ version: 'marginalia.dispatch-eligibility.v2', grantId: grant.id, grantRevision: grant.revision,
       sitePermissionEpoch, site, scope, recipient: grant.recipient, provider: job.provider, policyKey: job.policyKey,
-      preparedPayloadDigest: job.preparedPayloadDigest, manifest: job.context.outgoing, attemptId }));
+      preparedPayloadDigest: job.preparedPayloadDigest, immutable, attemptId }));
   }
 
   private previewState(preview: PreviewRow): ConsentPreview['state'] {

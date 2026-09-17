@@ -12,11 +12,18 @@ function request(id: string, text = id): PrepareConsentInput {
   return { requestId: id, sourceUrl: 'https://papers.example.org/article', scope: 'cloud-inference', recipient: 'openai-codex', recipientLabel: 'OpenAI Codex', provider: 'app-server', policyKey: hash('policy'), bindingDigest: hash('envelope:' + text), outgoing: [{ label: 'Selected passage', text, sha256: hash(text) }] };
 }
 const principal = { surface: 'localhost-settings' as const, pairingId: 'test-pair', origin: 'http://127.0.0.1:43120' };
-/** This unit fixture supplies only the durable job fields read by the consent authority. */
+/** The immutable fields mirror a durable job; lifecycle fields can change during preparation. */
 function job(prepared: PrepareConsentInput, grant: ConsentGrant, attempt = prepared.requestId + '-attempt'): JobSnapshot {
-  return { id: prepared.requestId, latestAttemptId: attempt, grantId: grant.id, provider: prepared.provider,
+  return { id: prepared.requestId, threadId: 'thread', idempotencyKey: 'key-' + prepared.requestId,
+    packetDigest: hash('packet:' + prepared.requestId), latestAttemptId: attempt, grantId: grant.id,
+    provider: prepared.provider, model: 'model', mode: 'workspace-files', state: 'queued', cancelRequested: false,
+    createdAt: '2026-09-17T00:00:00Z', updatedAt: '2026-09-17T00:00:00Z', attempts: [],
     policyKey: prepared.policyKey, preparedPayloadDigest: prepared.bindingDigest, context: {
-      sourceUrl: prepared.sourceUrl, intent: 'define', outgoing: {
+      threadId: 'thread', sourceVersionId: 'source-version', sourceUrl: prepared.sourceUrl,
+      sourceTitle: 'Paper', sourcePageType: 'article', sourceCapturedAt: null, sourceHash: hash('source'),
+      sourceText: 'passage', passage: { exact: 'passage', prefix: '', suffix: '', start: 0, end: 7 },
+      question: prepared.requestId, intent: 'define', preparedPayloadDigest: prepared.bindingDigest,
+      modelSettingsRevision: 1, modelCompatibilityKey: 'model-key', outgoing: {
         schema: 'marginalia.job-packet.v1', intent: 'define', question: prepared.requestId,
         source: { url: prepared.sourceUrl, title: 'Paper', pageType: 'article', capturedAt: null,
           sourceHash: hash('source'), sourceVersionId: 'source-version' },
@@ -24,7 +31,7 @@ function job(prepared: PrepareConsentInput, grant: ConsentGrant, attempt = prepa
         adjacentContext: { before: '', after: '', basis: 'bounded-character-context' },
         availableCapabilities: [], omissions: [],
       },
-    } } as unknown as JobSnapshot;
+    } };
 }
 async function rawDatabase(t: TestContext) {
   // Use the production SQLite driver, not an in-memory imitation of transactions.
@@ -178,6 +185,60 @@ test('database: finalization requires the shared caller-owned transaction and po
   await assert.rejects(service.revalidate(changed, 'dispatch'), /manifest changed/);
   assert.throws(() => finalize(service, db, current, decision.eligibilityFingerprint!), /already finalized/);
   assert.deepEqual(counts(db), { authorizations: 1, egress: 1 });
+});
+
+test('database: same manifest token cannot cross jobs or immutable bindings', async t => {
+  const { service, db } = await database(t), firstRequest = request('token-first', 'same'), permission = grant(service, firstRequest);
+  const secondRequest = request('token-second', 'same'); service.prepare(secondRequest);
+  const first = job(firstRequest, permission), second = job(secondRequest, permission, first.latestAttemptId);
+  // Keep the context and outgoing manifest identical to isolate the job identifier.
+  second.context = structuredClone(first.context);
+  second.packetDigest = first.packetDigest;
+  const firstToken = (await eligible(service, first)).eligibilityFingerprint!;
+  const secondToken = (await eligible(service, second)).eligibilityFingerprint!;
+  assert.notEqual(firstToken, secondToken);
+  assert.throws(() => finalize(service, db, second, firstToken), /eligibility changed/);
+  const mutations: Array<(value: JobSnapshot) => void> = [
+    value => { value.threadId = 'other-thread'; },
+    value => { value.packetDigest = hash('different-packet'); },
+    value => { value.model = 'different-model'; },
+    value => { value.mode = 'structured-final'; },
+    value => { value.context.sourceText = 'changed frozen source'; },
+    value => { value.context.outgoing.question = 'changed outgoing'; },
+  ];
+  for (const mutate of mutations) {
+    const changed = structuredClone(first); mutate(changed);
+    assert.throws(() => finalize(service, db, changed, firstToken), /eligibility changed/);
+  }
+  assert.deepEqual(counts(db), { authorizations: 0, egress: 0 });
+});
+
+test('database: postfinalization checks reject immutable drift but allow lifecycle progress', async t => {
+  const { service, db } = await database(t), prepared = request('post-final'), permission = grant(service, prepared, 'this-time');
+  const current = job(prepared, permission), token = (await eligible(service, current)).eligibilityFingerprint!;
+  const progressing = structuredClone(current);
+  progressing.state = 'preparing'; progressing.updatedAt = '2026-09-17T00:01:00Z';
+  progressing.attempts = [{ id: current.latestAttemptId!, jobId: current.id, number: 1, state: 'preparing', revision: 0,
+    dispatchClaimed: false, handoffMarked: false, workspacePrepared: true, authorizationFingerprint: hash('authorization'),
+    predecessorAttemptId: 'predecessor' }];
+  assert.equal((await eligible(service, progressing)).eligibilityFingerprint, token);
+  finalize(service, db, progressing, token);
+  progressing.state = 'sending'; progressing.attempts[0].handoffMarked = true;
+  assert.equal((await service.revalidate(progressing, 'dispatch')).eligibilityFingerprint, undefined);
+  service.currentAuthorization(progressing, progressing.latestAttemptId!);
+  const changed = structuredClone(progressing); changed.context.sourceText = 'altered after dispatch';
+  await assert.rejects(service.revalidate(changed, 'dispatch'), /manifest changed/);
+  assert.throws(() => service.currentAuthorization(changed, changed.latestAttemptId!), /manifest changed/);
+  assert.deepEqual(counts(db), { authorizations: 1, egress: 1 });
+});
+
+test('database: active deny-site row denies even without a grant-state sidecar', async t => {
+  const { service, db } = await database(t), prepared = request('sidecar-denial'), permission = grant(service, prepared);
+  db.prepare('INSERT INTO grants(id,site,scope,recipient,decision,createdAt,revokedAt) VALUES(?,?,?,?,?,?,NULL)')
+    .run('legacy-deny-without-sidecar', permission.site, permission.scope, permission.recipient, 'deny-site', '2026-09-17T00:00:00Z');
+  assert.equal(db.prepare('SELECT 1 FROM consent_grant_state WHERE grantId=?').get('legacy-deny-without-sidecar'), undefined);
+  await assert.rejects(service.revalidate(job(prepared, permission), 'dispatch'), /denied/);
+  assert.deepEqual(counts(db), { authorizations: 0, egress: 0 });
 });
 
 test('migration: legacy grants are backfilled once without inventing one-shot bindings or hiding denials', async t => {
