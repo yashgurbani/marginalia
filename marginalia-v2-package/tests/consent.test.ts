@@ -14,9 +14,19 @@ function request(id: string, text = id): PrepareConsentInput {
 const principal = { surface: 'localhost-settings' as const, pairingId: 'test-pair', origin: 'http://127.0.0.1:43120' };
 /** This unit fixture supplies only the durable job fields read by the consent authority. */
 function job(prepared: PrepareConsentInput, grant: ConsentGrant, attempt = prepared.requestId + '-attempt'): JobSnapshot {
-  return { id: prepared.requestId, latestAttemptId: attempt, grantId: grant.id, provider: prepared.provider, policyKey: prepared.policyKey, preparedPayloadDigest: prepared.bindingDigest, context: { sourceUrl: prepared.sourceUrl, intent: 'define' } } as JobSnapshot;
+  return { id: prepared.requestId, latestAttemptId: attempt, grantId: grant.id, provider: prepared.provider,
+    policyKey: prepared.policyKey, preparedPayloadDigest: prepared.bindingDigest, context: {
+      sourceUrl: prepared.sourceUrl, intent: 'define', outgoing: {
+        schema: 'marginalia.job-packet.v1', intent: 'define', question: prepared.requestId,
+        source: { url: prepared.sourceUrl, title: 'Paper', pageType: 'article', capturedAt: null,
+          sourceHash: hash('source'), sourceVersionId: 'source-version' },
+        selection: { exact: 'passage', prefix: '', suffix: '', start: 0, end: 7, originalEnd: 7, omittedCharacters: 0 },
+        adjacentContext: { before: '', after: '', basis: 'bounded-character-context' },
+        availableCapabilities: [], omissions: [],
+      },
+    } } as unknown as JobSnapshot;
 }
-async function database(t: TestContext) {
+async function rawDatabase(t: TestContext) {
   // Use the production SQLite driver, not an in-memory imitation of transactions.
   const { default: Database } = await import('better-sqlite3');
   const db = new Database(':memory:');
@@ -24,51 +34,207 @@ async function database(t: TestContext) {
     CREATE TABLE grants(id TEXT PRIMARY KEY,site TEXT,scope TEXT,recipient TEXT,decision TEXT,createdAt TEXT,revokedAt TEXT);
     CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT,payload TEXT,createdAt TEXT);`);
   t.after(() => db.close());
+  return db;
+}
+async function database(t: TestContext) {
+  const db = await rawDatabase(t);
   return { db, service: new ConsentSessionService({ db }) };
 }
 function grant(service: ConsentSessionService, prepared: PrepareConsentInput, choice: 'always-site' | 'this-time' = 'always-site') {
   const preview = service.prepare(prepared);
   return service.decide({ previewId: preview.id, expectedRevision: preview.revision, choice }, principal);
 }
+async function eligible(service: ConsentSessionService, current: JobSnapshot) {
+  const decision = await service.revalidate(current, 'dispatch');
+  assert.match(decision.eligibilityFingerprint ?? '', /^[a-f0-9]{64}$/);
+  return decision;
+}
+function finalize(service: ConsentSessionService, db: Awaited<ReturnType<typeof rawDatabase>>, current: JobSnapshot, token: string) {
+  return db.transaction(() => service.finalizeDispatch(current, current.latestAttemptId!, token))();
+}
+function counts(db: Awaited<ReturnType<typeof rawDatabase>>) {
+  return {
+    authorizations: (db.prepare('SELECT COUNT(*) n FROM consent_attempt_authorizations').get() as { n: number }).n,
+    egress: (db.prepare('SELECT COUNT(*) n FROM egress_events').get() as { n: number }).n,
+  };
+}
 
-test('database: reusable grant records each current prepared request, not its grant-creation preview', async t => {
-  const { service } = await database(t), a = request('request-a', 'first passage'), permission = grant(service, a);
-  const first = job(a, permission); service.authorizeAttempt(first, first.latestAttemptId!);
+test('database: eligibility is non-consuming and finalization records the current preview in the caller transaction', async t => {
+  const { service, db } = await database(t), a = request('request-a', 'first passage'), permission = grant(service, a);
+  const first = job(a, permission), firstDecision = await eligible(service, first);
+  assert.deepEqual(counts(db), { authorizations: 0, egress: 0 });
+  finalize(service, db, first, firstDecision.eligibilityFingerprint!);
   const b = request('request-b', 'different passage');
   b.outgoing.push({ label: 'Your note', text: 'current note', sha256: hash('current note') });
   service.prepare(b);
-  const second = job(b, permission); service.authorizeAttempt(second, second.latestAttemptId!);
+  const second = job(b, permission), secondDecision = await eligible(service, second);
+  finalize(service, db, second, secondDecision.eligibilityFingerprint!);
   assert.deepEqual(service.egress(first.id)[0].contextHashes, a.outgoing.map(part => part.sha256));
   assert.deepEqual(service.egress(second.id)[0].contextHashes, b.outgoing.map(part => part.sha256));
-  service.authorizeAttempt(second, second.latestAttemptId!);
-  assert.equal(service.egress(second.id).length, 1, 'same-attempt authorization is idempotent');
+  assert.throws(() => finalize(service, db, second, secondDecision.eligibilityFingerprint!), /already finalized/);
+  assert.equal(service.egress(second.id).length, 1, 'uncertain handoff cannot be retried or refunded');
 });
 
-test('database: both current request identity and digest are required; rejection rolls back authorization', async t => {
+test('database: eligibility and preparation failures leave a one-shot grant unconsumed with no egress', async t => {
   const { service, db } = await database(t), a = request('request-a'), permission = grant(service, a);
+  const once = request('once'), oncePermission = grant(service, once, 'this-time'), currentOnce = job(once, oncePermission);
+  await eligible(service, currentOnce);
+  assert.throws(() => { throw new Error('provider preparation failed'); }, /provider preparation failed/);
+  assert.equal((db.prepare('SELECT consumedAttemptId FROM consent_grant_state WHERE grantId=?').get(oncePermission.id) as { consumedAttemptId: string | null }).consumedAttemptId, null);
+  assert.deepEqual(counts(db), { authorizations: 0, egress: 0 });
+
   const b = request('request-b'); service.prepare(b);
   const cases = [job(request('not-previewed'), permission), job({ ...b, bindingDigest: hash('wrong') }, permission), job({ ...b, requestId: 'other', bindingDigest: b.bindingDigest }, permission)];
   for (const current of cases) {
-    assert.throws(() => service.authorizeAttempt(current, current.latestAttemptId!), /current outgoing preview/);
+    await assert.rejects(service.revalidate(current, 'dispatch'), /current outgoing preview/);
     assert.equal(service.egress(current.id).length, 0);
   }
   assert.equal((db.prepare('SELECT COUNT(*) AS n FROM consent_attempt_authorizations').get() as { n: number }).n, 0);
 });
 
-test('database: preview authority metadata must match, and a failed one-shot bind does not consume it', async t => {
+test('database: preview authority metadata must match and failed checks do not consume a one-shot grant', async t => {
   const { service, db } = await database(t), prepared = request('once'), permission = grant(service, prepared, 'this-time'), current = job(prepared, permission);
   for (const [column, value] of [['site', 'https://other.example.org'], ['scope', 'open-session'], ['recipient', 'other-provider'], ['provider', 'mcp-server'], ['policyKey', hash('other-policy')], ['contextHashes', '[]']] as const) {
     const original = (db.prepare(`SELECT ${column} AS value FROM consent_previews WHERE requestId=?`).get(prepared.requestId) as { value: string }).value;
     db.prepare(`UPDATE consent_previews SET ${column}=? WHERE requestId=?`).run(value, prepared.requestId);
-    assert.throws(() => service.authorizeAttempt(current, current.latestAttemptId!), /current outgoing preview/);
+    await assert.rejects(service.revalidate(current, 'dispatch'), /current outgoing preview/);
     assert.equal((db.prepare('SELECT consumedAttemptId FROM consent_grant_state WHERE grantId=?').get(permission.id) as { consumedAttemptId: string | null }).consumedAttemptId, null);
     assert.equal(service.egress().length, 0);
     db.prepare(`UPDATE consent_previews SET ${column}=? WHERE requestId=?`).run(original, prepared.requestId);
   }
-  service.authorizeAttempt(current, current.latestAttemptId!);
-  assert.throws(() => service.authorizeAttempt({ ...current, latestAttemptId: 'another-attempt' }, 'another-attempt'), /already used/);
+  const decision = await eligible(service, current);
+  finalize(service, db, current, decision.eligibilityFingerprint!);
+  await assert.rejects(service.revalidate({ ...current, latestAttemptId: 'another-attempt' }, 'dispatch'), /already used/);
   service.revokeGrant(permission.id, permission.revision);
   assert.throws(() => service.currentAuthorization(current, current.latestAttemptId!, false), /revoked/);
+});
+
+test('database: caller transaction rollback restores consumption, authorization, egress and dispatch markers', async t => {
+  const { service, db } = await database(t), prepared = request('rollback'), permission = grant(service, prepared, 'this-time');
+  const current = job(prepared, permission), decision = await eligible(service, current);
+  assert.throws(() => db.transaction(() => {
+    service.finalizeDispatch(current, current.latestAttemptId!, decision.eligibilityFingerprint!);
+    throw new Error('job callback failed');
+  })(), /job callback failed/);
+  assert.equal((db.prepare('SELECT consumedAttemptId FROM consent_grant_state WHERE grantId=?').get(permission.id) as { consumedAttemptId: string | null }).consumedAttemptId, null);
+  assert.deepEqual(counts(db), { authorizations: 0, egress: 0 });
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM events WHERE kind IN ('egress-approved','egress-dispatched')").get() as { n: number }).n, 0);
+});
+
+test('database: competing attempts can both qualify but only one spends a one-shot grant', async t => {
+  const { service, db } = await database(t), prepared = request('race'), permission = grant(service, prepared, 'this-time');
+  const first = job(prepared, permission, 'attempt-one'), second = job(prepared, permission, 'attempt-two');
+  const firstDecision = await eligible(service, first), secondDecision = await eligible(service, second);
+  finalize(service, db, first, firstDecision.eligibilityFingerprint!);
+  assert.throws(() => finalize(service, db, first, firstDecision.eligibilityFingerprint!), /already finalized/);
+  assert.throws(() => finalize(service, db, second, secondDecision.eligibilityFingerprint!), /already used/);
+  assert.equal((db.prepare('SELECT consumedAttemptId FROM consent_grant_state WHERE grantId=?').get(permission.id) as { consumedAttemptId: string }).consumedAttemptId, 'attempt-one');
+  assert.deepEqual(counts(db), { authorizations: 1, egress: 1 });
+});
+
+test('database: finalization rejects permission, exclusion, manifest and attempt drift after eligibility', async t => {
+  {
+    const { service, db } = await database(t), prepared = request('revoked'), permission = grant(service, prepared);
+    const current = job(prepared, permission), decision = await eligible(service, current);
+    service.revokeGrant(permission.id, permission.revision);
+    assert.throws(() => finalize(service, db, current, decision.eligibilityFingerprint!), /authorize|revoked|replaced/);
+  }
+  {
+    const { service, db } = await database(t), prepared = request('excluded'), permission = grant(service, prepared);
+    const current = job(prepared, permission), decision = await eligible(service, current);
+    service.setExclusion('https://papers.example.org', true);
+    assert.throws(() => finalize(service, db, current, decision.eligibilityFingerprint!), /excluded/);
+  }
+  {
+    const { service, db } = await database(t), prepared = request('manifest'), permission = grant(service, prepared);
+    const current = job(prepared, permission), decision = await eligible(service, current);
+    const changed = structuredClone(current); changed.context.outgoing.question = 'changed after eligibility';
+    assert.throws(() => finalize(service, db, changed, decision.eligibilityFingerprint!), /eligibility changed/);
+  }
+  {
+    const { service, db } = await database(t), prepared = request('attempt'), permission = grant(service, prepared);
+    const current = job(prepared, permission, 'attempt-before'), decision = await eligible(service, current);
+    const changed = { ...current, latestAttemptId: 'attempt-after' };
+    assert.throws(() => finalize(service, db, changed, decision.eligibilityFingerprint!), /eligibility changed/);
+  }
+});
+
+test('database: finalization requires the shared caller-owned transaction and post-finalization checks are read-only', async t => {
+  const { service, db } = await database(t), other = await rawDatabase(t), prepared = request('boundary'), permission = grant(service, prepared);
+  const current = job(prepared, permission), decision = await eligible(service, current);
+  service.assertSharedDatabase(db);
+  assert.throws(() => service.assertSharedDatabase(other), /exact database connection/);
+  assert.throws(() => service.finalizeDispatch(current, current.latestAttemptId!, decision.eligibilityFingerprint!), /caller-owned job transaction/);
+  const authorization = finalize(service, db, current, decision.eligibilityFingerprint!);
+  assert.ok(authorization.dispatchedAt);
+  const before = { ...counts(db), events: (db.prepare('SELECT COUNT(*) n FROM events').get() as { n: number }).n };
+  const checked = await service.revalidate(current, 'dispatch');
+  assert.equal(checked.auditScope, authorization.permissionFingerprint);
+  assert.equal(checked.eligibilityFingerprint, undefined);
+  const committed = await service.revalidate(current, 'commit');
+  assert.equal(committed.auditScope, authorization.permissionFingerprint);
+  assert.deepEqual({ ...counts(db), events: (db.prepare('SELECT COUNT(*) n FROM events').get() as { n: number }).n }, before);
+  const changed = structuredClone(current); changed.context.outgoing.question = 'changed after dispatch';
+  await assert.rejects(service.revalidate(changed, 'dispatch'), /manifest changed/);
+  assert.throws(() => finalize(service, db, current, decision.eligibilityFingerprint!), /already finalized/);
+  assert.deepEqual(counts(db), { authorizations: 1, egress: 1 });
+});
+
+test('migration: legacy grants are backfilled once without inventing one-shot bindings or hiding denials', async t => {
+  const db = await rawDatabase(t), now = '2026-09-17T00:00:00.000Z';
+  db.prepare('INSERT INTO grants VALUES(?,?,?,?,?,?,?)').run('legacy-denial', 'https://papers.example.org', 'cloud-inference', 'openai-codex', 'deny-site', now, null);
+  db.prepare('INSERT INTO grants VALUES(?,?,?,?,?,?,?)').run('legacy-once', 'https://papers.example.org', 'cloud-inference', 'openai-codex', 'allow-once', now, null);
+  db.prepare('INSERT INTO grants VALUES(?,?,?,?,?,?,?)').run('legacy-site', 'https://papers.example.org', 'cloud-inference', 'openai-codex', 'allow-site', now, null);
+  const service = new ConsentSessionService({ db });
+  assert.equal(service.grants().find(value => value.id === 'legacy-denial')!.decision, 'deny-site');
+  const denied = service.prepare(request('legacy-preview'));
+  assert.equal(denied.state, 'denied');
+  assert.throws(() => service.decide({ previewId: denied.id, expectedRevision: denied.revision, choice: 'always-site' }, principal), /denied/);
+  const legacySite = service.grants().find(value => value.id === 'legacy-site')!;
+  await assert.rejects(service.revalidate(job(request('legacy-preview'), legacySite), 'dispatch'), /denied/);
+  db.prepare('UPDATE grants SET revokedAt=? WHERE id=?').run(now, 'legacy-denial');
+  const legacyOnce = service.grants().find(value => value.id === 'legacy-once')!;
+  await assert.rejects(service.revalidate(job(request('legacy-preview'), legacyOnce), 'dispatch'), /bound to different outgoing content/);
+  const siteDecision = await eligible(service, job(request('legacy-preview'), legacySite));
+  assert.match(siteDecision.eligibilityFingerprint!, /^[a-f0-9]{64}$/);
+  const wrongScope = job(request('legacy-preview'), legacySite);
+  wrongScope.context.intent = 'evidence'; wrongScope.context.outgoing.intent = 'evidence';
+  await assert.rejects(service.revalidate(wrongScope, 'dispatch'), /does not authorize/);
+  await assert.rejects(service.revalidate(job(request('missing-preview'), legacySite), 'dispatch'), /current outgoing preview/);
+  const state = db.prepare('SELECT * FROM consent_grant_state WHERE grantId=?').get('legacy-once') as Record<string, unknown>;
+  assert.deepEqual({ revision: state.revision, requestId: state.requestId, bindingDigest: state.bindingDigest,
+    previewId: state.previewId, consumedAttemptId: state.consumedAttemptId },
+    { revision: 1, requestId: null, bindingDigest: null, previewId: null, consumedAttemptId: null });
+  new ConsentSessionService({ db });
+  assert.equal((db.prepare('SELECT COUNT(*) n FROM consent_grant_state').get() as { n: number }).n, 3);
+});
+
+test('migration: revoked legacy denial is inactive and existing grant state is preserved', async t => {
+  const db = await rawDatabase(t), now = '2026-09-17T00:00:00.000Z';
+  db.prepare('INSERT INTO grants VALUES(?,?,?,?,?,?,?)').run('revoked-denial', 'https://papers.example.org', 'cloud-inference', 'openai-codex', 'deny-site', now, now);
+  db.prepare('INSERT INTO grants VALUES(?,?,?,?,?,?,?)').run('existing', 'https://papers.example.org', 'cloud-inference', 'openai-codex', 'allow-site', now, null);
+  db.exec(`CREATE TABLE consent_grant_state(grantId TEXT PRIMARY KEY REFERENCES grants(id),revision INTEGER NOT NULL,
+    requestId TEXT,bindingDigest TEXT,previewId TEXT,consumedAttemptId TEXT UNIQUE)`);
+  db.prepare('INSERT INTO consent_grant_state VALUES(?,?,?,?,?,?)').run('existing', 7, 'kept-request', hash('kept'), null, 'spent-attempt');
+  const service = new ConsentSessionService({ db }), preview = service.prepare(request('revoked-preview'));
+  assert.equal(preview.state, 'ready');
+  assert.equal(service.grants().find(value => value.id === 'revoked-denial')!.revokedAt, now);
+  assert.equal(service.grants().find(value => value.id === 'existing')!.revision, 7);
+  const row = db.prepare('SELECT * FROM consent_grant_state WHERE grantId=?').get('existing') as Record<string, unknown>;
+  assert.equal(row.requestId, 'kept-request'); assert.equal(row.bindingDigest, hash('kept')); assert.equal(row.consumedAttemptId, 'spent-attempt');
+});
+
+test('migration: injected legacy backfill failure rolls the whole consent migration back', async t => {
+  const db = await rawDatabase(t), now = '2026-09-17T00:00:00.000Z';
+  db.prepare('INSERT INTO grants VALUES(?,?,?,?,?,?,?)').run('legacy-fail', 'https://papers.example.org', 'cloud-inference', 'openai-codex', 'allow-site', now, null);
+  db.exec(`CREATE TABLE consent_grant_state(grantId TEXT PRIMARY KEY REFERENCES grants(id),revision INTEGER NOT NULL,
+    requestId TEXT,bindingDigest TEXT,previewId TEXT,consumedAttemptId TEXT UNIQUE);
+    CREATE TRIGGER fail_legacy_backfill BEFORE INSERT ON consent_grant_state
+      WHEN NEW.grantId='legacy-fail' BEGIN SELECT RAISE(ABORT,'injected migration failure'); END;`);
+  assert.throws(() => new ConsentSessionService({ db }), /injected migration failure/);
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='consent_previews'").get() as { n: number }).n, 0);
+  assert.equal((db.prepare('SELECT COUNT(*) n FROM migrations WHERE version=13').get() as { n: number }).n, 0);
+  assert.equal((db.prepare('SELECT COUNT(*) n FROM consent_grant_state').get() as { n: number }).n, 0);
 });
 
 /** Minimal DOM double for event/focus ownership. This is not a browser or accessibility audit. */

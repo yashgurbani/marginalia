@@ -25,7 +25,7 @@ type GrantRow = {
 type AuthorizationRow = {
   id: string; jobId: string; attemptId: string; grantId: string; grantRevision: number; sitePermissionEpoch: number; site: string;
   scope: ConsentScope; recipient: string; provider: 'app-server' | 'mcp-server'; policyKey: string;
-  bindingDigest: string; permissionFingerprint: string; egressEventId: string; createdAt: string;
+  bindingDigest: string; permissionFingerprint: string; eligibilityFingerprint: string | null; egressEventId: string; createdAt: string;
   dispatchedAt: string | null; acceptedAt: string | null; outcome: string | null;
 };
 
@@ -42,7 +42,8 @@ export class ConsentSessionService implements JobConsentAuthority {
   }
 
   private migrate() {
-    this.db.exec(`
+    this.db.transaction(() => {
+      this.db.exec(`
       CREATE TABLE IF NOT EXISTS consent_previews(
         id TEXT PRIMARY KEY, revision INTEGER NOT NULL, requestId TEXT NOT NULL UNIQUE,
         site TEXT NOT NULL, scope TEXT NOT NULL, recipient TEXT NOT NULL, recipientLabel TEXT NOT NULL,
@@ -65,6 +66,7 @@ export class ConsentSessionService implements JobConsentAuthority {
         sitePermissionEpoch INTEGER NOT NULL DEFAULT 0,
         site TEXT NOT NULL, scope TEXT NOT NULL, recipient TEXT NOT NULL, provider TEXT NOT NULL,
         policyKey TEXT NOT NULL, bindingDigest TEXT NOT NULL, permissionFingerprint TEXT NOT NULL,
+        eligibilityFingerprint TEXT,
         egressEventId TEXT NOT NULL UNIQUE, createdAt TEXT NOT NULL, dispatchedAt TEXT,
         acceptedAt TEXT, outcome TEXT
       );
@@ -78,11 +80,18 @@ export class ConsentSessionService implements JobConsentAuthority {
         updatedAt TEXT NOT NULL
       );
       INSERT OR IGNORE INTO migrations(version) VALUES(13);
-    `);
-    const authorizationColumns = this.db.prepare('PRAGMA table_info(consent_attempt_authorizations)').all() as Array<{ name: string }>;
-    if (!authorizationColumns.some(column => column.name === 'sitePermissionEpoch')) {
-      this.db.exec('ALTER TABLE consent_attempt_authorizations ADD COLUMN sitePermissionEpoch INTEGER NOT NULL DEFAULT 0');
-    }
+      `);
+      const authorizationColumns = this.db.prepare('PRAGMA table_info(consent_attempt_authorizations)').all() as Array<{ name: string }>;
+      if (!authorizationColumns.some(column => column.name === 'sitePermissionEpoch')) {
+        this.db.exec('ALTER TABLE consent_attempt_authorizations ADD COLUMN sitePermissionEpoch INTEGER NOT NULL DEFAULT 0');
+      }
+      if (!authorizationColumns.some(column => column.name === 'eligibilityFingerprint')) {
+        this.db.exec('ALTER TABLE consent_attempt_authorizations ADD COLUMN eligibilityFingerprint TEXT');
+      }
+      this.db.prepare(`INSERT OR IGNORE INTO consent_grant_state
+        (grantId,revision,requestId,bindingDigest,previewId,consumedAttemptId)
+        SELECT id,1,NULL,NULL,NULL,NULL FROM grants`).run();
+    })();
   }
 
   /** Keeps exact outgoing text only in the returned value; the durable preview stores hashes. */
@@ -192,57 +201,53 @@ export class ConsentSessionService implements JobConsentAuthority {
     })();
   }
 
-  async revalidate(job: Readonly<JobSnapshot>, stage: JobConsentStage): Promise<JobConsentDecision> {
+  async revalidate(job: Readonly<JobSnapshot>, stage: JobConsentStage): Promise<JobConsentDecision & { eligibilityFingerprint?: string }> {
     const attemptId = job.latestAttemptId;
     if (!attemptId) throw new ConsentDeniedError('A unique attempt is required before consent can be checked.');
-    const authorization = stage === 'dispatch' ? this.authorizeAttempt(job, attemptId) : this.requireCurrent(job, attemptId, true);
-    return { grantId: authorization.grantId, policyKey: authorization.policyKey, auditScope: authorization.permissionFingerprint };
+    const existing = this.authorizationRow(attemptId);
+    if (stage === 'commit' || existing) {
+      const authorization = this.requireCurrent(job, attemptId, true);
+      return { grantId: authorization.grantId, policyKey: authorization.policyKey, auditScope: authorization.permissionFingerprint };
+    }
+    const eligibility = this.dispatchEligibility(job, attemptId);
+    return { grantId: eligibility.grant.id, policyKey: job.policyKey, auditScope: eligibility.auditScope,
+      eligibilityFingerprint: eligibility.eligibilityFingerprint };
   }
 
-  /** Atomically consumes an allow-once grant and binds all grants to one unique attempt. */
-  authorizeAttempt(job: Readonly<JobSnapshot>, attemptId: string): ConsentAuthorization {
-    validateJobBinding(job, attemptId);
-    return this.db.transaction(() => {
-      const existing = this.authorizationRow(attemptId);
-      if (existing) return this.requireCurrent(job, attemptId, false);
-      const site = siteFor(job.context.sourceUrl), scope = scopeForIntent(job.context.intent);
-      if (this.excluded(site)) throw new ConsentDeniedError('This site is excluded. Nothing was sent.');
-      const grant = this.grantRow(job.grantId);
-      if (!grant || grant.revokedAt || grant.site !== site || grant.scope !== scope || grant.decision === 'deny-site') throw new ConsentDeniedError('Current permission does not authorize this request.');
-      if (this.activeDenial(site, scope, grant.recipient)) throw new ConsentDeniedError('Sending is denied for this site.');
-      if (grant.decision === 'allow-once') {
-        if (grant.requestId !== job.id || grant.bindingDigest !== job.preparedPayloadDigest) throw new ConsentDeniedError('This-time permission is bound to different outgoing content.');
-        if (grant.consumedAttemptId && grant.consumedAttemptId !== attemptId) throw new ConsentDeniedError('This-time permission was already used by another attempt.');
-        this.db.prepare('UPDATE consent_grant_state SET consumedAttemptId=? WHERE grantId=? AND consumedAttemptId IS NULL').run(attemptId, grant.id);
-      }
-      const now = new Date().toISOString(), authorizationId = randomUUID(), egressEventId = randomUUID();
-      const sitePermissionEpoch = this.sitePermissionEpoch(site);
-      const permissionFingerprint = hash(canonical([grant.id, grant.revision, sitePermissionEpoch, job.provider, job.policyKey, scope, grant.recipient]));
-      this.db.prepare(`INSERT INTO consent_attempt_authorizations
-        (id,jobId,attemptId,grantId,grantRevision,sitePermissionEpoch,site,scope,recipient,provider,policyKey,bindingDigest,permissionFingerprint,egressEventId,createdAt,dispatchedAt,acceptedAt,outcome)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL)`)
-        .run(authorizationId, job.id, attemptId, grant.id, grant.revision, sitePermissionEpoch, site, scope, grant.recipient, job.provider, job.policyKey, job.preparedPayloadDigest, permissionFingerprint, egressEventId, now);
-      const hashes = this.contextHashes(job, site, scope, grant.recipient);
-      this.db.prepare(`INSERT INTO egress_events
-        (id,jobId,attemptId,grantId,grantRevision,recipient,scope,provider,policyKey,contextHashes,permissionFingerprint,approvedAt,dispatchedAt,outcome,fetched,complete,updatedAt)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'[]',0,?)`)
-        .run(egressEventId, job.id, attemptId, grant.id, grant.revision, grant.recipient, scope, job.provider, job.policyKey, JSON.stringify(hashes), permissionFingerprint, now, now);
-      this.event('egress-approved', { egressEventId, jobId: job.id, attemptId, grantId: grant.id, grantRevision: grant.revision, sitePermissionEpoch, recipient: grant.recipient, scope, provider: job.provider, contextHashes: hashes });
-      return this.authorization(attemptId)!;
-    })();
+  assertSharedDatabase(database: unknown): void {
+    if (database !== this.db) throw new ConsentDeniedError('Consent and job dispatch must share the exact database connection.');
   }
 
-  /** T06 calls synchronously immediately before runner.start/resume, with no intervening await. */
-  markDispatched(job: Readonly<JobSnapshot>, attemptId: string): ConsentAuthorization {
-    return this.db.transaction(() => {
-      const authorization = this.requireCurrent(job, attemptId, false);
-      if (authorization.dispatchedAt) return authorization;
-      const now = new Date().toISOString();
-      this.db.prepare('UPDATE consent_attempt_authorizations SET dispatchedAt=? WHERE attemptId=? AND dispatchedAt IS NULL').run(now, attemptId);
-      this.db.prepare('UPDATE egress_events SET dispatchedAt=?,outcome=?,updatedAt=? WHERE id=?').run(now, 'dispatched', now, authorization.egressEventId);
-      this.event('egress-dispatched', { egressEventId: authorization.egressEventId, jobId: job.id, attemptId });
-      return this.authorization(attemptId)!;
-    })();
+  /** Caller-owned JobStore transaction atomically finalizes consent and provider handoff markers. */
+  finalizeDispatch(job: Readonly<JobSnapshot>, attemptId: string, expectedEligibilityFingerprint: string): ConsentAuthorization {
+    if (!this.db.inTransaction) throw new ConsentDeniedError('Dispatch consent must be finalized inside the caller-owned job transaction.');
+    if (!SHA256.test(expectedEligibilityFingerprint)) throw new ConsentDeniedError('Dispatch eligibility is missing or invalid.');
+    if (this.authorizationRow(attemptId)) throw new ConsentDeniedError('This attempt was already finalized for dispatch.');
+    const eligibility = this.dispatchEligibility(job, attemptId);
+    if (eligibility.eligibilityFingerprint !== expectedEligibilityFingerprint) {
+      throw new ConsentDeniedError('Dispatch eligibility changed; start a new attempt.');
+    }
+    const { grant, site, scope, sitePermissionEpoch, auditScope, contextHashes } = eligibility;
+    if (grant.decision === 'allow-once') {
+      const update = this.db.prepare(`UPDATE consent_grant_state SET consumedAttemptId=?
+        WHERE grantId=? AND revision=? AND consumedAttemptId IS NULL`).run(attemptId, grant.id, grant.revision);
+      if (update.changes !== 1) throw new ConsentDeniedError('This-time permission was already used by another attempt.');
+    }
+    const now = new Date().toISOString(), authorizationId = randomUUID(), egressEventId = randomUUID();
+    this.db.prepare(`INSERT INTO consent_attempt_authorizations
+      (id,jobId,attemptId,grantId,grantRevision,sitePermissionEpoch,site,scope,recipient,provider,policyKey,bindingDigest,permissionFingerprint,eligibilityFingerprint,egressEventId,createdAt,dispatchedAt,acceptedAt,outcome)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?)`)
+      .run(authorizationId, job.id, attemptId, grant.id, grant.revision, sitePermissionEpoch, site, scope, grant.recipient,
+        job.provider, job.policyKey, job.preparedPayloadDigest, auditScope, expectedEligibilityFingerprint, egressEventId, now, now, 'dispatched');
+    this.db.prepare(`INSERT INTO egress_events
+      (id,jobId,attemptId,grantId,grantRevision,recipient,scope,provider,policyKey,contextHashes,permissionFingerprint,approvedAt,dispatchedAt,outcome,fetched,complete,updatedAt)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'[]',0,?)`)
+      .run(egressEventId, job.id, attemptId, grant.id, grant.revision, grant.recipient, scope, job.provider, job.policyKey,
+        JSON.stringify(contextHashes), auditScope, now, now, 'dispatched', now);
+    this.event('egress-approved', { egressEventId, jobId: job.id, attemptId, grantId: grant.id, grantRevision: grant.revision,
+      sitePermissionEpoch, recipient: grant.recipient, scope, provider: job.provider, contextHashes });
+    this.event('egress-dispatched', { egressEventId, jobId: job.id, attemptId });
+    return this.authorization(attemptId)!;
   }
 
   /** Host-only bridge for provider policy evaluation; never expose this through a page route. */
@@ -317,7 +322,41 @@ export class ConsentSessionService implements JobConsentAuthority {
     }
     const fingerprint = hash(canonical([grant.id, grant.revision, row.sitePermissionEpoch, job.provider, job.policyKey, row.scope, row.recipient]));
     if (fingerprint !== row.permissionFingerprint) throw new ConsentDeniedError('The provider or permission changed; start a new provider session.');
+    const eligibilityFingerprint = this.eligibilityFingerprint(job, attemptId, grant, row.site, row.scope, row.sitePermissionEpoch);
+    if (!row.eligibilityFingerprint || eligibilityFingerprint !== row.eligibilityFingerprint) {
+      throw new ConsentDeniedError('The dispatched request manifest changed; start a new attempt.');
+    }
+    this.contextHashes(job, row.site, row.scope, row.recipient);
     return authorizationFrom(row);
+  }
+
+  private dispatchEligibility(job: Readonly<JobSnapshot>, attemptId: string) {
+    validateJobBinding(job, attemptId);
+    const site = siteFor(job.context.sourceUrl), scope = scopeForIntent(job.context.intent);
+    if (this.excluded(site)) throw new ConsentDeniedError('This site is excluded. Nothing was sent.');
+    const grant = this.grantRow(job.grantId);
+    if (!grant || grant.revokedAt || grant.site !== site || grant.scope !== scope || grant.decision === 'deny-site') {
+      throw new ConsentDeniedError('Current permission does not authorize this request.');
+    }
+    if (this.activeDenial(site, scope, grant.recipient)) throw new ConsentDeniedError('Sending is denied for this site.');
+    if (grant.decision === 'allow-once') {
+      if (!grant.requestId || !grant.bindingDigest || grant.requestId !== job.id || grant.bindingDigest !== job.preparedPayloadDigest) {
+        throw new ConsentDeniedError('This-time permission is bound to different outgoing content.');
+      }
+      if (grant.consumedAttemptId) throw new ConsentDeniedError('This-time permission was already used by another attempt.');
+    }
+    const sitePermissionEpoch = this.sitePermissionEpoch(site);
+    const contextHashes = this.contextHashes(job, site, scope, grant.recipient);
+    const auditScope = hash(canonical([grant.id, grant.revision, sitePermissionEpoch, job.provider, job.policyKey, scope, grant.recipient]));
+    return { grant, site, scope, sitePermissionEpoch, contextHashes, auditScope,
+      eligibilityFingerprint: this.eligibilityFingerprint(job, attemptId, grant, site, scope, sitePermissionEpoch) };
+  }
+
+  private eligibilityFingerprint(job: Readonly<JobSnapshot>, attemptId: string, grant: GrantRow, site: string,
+      scope: ConsentScope, sitePermissionEpoch: number): string {
+    return hash(canonical({ version: 'marginalia.dispatch-eligibility.v1', grantId: grant.id, grantRevision: grant.revision,
+      sitePermissionEpoch, site, scope, recipient: grant.recipient, provider: job.provider, policyKey: job.policyKey,
+      preparedPayloadDigest: job.preparedPayloadDigest, manifest: job.context.outgoing, attemptId }));
   }
 
   private previewState(preview: PreviewRow): ConsentPreview['state'] {
@@ -331,9 +370,9 @@ export class ConsentSessionService implements JobConsentAuthority {
     return (this.db.prepare('SELECT revision FROM consent_exclusions WHERE site=?').get(site) as { revision: number } | undefined)?.revision ?? 0;
   }
   private activeDenial(site: string, scope: ConsentScope, recipient: string) {
-    return this.db.prepare(`SELECT g.id FROM grants g JOIN consent_grant_state s ON s.grantId=g.id
-      WHERE g.site=? AND g.scope=? AND g.recipient=? AND g.decision='deny-site' AND g.revokedAt IS NULL
-      ORDER BY g.createdAt DESC,g.id DESC LIMIT 1`).get(site, scope, recipient) as { id: string } | undefined;
+    return this.db.prepare(`SELECT id FROM grants
+      WHERE site=? AND scope=? AND recipient=? AND decision='deny-site' AND revokedAt IS NULL
+      ORDER BY createdAt DESC,id DESC LIMIT 1`).get(site, scope, recipient) as { id: string } | undefined;
   }
   private grantRow(id: string) {
     return this.db.prepare(`SELECT g.*,s.revision,s.requestId,s.bindingDigest,s.previewId,s.consumedAttemptId
