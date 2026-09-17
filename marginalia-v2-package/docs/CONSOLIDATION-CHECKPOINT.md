@@ -1,5 +1,15 @@
 # Chief consolidation checkpoint
 
+## Post-crash continuation
+
+T08 final response recovered visibly in Chrome and GitHub final head verified a9a6a08db8e9c09a996e1136796bf9981f23b3c6 (22files). It is merged only into codex/t08-final-integration basedc0df51f, not chief integration. Fresh Windows Node24 test53/53 and complete package typecheck pass. Independent dynamic Luna Max source/interface review running exec13, report docs/evidence/T08-asking/INDEPENDENT-INTEGRATION-REVIEW.md. Main T05/T06 Pro runs left uninterrupted per user.
+
+Opus follow-up resumed same session33d7f4e2-985d-4280-9050-828c431f845d/worktree after user confirmed PC crash, exec46061. Visible output confirms resumed inspection and implementation of a post-commit refusal window defect; no final acceptance yet. Exact same solver ownership, first-party route and user stale-meter exception retained.
+
+Capture hold reproduced: new test imports extension source into root compilation, exposing missing anchor declarations and nullable anchor at capture.ts62. Sol Medium dynamic repair exec16 owns codex/t04-capture-integration-fix only, minimal declaration/control-flow correction and dependency audit. No blanket any/tsconfig weakening/package mutation. Review newly imported linkedom against manifest before accepting test. Do not call this a harmless baseline issue when integration was green before the import.
+
+Existing accepted group remains integrated. Candidate-only branches and running workers are not counted as merged/completed. Reports and exact diffs must be recovered even if MCP caller times out.
+
 ## Accepted group 1
 
 Chief integrated three test-only commits after reviewing their public-behavior assertions: source55e89c2 -> integration4866d65 (T07), sourcee5a1864 ->81540f8 (T11), source37bd4c4 ->68338fc (T18). Fresh checks on68338fc: eight new tests passed, zero failures/skips; full package TypeScript check exit0. User root CONTEXT.md/README.md edits preserved. No product runtime changed and no ticket is closed.
