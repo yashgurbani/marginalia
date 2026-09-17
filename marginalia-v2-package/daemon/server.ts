@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve, extname, sep, dirname } from 'node:path';
 import { ReaderStore, ConflictError } from './store.ts';
 import { Pairing } from './pairing.ts';
+import { handleHelperManagement } from './helper-management.ts';
 import type { ReaderMutation } from '../contracts/reader.ts';
 import { createDiagnostics } from './diagnostics.ts';
 import { JobConflictError } from './jobs/store.ts';
@@ -74,13 +75,19 @@ export async function startServer(options: { database: string; port?: number; we
   const server = createServer(async (request, response) => {
     try {
       if (request.headers.host !== new URL(origin).host) return send(response, 403, { error: 'This address is not allowed.' });
+      const url = new URL(request.url ?? '/', origin);
+      const management = await handleHelperManagement(request, url, origin, pairing, () => {
+        for (const [ws, session] of sessions) {
+          if (!pairing.valid(session.token, session.origin)) ws.close(1008, 'Pairing revoked');
+        }
+      });
+      if (management) return send(response, management.status, management.body);
       const requestOrigin = request.headers.origin;
       if (requestOrigin && !allowedOrigin(requestOrigin)) return send(response, 403, { error: 'This page cannot connect to the local helper.' });
       if (requestOrigin) {
         response.setHeader('Access-Control-Allow-Origin', requestOrigin);
         response.setHeader('Vary', 'Origin');
       }
-      const url = new URL(request.url ?? '/', origin);
       if (request.method === 'OPTIONS') {
         if (!requestOrigin) return send(response, 403, { error: 'Origin required.' });
         response.setHeader('Access-Control-Allow-Headers', 'authorization,content-type');
