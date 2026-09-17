@@ -10,6 +10,8 @@ Post-review integration: T01 Pro commit `2c926c5` is integrated as `39ff68c`. Ch
 
 T02 Pro commit `e979312` is integrated as `eefb8b6`. Chief inspected all five paths and ran `node --test --test-timeout=60000 tests/provider-adapters.test.ts tests/provider-stdio.test.ts` on local Node 24: 49/49 passed, no failures, cancellations or skips. Completed-parent continuation is now read-only, and pre-inference authorization rejection has an attempt-bound `ProviderNotSentError`. T06 still owns consumption of that error and acknowledgement of durable cancellation fences; real provider acceptance remains open.
 
+T18's exact Pro patch (SHA-256 `31f65ff1a2b7ee6e242546869829d61751794c1189b00d0922e34a1f2efe33e9`) is integrated as `57ad295`, after chief inspection of its ten allowed paths. The owner independently ran Node 24/TypeScript 5.9.3 checks: 13/13 including six actual Chrome scenarios, narrow typecheck and production build passed. The fix preserves unrelated DOM/focus during sample checks, avoids non-finite plot coordinates, separates unchecked authored descriptions from result headings and improves readiness copy. Full typecheck remains blocked by other tickets. Host highlighting arbitration, real sidecar delivery and complete reader flow remain open; see [verification](docs/evidence/T18-consolidated-pro-fixes-verification.md).
+
 Ten ticket owners have completed or are reconciling exact-source 6Pro reviews and have submitted bounded implementation follow-ups. Pro is producing fixes and regression tests on isolated branches or patch/ZIP artifacts. Astra owners inspect those outputs; chief controls integration. The [combined Pro review](https://chatgpt.com/c/6aab9618-74b8-83eb-9518-da28543f1429) remains active against the same revision, full spec, whitepaper and both design passes. Its initial write scope is review documents only, under `docs/evidence/pro-consolidated/`.
 
 Testing is now authorized: the user lifted the pause after consolidation. The local baseline failed with 45 TypeScript diagnostics. The test run stalled in a provider-adapter child and was interrupted; its aggregate was 91 tests, 59 passing and 32 failing. This is not a completed-suite result. A real Node strip-only loader failure prevents server tests from loading. See [baseline evidence](docs/evidence/CONSOLIDATION-BASELINE.md). Fixes must address both genuine source defects and outdated test contracts without weakening product requirements.
@@ -50,7 +52,7 @@ Integrated means committed for review, not that the full reader experience passe
 | T15 | Explore | Queued; useful linked shelf parked by default required |
 | T16 | Notes/vocabulary | Basic notes integrated; note-version Ask and complete origin/deletion/recovery remain |
 | T17 | Page header | Queued; local identity, granted enrichment and return position required |
-| T18 | Renderer/kernel | Integrated including samples consumer; Pro renderer regressions and corrections active; real sidecar delivery/browser gate remains |
+| T18 | Renderer/kernel | Pro corrections integrated as 57ad295; 13/13 owner checks including browser scenarios and build pass; host arbitration, real sidecar delivery and complete reader flow remain |
 | T19 | Install/recovery | Opus experience slice delivered; C1–C15 routed; installers and fresh-machine recovery on all platforms remain |
 | T20 | Saved solver | First-party headless Opus 5 worker running; isolated new modules/tests; T06/T05 integration and zero-inference execution acceptance remain |
 
