@@ -24,9 +24,9 @@ const unsavedReplyViews = new Map<string, { namespace: string; record: CachedRep
 /** Shared by every mount in this document; Web Locks serialize other documents too. */
 function replyLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
   const prior = replyQueues.get(key) ?? Promise.resolve();
-  const next = prior.catch(() => {}).then(() => {
+  const next = prior.catch(() => {}).then(async (): Promise<T> => {
     if (!navigator.locks) throw new Error('Safe reply saving needs Web Locks support.');
-    return navigator.locks.request(key, operation);
+    return await navigator.locks.request(key, operation);
   });
   replyQueues.set(key, next);
   void next.finally(() => { if (replyQueues.get(key) === next) replyQueues.delete(key); }).catch(() => {});
