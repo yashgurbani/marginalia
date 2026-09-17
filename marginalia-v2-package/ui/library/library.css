@@ -61,5 +61,6 @@
   .ml-thread { align-items: stretch; flex-direction: column; gap: var(--m-s3); }
   .ml-thread__actions button { flex: 1 1 auto; }
   .ml-models { align-items: stretch; flex-direction: column; }
+  .ml-models__field { flex: 0 0 auto; }
 }
 @media (prefers-reduced-motion: reduce) { .ml *, .ml *::before, .ml *::after { animation: none !important; scroll-behavior: auto !important; transition: none !important; } }

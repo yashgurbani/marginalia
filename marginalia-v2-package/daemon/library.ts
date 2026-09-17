@@ -14,7 +14,11 @@ type StoredModels = { fast: string; deep: string; revision: number; updatedAt: s
  * This service owns no parallel persistence and deliberately leaves grants/exclusions to T13.
  */
 export class LibrarySettingsService {
-  constructor(readonly reader: ReaderStore) {}
+  readonly reader: ReaderStore;
+
+  constructor(reader: ReaderStore) {
+    this.reader = reader;
+  }
 
   listThreads(includeRemoved = true): Thread[] {
     return this.reader.list(undefined, includeRemoved);
