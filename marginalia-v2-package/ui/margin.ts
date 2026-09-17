@@ -596,7 +596,13 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       if (!helper) throw new Error('Open this page at the local helper address to pair.');
       if (!code.value.trim()) { code.focus(); return; }
       await helper.pair(code.value.trim()); await persistence.write('pairing', { origin: helper.origin, token: helper.token }); code.value = ''; announce('Paired.'); await sync();
-    })), button('Save to local helper', sync), button('Disconnect', () => safely(async () => { if (helper?.token) await helper.request('/api/revoke', {}); if (helper) helper.token = ''; await persistence.write('pairing', undefined); announce('Disconnected from the local helper.'); }))));
+    })), button('Save to local helper', sync), button('Disconnect', () => safely(async () => {
+      const forget = () => persistence.write('pairing', undefined);
+      const result = helper ? await helper.disconnect(forget) : (await forget(), 'not-paired');
+      announce(result === 'replaced' ? 'A newer pairing is active. Revocation of the previous pairing may be unconfirmed.' : result === 'unconfirmed'
+        ? 'Disconnected on this device. Revocation at the local helper is unconfirmed. The helper may still list this browser as paired.'
+        : 'Disconnected from the local helper.');
+    }))));
     }
     const theme = el('select'); theme.setAttribute('aria-label', 'Theme');
     for (const value of ['system', 'light', 'dark']) { const option = el('option', value[0].toUpperCase() + value.slice(1)); option.value = value; theme.append(option); }

@@ -65,6 +65,19 @@ export class HelperClient {
     return this.request(route + (queryStart < 0 ? '' : path.slice(queryStart)), {});
   }
   async pair(challenge: string) { this.token = (await this.request('/pair', { challenge })).token; return this.token; }
+  async disconnect(forgetPairing: () => Promise<void>): Promise<'revoked' | 'unconfirmed' | 'not-paired' | 'replaced'> {
+    const token = this.token;
+    await forgetPairing();
+    if (this.token === token) this.token = '';
+    if (!token) return 'not-paired';
+    // Only this final revocation request retains the old credential. Ordinary
+    // helper actions stop using it as soon as local removal is durable.
+    const previous = new HelperClient(this.origin); previous.token = token;
+    try {
+      const result = await previous.request('/api/revoke', {});
+      return this.token ? 'replaced' : result.revoked === true ? 'revoked' : 'unconfirmed';
+    } catch { return this.token ? 'replaced' : 'unconfirmed'; }
+  }
   async change(change: ReaderMutation) { await this.request('/api/change', change); }
   async list(): Promise<Thread[]> { return (await this.read('/api/threads?removed=true')).threads; }
   async replies(threadId: string): Promise<{ replies: ReplyVersion[]; source: SourceVersion; views: ReplyViewState[] }> {

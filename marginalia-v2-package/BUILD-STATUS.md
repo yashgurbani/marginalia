@@ -4,6 +4,8 @@ Updated 17 September 2026. Chief task: 01a0adaf-dd71-7583-8307-b877547c9189.
 
 ## Current position
 
+C6 offline Disconnect now durably forgets the local pairing before attempting remote revocation, with truthful unconfirmed copy and protection for a newer pairing. Eleven focused helper tests, typecheck and both builds passed. Real Windows Chromium extension verification proved disconnect survives reload, preserves the note and stops Save from sending until paired again. See [Disconnect evidence](docs/evidence/t05-offline-disconnect/REPORT.md). C4 trusted helper management routes are in progress with the T01 Astra owner; helper-page UI still remains.
+
 C5 startup recovery now handles an occupied configured port with the install-spec message and browser address guidance. Chief reproduced the old raw error, then verified 16 focused launch/server/read tests and full typecheck. The existing service stays running. Installers and Mac/Linux launch evidence remain open.
 
 The consolidated implementation is published at `2c35157c38a59a3a84c8eaa1265aaf12706951f2` on `codex/marginalia-v2`. Frozen owner hashes matched before integration. This includes the helper, durable reader journal, provider adapters, extension, saved-reply margin, jobs, consent, library and renderer/kernel. Integration is not feature acceptance: live asking, recovery, confinement and release gates remain open.
