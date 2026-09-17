@@ -1,0 +1,5 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": { "strict": true, "noUncheckedIndexedAccess": false, "noEmit": true, "allowImportingTsExtensions": true, "skipLibCheck": true },
+  "include": [".wxt/wxt.d.ts", "**/*.ts", "../ui/**/*.ts", "../contracts/**/*.ts"]
+}

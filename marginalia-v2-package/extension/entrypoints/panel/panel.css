@@ -1,0 +1,4 @@
+html,body{margin:0;min-width:280px;height:100%;background:var(--paper,#faf8f3)}
+#connection:not(:empty){padding:12px;font:14px/1.5 system-ui}#exclude{margin:4px 12px;min-height:28px}
+#margin .m-workspace{display:block;min-height:100vh}#margin .mg{width:100%;max-width:none;position:relative;height:100vh}
+#margin .m-panel{min-width:0}#margin .m-host-only{min-height:100vh}

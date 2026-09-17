@@ -1,0 +1,160 @@
+import { defineBackground } from 'wxt/utils/define-background';
+import { browser } from 'wxt/browser';
+import { respondAsync } from '../lib/respond.ts';
+import { helperReconnect } from '../lib/helper-reconnect.ts';
+import { allowedPage, isMessage, pageIdentity, validAnchor, validSnapshot } from '../lib/protocol.ts';
+import { attachQuote, type QuoteAnchor } from '../../contracts/reader.ts';
+
+export default defineBackground(() => {
+  const helper = helperReconnect();
+  // Pairing credentials and journal are durable in extension-origin IndexedDB.
+  // Only the trusted worker transport reads a token; content scripts never do.
+  const storageReady = Promise.all([
+    browser.storage.local.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' }),
+    browser.storage.session.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' }),
+  ]);
+  const panelUrl = browser.runtime.getURL('/panel.html');
+  const workspaceUrl = browser.runtime.getURL('/workspace.html');
+  let excludedCache: string[] | null = null;
+  const cachePolicy = (value: unknown) => { excludedCache = Array.isArray(value) && value.every(h => typeof h === 'string') ? value : null; };
+  void storageReady.then(async () => { const value = (await browser.storage.local.get('excludedHosts')).excludedHosts ?? []; cachePolicy(value); }).catch(() => { excludedCache = null; });
+  browser.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.excludedHosts) cachePolicy(changes.excludedHosts.newValue ?? []); });
+  function openNative(tabId: number, url: string, incognito?: boolean): Promise<boolean> {
+    if (excludedCache === null || incognito || !allowedPage(url, excludedCache) || typeof browser.sidePanel?.open !== 'function') return Promise.resolve(false);
+    try { return browser.sidePanel.open({ tabId }).then(() => true).catch(() => false); }
+    catch { return Promise.resolve(false); }
+  }
+  async function permitted(url: string, incognito?: boolean) {
+    await storageReady;
+    const { excludedHosts = [] } = await browser.storage.local.get('excludedHosts');
+    cachePolicy(excludedHosts);
+    return !incognito && Array.isArray(excludedHosts) && excludedHosts.every(h => typeof h === 'string') && allowedPage(url, excludedHosts);
+  }
+  async function source(tabId: number, expectedDocument?: string) {
+    const tab = await browser.tabs.get(tabId);
+    if (!tab.url || !await permitted(tab.url, tab.incognito)) throw new Error('This page is excluded.');
+    const before = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
+    if (!before?.documentId || before.documentLifecycle !== 'active' || (expectedDocument && before.documentId !== expectedDocument)) throw new Error('This page is not active.');
+    const data = await browser.tabs.sendMessage(tabId, { type: 'snapshot', version: 1 }, { documentId: before.documentId, frameId: 0 });
+    const after = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
+    if (!validSnapshot(data) || before.documentId !== after?.documentId || after.documentLifecycle !== 'active' || pageIdentity(after.url) !== data.capture.url || !await permitted(after.url, tab.incognito)) throw new Error('The page changed. Select the passage again.');
+    return { ...data, browserDocument: before.documentId };
+  }
+  browser.runtime.onMessage.addListener((message, sender, respond) => respondAsync(() => {
+    if (sender.id !== browser.runtime.id) return;
+    const fromContent = sender.tab?.id !== undefined && sender.frameId === 0 && typeof sender.documentId === 'string' && !!sender.url && allowedPage(sender.url) && !sender.tab.incognito;
+    if (fromContent && isMessage(message, 'policy')) return permitted(sender.url!, sender.tab?.incognito).then(allowed => ({ allowed }));
+    if (fromContent && isMessage(message, 'open')) {
+      const tabId = sender.tab!.id!;
+      // Chrome requires the API call within the gesture's message task.
+      const opening = openNative(tabId, sender.url!, sender.tab?.incognito);
+      return (async () => {
+        if (!await permitted(sender.url!, sender.tab?.incognito)) return { allowed: false };
+        const active = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
+        if (active?.documentId !== sender.documentId || active.documentLifecycle !== 'active') return { allowed: false };
+        if (await opening) return { allowed: true, panel: true };
+        return navigator.locks.request('marginalia-frame:' + tabId, async () => {
+          const current = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
+          if (current?.documentId !== sender.documentId || current.documentLifecycle !== 'active') return { allowed: false };
+          const key = 'frame:' + tabId;
+          const old = (await browser.storage.session.get(key))[key] as { capability: string; document: string; url: string; frameDocument: string | null } | undefined;
+          const frames = await browser.webNavigation.getAllFrames({ tabId });
+          if (old?.document === sender.documentId && old.url === pageIdentity(sender.url!) && (!old.frameDocument || frames?.some(frame => frame.documentId === old.frameDocument && frame.documentLifecycle === 'active'))) return { allowed: true, panel: false, capability: old.capability };
+          const capability = crypto.randomUUID();
+          await browser.storage.session.set({ [key]: { capability, document: sender.documentId, url: pageIdentity(sender.url!), frameDocument: null } });
+          return { allowed: true, panel: false, capability };
+        });
+      })();
+    }
+    const senderPath = sender.url?.split(/[?#]/)[0];
+    const trustedPanel = senderPath === panelUrl || senderPath === workspaceUrl;
+    if (!trustedPanel || !isMessage(message, 'surface')) return;
+    return (async () => {
+      let tabId: number;
+      let sourceDocument: string | undefined;
+      let embedded = false;
+      if (senderPath === workspaceUrl) {
+        if (typeof message.workspace !== 'string' || message.workspace.length > 64 || !sender.documentId || sender.frameId !== 0 || sender.tab?.id === undefined || sender.tab.incognito) throw new Error('Open this margin from the source.');
+        const key = 'workspace:' + message.workspace;
+        const binding = (await browser.storage.session.get(key))[key] as { tabId: number; sourceDocument: string; url: string; surfaceTab: number; surfaceDocument?: string } | undefined;
+        if (!binding || binding.surfaceTab !== sender.tab.id || (binding.surfaceDocument && binding.surfaceDocument !== sender.documentId)) throw new Error('Reopen this margin from the source.');
+        const frame = await browser.webNavigation.getFrame({ tabId: binding.tabId, frameId: 0 });
+        if (frame?.documentId !== binding.sourceDocument || frame.documentLifecycle !== 'active' || pageIdentity(frame.url) !== binding.url || !await permitted(frame.url)) throw new Error('The source changed. Reopen the margin from that page.');
+        tabId = binding.tabId;
+        sourceDocument = binding.sourceDocument;
+        if (!binding.surfaceDocument) await browser.storage.session.set({ [key]: { ...binding, surfaceDocument: sender.documentId } });
+      } else if (sender.tab?.id !== undefined) {
+        embedded = true;
+        tabId = sender.tab.id;
+        const key = 'frame:' + tabId, stored = (await browser.storage.session.get(key))[key] as { capability: string; document: string; url: string; frameDocument: string | null } | undefined;
+        if (!stored || stored.capability !== message.capability || sender.frameId === 0 || !sender.documentId || (stored.frameDocument && stored.frameDocument !== sender.documentId)) throw new Error('Open the margin from the page.');
+        sourceDocument = stored.document;
+        const tab = await browser.tabs.get(tabId);
+        if (!tab.url || pageIdentity(tab.url) !== stored.url || !await permitted(tab.url, tab.incognito)) throw new Error('This page is excluded or changed.');
+        // Verify the original top-level browser document, not just its URL.
+        const identity = await browser.tabs.sendMessage(tabId, { type: 'identity', version: 1 }, { documentId: stored.document, frameId: 0 });
+        if (!identity) throw new Error('Reopen the margin after navigation.');
+        await navigator.locks.request('marginalia-frame:' + tabId, async () => {
+          const latest = (await browser.storage.session.get(key))[key] as typeof stored;
+          if (!latest || latest.capability !== message.capability || latest.document !== stored.document || (latest.frameDocument && latest.frameDocument !== sender.documentId)) throw new Error('Reopen the margin.');
+          if (!latest.frameDocument) await browser.storage.session.set({ [key]: { ...latest, frameDocument: sender.documentId } });
+        });
+      } else {
+        if (!sender.documentId) throw new Error('Open the native margin.');
+        const contexts = await browser.runtime.getContexts({ contextTypes: ['SIDE_PANEL'], documentIds: [sender.documentId] });
+        const context = contexts.find(c => c.documentId === sender.documentId && c.documentUrl === panelUrl && c.windowId >= 0);
+        if (!context || context.incognito) throw new Error('Open the native margin.');
+        const [tab] = await browser.tabs.query({ active: true, windowId: context.windowId });
+        if (tab?.id === undefined || !tab.url || !await permitted(tab.url, tab.incognito)) throw new Error('Choose a supported page.');
+        tabId = tab.id;
+      }
+      if (message.action === 'read') return source(tabId, sourceDocument);
+      if (message.action === 'trusted-open') {
+        const frame = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
+        if (!frame?.documentId || !await permitted(frame.url)) throw new Error('This source is unavailable.');
+        const workspace = crypto.randomUUID();
+        const tab = await browser.tabs.create({ url: workspaceUrl + '#workspace=' + workspace });
+        await browser.storage.session.set({ ['workspace:' + workspace]: { tabId, sourceDocument: frame.documentId, url: pageIdentity(frame.url), surfaceTab: tab.id } });
+        return { opened: true };
+      }
+      if (message.action === 'helper-status') return { status: embedded ? 'Connect the local helper in the browser margin.' : await helper.status() };
+      if (message.action === 'helper-connect' && !embedded) return { status: await helper.setEnabled(true) };
+      if (message.action === 'helper-disconnect' && !embedded) return { status: await helper.setEnabled(false) };
+      if (message.action === 'authorize-helper-send' && !embedded && typeof message.sourceUrl === 'string') return { allowed: await permitted(message.sourceUrl) };
+      if (message.action === 'exclude') {
+        const snapshot = await source(tabId, sourceDocument);
+        const { excludedHosts = [] } = await browser.storage.local.get('excludedHosts');
+        const nextPolicy = [...new Set([...(Array.isArray(excludedHosts) ? excludedHosts : []), new URL(snapshot.capture.url).hostname])];
+        cachePolicy(nextPolicy);
+        await browser.storage.local.set({ excludedHosts: nextPolicy });
+        await browser.tabs.sendMessage(tabId, { type: 'excluded', version: 1 }, { frameId: 0 });
+        return { excluded: true };
+      }
+      if ((message.action === 'highlight' || message.action === 'scroll') && typeof message.document === 'string' && (message.anchor === null || validAnchor(message.anchor))) {
+        const snapshot = await source(tabId, sourceDocument);
+        if (snapshot.document !== message.document) throw new Error('Stale source request.');
+        if (message.anchor !== null && message.anchor.kind !== 'whole-page') {
+          const attachment = attachQuote(message.anchor as QuoteAnchor, snapshot.capture.text);
+          if (!['exact', 'moved'].includes(attachment.state) || attachment.candidates.length !== 1) throw new Error('This passage could not be located safely on the current page.');
+        }
+        await browser.tabs.sendMessage(tabId, { type: message.action, version: 1, document: snapshot.document, anchor: message.anchor }, { documentId: snapshot.browserDocument, frameId: 0 });
+        return { ok: true };
+      }
+      throw new Error('Unsupported margin request.');
+    })();
+  }, respond));
+  browser.action.onClicked.addListener(tab => {
+    if (tab.id === undefined || tab.incognito || !allowedPage(tab.url)) return;
+    const tabId = tab.id;
+    const opening = openNative(tabId, tab.url!, tab.incognito);
+    void permitted(tab.url!, tab.incognito).then(async allowed => {
+      if (!allowed) return;
+      const panel = await opening;
+      await browser.tabs.sendMessage(tabId, { type: 'activate', version: 1, panel }, { frameId: 0 });
+    }).catch(() => {});
+  });
+  browser.tabs.onRemoved.addListener(tabId => { void navigator.locks.request('marginalia-frame:' + tabId, () => browser.storage.session.remove('frame:' + tabId)); });
+  browser.webNavigation.onCommitted.addListener(details => {
+    if (details.frameId === 0) void navigator.locks.request('marginalia-frame:' + details.tabId, () => browser.storage.session.remove('frame:' + details.tabId));
+  });
+});
