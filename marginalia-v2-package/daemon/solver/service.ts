@@ -258,6 +258,16 @@ export interface SolverPreparedCommit {
  * the single host operation it is required to be.
  */
 export interface SolverExecutionGate {
+  /**
+   * True only when `commit` writes the durable attempt claim inside the same
+   * transaction as the handoff, so at-most-once survives an eviction or a restart.
+   * It is a static capability of the gate, reported by `GET /api/solver/status`, and
+   * it mirrors `SolverCommandTransport.enforces`: a truthful statement of what this
+   * implementation can promise, not a per-attempt measurement. A gate that cannot
+   * make the claim durable reports `false`, and every record it commits then reads
+   * `atMostOnce: 'process-local'`.
+   */
+  readonly durableAtMostOnce: boolean;
   prepareCommit(input: SolverFinalizationInput): Promise<SolverPreparedCommit>;
 }
 
@@ -266,37 +276,12 @@ export interface SolverEvidenceSource {
   collect(policy: CodexPolicy, stage: 'dispatch'): Promise<PolicyEvidence | undefined>;
 }
 
-export type SolverAttemptJournalEntry = {
-  requestIdentity: string;
-  requestId: string;
-  executionAttemptId: string;
-  handoffToken?: string;
-  state: 'dispatched' | 'settled';
-};
-
-/**
- * Durable at-most-once. T06 owns this.
- *
- * This service holds finished outcomes in a bounded map that evicts the oldest entry
- * and is empty after a restart. That map alone therefore cannot promise a recompute
- * is dispatched at most once: once an entry is evicted, or the daemon restarts, the
- * same request identity would be dispatched again. A durable lookup that outlives the
- * process is the only thing that can prevent the redispatch, so without this journal
- * every record honestly reports `atMostOnce: 'process-local'`.
- */
-export interface SolverAttemptJournal {
-  lookup(requestIdentity: string): Promise<SolverAttemptJournalEntry | undefined>;
-  record(entry: SolverAttemptJournalEntry): Promise<void>;
-}
-
 export type SolverServiceOptions = {
   context: SolverContextSource;
   authority: SolverAuthority;
   gate: SolverExecutionGate;
   evidence: SolverEvidenceSource;
   transport?: SolverCommandTransport;
-  /** Absent until T06 implements it; its absence is reported, never assumed away. */
-  journal?: SolverAttemptJournal;
   /** Dedicated Codex home, absolute and disjoint from every job workspace. */
   codexHome: string;
   /** Host-owned worker/attempt/configuration identity; replace it after restart or any config change. */
@@ -374,6 +359,14 @@ function hostPlatform(): Platform | undefined {
   return SUPPORTED_PLATFORMS.has(process.platform) ? process.platform as Platform : undefined;
 }
 
+/**
+ * True when a value is thenable. The commit boundary requires a synchronous decision,
+ * so a `commit` that returns a promise is detected here and refused rather than awaited.
+ */
+function isThenable<T>(value: T | Promise<T>): value is Promise<T> {
+  return typeof value === 'object' && value !== null && typeof (value as { then?: unknown }).then === 'function';
+}
+
 function sha256Hex(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
@@ -394,8 +387,8 @@ export class SolverExecutionService {
   readonly configured: boolean;
   readonly unavailableReason?: string;
   /**
-   * False until a durable attempt journal is mounted. While it is false, a dispatch
-   * is at most once only within this process's memory.
+   * Whether the gate's commit makes the attempt claim durable. While it is false, a
+   * dispatch is at most once only within this process's memory.
    */
   readonly durableAtMostOnce: boolean;
   private options: SolverServiceOptions;
@@ -429,7 +422,7 @@ export class SolverExecutionService {
     this.newPlanId = options.newPlanId ?? (() => randomUUID());
     this.newPlanToken = options.newPlanToken ?? (() => randomBytes(32).toString('hex'));
     this.configured = !!options.transport && !!this.platform;
-    this.durableAtMostOnce = !!options.journal;
+    this.durableAtMostOnce = options.gate.durableAtMostOnce;
     this.unavailableReason = options.unavailableReason ??
       (!options.transport ? 'No isolated command-execution adapter is configured.'
         : !this.platform ? `This platform (${process.platform}) has no reviewed saved-solver policy.` : undefined);
@@ -1021,27 +1014,13 @@ export class SolverExecutionService {
           'The isolated environment could not be confirmed, so no saved solver was run.', issues);
       }
 
-      // Durable at-most-once, when a durable journal exists. Without one this check
-      // does not run and the record says so.
-      const journal = this.options.journal;
-      if (journal) {
-        // Keyed by content identity, not by request id. The same question re-asked
-        // under a new id is the same recompute, and a durable record of it is
-        // exactly what must stop a second dispatch after an eviction or a restart.
-        const seen = await journal.lookup(requestIdentity);
-        if (seen) {
-          return { status: 'outcome_unknown', reason: seen.state === 'dispatched'
-            ? 'A previous attempt at this recompute was dispatched and its result was never observed. It is not dispatched again.'
-            : 'This recompute already ran and its result is no longer held here. It is not dispatched again.' };
-        }
-      }
-
-      if (attempt.cancelled) return { status: 'cancelled', reason: 'The recompute was cancelled before dispatch.' };
-
-      // The single commit point. Consume, authorization, egress, generation lease and
-      // handoff become durable together inside the job store transaction; this service
-      // dispatches immediately afterwards and claims no atomicity of its own.
-      const finalized = await this.options.gate.finalize({
+      // Everything asynchronous the commit depends on is prepared here, before the
+      // commit itself. `prepareCommit` may read any current state — the durable
+      // attempt row, the grant, the permission epoch, the reviewed manifest — because
+      // reading decides nothing. The gate owns durable at-most-once: it looks up a
+      // prior claim now and writes the new one inside `commit`, so there is no
+      // separate journal read-then-write for a state change to slip between.
+      const preparedCommit = await this.options.gate.prepareCommit({
         request,
         context,
         principal,
@@ -1058,13 +1037,47 @@ export class SolverExecutionService {
         work: 'local-recompute',
         modelTurns: 0,
       });
+
+      // The last point a cancellation may stop the attempt cleanly. After the commit
+      // writes the durable claim, a cancellation can only race the running process; it
+      // can never rewrite a committed, handed-off attempt into one that never ran.
+      if (attempt.cancelled) return { status: 'cancelled', reason: 'The recompute was cancelled before dispatch.' };
+
+      // The single synchronous commit. Consume, authorization, egress, generation
+      // lease, durable attempt claim and handoff become durable together inside the
+      // job store transaction, and `transport.exec` below is reached with no `await`
+      // between the committed decision and the handoff.
+      //
+      // `commit` is typed synchronous for exactly this reason. A `commit` that returns
+      // a thenable reopens the window this boundary closes, so it is refused rather
+      // than dispatched: a claim that could not be honoured atomically is not one this
+      // service will hand a process off against.
+      const committed = preparedCommit.commit();
+      if (isThenable<SolverFinalizationDecision>(committed)) {
+        void Promise.resolve(committed).catch(() => {});
+        return { status: 'outcome_unknown', reason: 'The recompute commit did not settle synchronously, so the at-most-once handoff boundary could not be honoured and nothing was dispatched.' };
+      }
+      const finalized = committed;
       if (finalized.decision === 'expired') return rejected('authorization-expired', finalized.reason);
       if (finalized.decision === 'refused') return rejected('handoff-refused', finalized.reason);
       if (finalized.decision === 'unknown') {
         return { status: 'outcome_unknown', reason: `The recompute handoff did not report a result: ${finalized.reason}` };
       }
+      if (finalized.decision === 'already-claimed') {
+        // The durable claim for this content identity already exists. This is what
+        // stops a second dispatch after an eviction or a restart, and it is decided
+        // inside the same transaction that would otherwise write the claim, not by a
+        // separate lookup that a concurrent commit could race.
+        return { status: 'outcome_unknown', reason: finalized.state === 'dispatched'
+          ? 'A previous attempt at this recompute was dispatched and its result was never observed. It is not dispatched again.'
+          : 'This recompute already ran and its result is no longer held here. It is not dispatched again.' };
+      }
       const authorization = finalized.authorization;
       const lease = finalized.lease;
+      // The claim strength this exact attempt committed under, not a static flag. A gate
+      // that could not make the claim durable reports `process-local` here even when it
+      // advertises durability elsewhere, and the record carries the truthful value.
+      const attemptClaim = finalized.attemptClaim;
       const handoffRefusal = this.checkAuthorization({ decision: 'allowed', authorization }, { grantId: plan.grantId, policyFingerprint });
       if (handoffRefusal) return handoffRefusal;
       if (authorization.grantRevision !== reserved.grantRevision || authorization.sitePermissionEpoch !== reserved.sitePermissionEpoch) {
@@ -1072,24 +1085,17 @@ export class SolverExecutionService {
       }
       // The lease is the only thing that makes the hashed generation immutable across
       // the awaits below. A lease for another generation or another reviewed manifest
-      // is not a lease on what this attempt hashed.
+      // is not a lease on what this attempt hashed. These checks are synchronous, so no
+      // `await` runs between the committed decision and the handoff.
       if (lease.workspaceGeneration !== binding.workspaceGeneration) {
         return rejected('generation-drift', 'The committed generation lease does not cover the workspace this recompute hashed.');
       }
       if (lease.profileManifestSha256 !== policy.reviewedProfile.manifestSha256) {
         return rejected('generation-drift', 'The committed generation lease does not cover the reviewed profile this policy pinned.');
       }
-      if (attempt.cancelled) return { status: 'cancelled', reason: 'The recompute was cancelled before dispatch.' };
 
-      if (journal) {
-        try {
-          await journal.record({ requestIdentity, requestId: request.requestId, executionAttemptId, handoffToken: finalized.handoffToken, state: 'dispatched' });
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : 'the attempt could not be journalled';
-          return { status: 'outcome_unknown', reason: `The recompute handoff committed but could not be recorded durably, so it was not dispatched: ${reason}` };
-        }
-      }
-
+      // The handoff. `cancellationFor` and both clock reads are synchronous, so this
+      // dispatch is the first `await` after the commit above.
       const cancellation = cancellationFor(policy);
       const startedAt = this.clock();
       const startedMs = this.now();
@@ -1100,11 +1106,6 @@ export class SolverExecutionService {
       });
       const endedAt = this.clock();
       const durationMs = Math.max(0, this.now() - startedMs);
-      if (journal) {
-        try {
-          await journal.record({ requestIdentity, requestId: request.requestId, executionAttemptId, handoffToken: finalized.handoffToken, state: 'settled' });
-        } catch { /* The dispatched entry already prevents a redispatch. */ }
-      }
 
       if (attempt.cancelled) {
         return { status: 'cancelled', reason: `The recompute was cancelled. The isolated process stop was not confirmed (${cancellation.strategy}).` };
@@ -1198,7 +1199,7 @@ export class SolverExecutionService {
         outputBytes: observation.stdout.bytes,
         enforced: { timeout: transport.enforces.timeout, outputBytes: transport.enforces.outputBytes, memoryBytes: transport.enforces.memoryBytes },
         generationLeaseId: lease.leaseId,
-        atMostOnce: journal ? 'durable-host-journal' : 'process-local',
+        atMostOnce: attemptClaim,
         streamed: observation.streamed,
         modelTurns: 0,
       };

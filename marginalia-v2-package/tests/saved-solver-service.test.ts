@@ -35,8 +35,6 @@ import { RECOMPUTE_DIRECTORY } from '../daemon/solver/artifacts.ts';
 import { SolverResultCache } from '../daemon/solver/cache.ts';
 import {
   SolverExecutionService,
-  type SolverAttemptJournal,
-  type SolverAttemptJournalEntry,
   type SolverAuthorizationDecision,
   type SolverAuthorizationInput,
   type SolverFinalizationDecision,
@@ -345,9 +343,13 @@ type HarnessOptions = {
   enforces?: { timeout: boolean; outputBytes: boolean; memoryBytes: false; maxTimeoutMs: number };
   evidence?: (policy: CodexPolicy) => PolicyEvidence | undefined;
   decide?: (input: SolverAuthorizationInput) => SolverAuthorizationDecision;
-  finalize?: (input: SolverFinalizationInput) => SolverFinalizationDecision | Promise<SolverFinalizationDecision>;
+  /** Runs inside the gate's async `prepareCommit`, before the synchronous commit. */
+  onPrepare?: (input: SolverFinalizationInput) => void | Promise<void>;
+  /** Overrides the synchronous commit decision. May return a thenable to test the boundary. */
+  commit?: (input: SolverFinalizationInput) => SolverFinalizationDecision | Promise<SolverFinalizationDecision>;
   lease?: (input: SolverFinalizationInput) => SolverGenerationLease;
-  journal?: SolverAttemptJournal;
+  /** When true the gate reports durable at-most-once and remembers claims across attempts. */
+  durable?: boolean;
   transport?: SolverCommandTransport | null;
   realExecution?: boolean;
   now?: () => number;
@@ -377,6 +379,9 @@ function harness(fix: Fixture, options: HarnessOptions = {}): Harness {
   const dispatches: SolverExecOptions[] = [];
   const authorizations: SolverAuthorizationInput[] = [];
   const finalizations: SolverFinalizationInput[] = [];
+  // Stands in for T06's durable at-most-once table. A committed claim is
+  // remembered by request identity so a second attempt is refused, not dispatched.
+  const claims = new Map<string, 'dispatched' | 'settled'>();
   const log: string[] = [];
   let observation: SolverCommandObservation | (() => Promise<SolverCommandObservation>) = exited('');
 
@@ -416,15 +421,33 @@ function harness(fix: Fixture, options: HarnessOptions = {}): Harness {
       },
     },
     gate: {
-      async finalize(input) {
-        log.push('finalize');
+      durableAtMostOnce: options.durable ?? false,
+      async prepareCommit(input) {
+        // Every await the commit depends on happens here, before the synchronous
+        // commit below.
+        log.push('prepareCommit');
         finalizations.push(input);
-        if (options.finalize) return options.finalize(input);
+        if (options.onPrepare) await options.onPrepare(input);
         return {
-          decision: 'committed',
-          handoffToken: 'handoff-1',
-          authorization: authorization({ policyFingerprint: input.policyFingerprint }),
-          lease: options.lease ? options.lease(input) : leaseFor(input),
+          commit(): SolverFinalizationDecision {
+            log.push('commit');
+            // A commit override may deliberately return a thenable to exercise the
+            // service's synchronous-boundary guard; the cast simulates a gate that
+            // violates the interface at runtime.
+            if (options.commit) return options.commit(input) as SolverFinalizationDecision;
+            if (options.durable) {
+              const seen = claims.get(input.requestIdentity);
+              if (seen) return { decision: 'already-claimed', reason: 'A durable claim already exists for this recompute.', state: seen };
+              claims.set(input.requestIdentity, 'dispatched');
+            }
+            return {
+              decision: 'committed',
+              handoffToken: 'handoff-1',
+              authorization: authorization({ policyFingerprint: input.policyFingerprint }),
+              lease: options.lease ? options.lease(input) : leaseFor(input),
+              attemptClaim: options.durable ? 'durable-host-journal' : 'process-local',
+            };
+          },
         };
       },
     },
@@ -432,7 +455,6 @@ function harness(fix: Fixture, options: HarnessOptions = {}): Harness {
       async collect(policy) { return options.evidence ? options.evidence(policy) : evidenceFor(policy); },
     },
     ...(options.transport === null ? {} : { transport: options.transport ?? fake }),
-    ...(options.journal ? { journal: options.journal } : {}),
     codexHome: fix.codexHome,
     auditId: 'audit-1',
     cache,
@@ -440,18 +462,6 @@ function harness(fix: Fixture, options: HarnessOptions = {}): Harness {
     ...(options.planTtlMs ? { planTtlMs: options.planTtlMs } : {}),
   });
   return { service, calls, dispatches, authorizations, finalizations, log, cache, setObservation: (value) => { observation = value; } };
-}
-
-/** An in-memory stand-in for T06's durable attempt lookup. */
-function journalDouble(seed: SolverAttemptJournalEntry[] = []) {
-  const entries = new Map<string, SolverAttemptJournalEntry>(seed.map((entry) => [entry.requestIdentity, entry]));
-  return {
-    entries,
-    journal: {
-      async lookup(requestIdentity: string) { return entries.get(requestIdentity); },
-      async record(entry: SolverAttemptJournalEntry) { entries.set(entry.requestIdentity, entry); },
-    } satisfies SolverAttemptJournal,
-  };
 }
 
 function successfulStdout(requestId = 'req-1'): string {
@@ -774,7 +784,7 @@ test('the commit happens once, before dispatch, and carries the prepared policy'
   expectStatus(await recompute(runner), 'succeeded');
 
   // The gate is the single commit point, and the solver runs immediately after it.
-  assert.deepEqual(runner.log, ['authorize:plan', 'authorize:dispatch', 'finalize', 'exec', 'authorize:accept']);
+  assert.deepEqual(runner.log, ['authorize:plan', 'authorize:dispatch', 'prepareCommit', 'commit', 'exec', 'authorize:accept']);
   const finalization = runner.finalizations[0];
   assert.equal(finalization.policyFingerprint, policyFingerprintFor(fix, DEFAULT_LIMITS, DEFAULT_INPUTS));
   assert.equal(finalization.inputDigest, digestSolverInputs(DEFAULT_INPUTS));
@@ -793,13 +803,8 @@ test('the input file and the policy exist before the commit decision is taken', 
   t.after(fix.cleanup);
   let preparedAtCommit: string[] = [];
   const runner = harness(fix, {
-    finalize: async (input) => {
+    onPrepare: async () => {
       preparedAtCommit = await readdir(join(fix.workspace, RECOMPUTE_DIRECTORY));
-      return {
-        decision: 'committed', handoffToken: 'handoff-1',
-        authorization: authorization({ policyFingerprint: input.policyFingerprint }),
-        lease: leaseFor(input),
-      };
     },
   });
   runner.setObservation(exited(successfulStdout()));
@@ -812,10 +817,11 @@ test('an authorization that is not bound to the prepared policy is refused', asy
   const fix = await fixture();
   t.after(fix.cleanup);
   const runner = harness(fix, {
-    finalize: (input) => ({
+    commit: (input) => ({
       decision: 'committed', handoffToken: 'handoff-1',
       authorization: authorization({ policyFingerprint: 'a'.repeat(64) }),
       lease: leaseFor(input),
+      attemptClaim: 'process-local',
     }),
   });
   runner.setObservation(exited(successfulStdout()));
@@ -829,32 +835,58 @@ test('a refused or unknown handoff never dispatches and never becomes a success'
   const fix = await fixture();
   t.after(fix.cleanup);
 
-  const refused = harness(fix, { finalize: () => ({ decision: 'refused', reason: 'The job attempt moved on.' }) });
+  const refused = harness(fix, { commit: () => ({ decision: 'refused', reason: 'The job attempt moved on.' }) });
   const refusal = await recompute(refused);
   expectStatus(refusal, 'rejected');
   if (refusal.status === 'rejected') assert.equal(refusal.code, 'handoff-refused');
   assert.equal(refused.calls.length, 0);
 
-  const lapsed = harness(fix, { finalize: () => ({ decision: 'expired', reason: 'The grant lapsed during preparation.' }) });
+  const lapsed = harness(fix, { commit: () => ({ decision: 'expired', reason: 'The grant lapsed during preparation.' }) });
   const expiry = await recompute(lapsed);
   expectStatus(expiry, 'rejected');
   if (expiry.status === 'rejected') assert.equal(expiry.code, 'authorization-expired');
 
-  const silent = harness(fix, { finalize: () => ({ decision: 'unknown', reason: 'The transaction result was not observed.' }) });
+  const silent = harness(fix, { commit: () => ({ decision: 'unknown', reason: 'The transaction result was not observed.' }) });
   const unknown = await recompute(silent);
   expectStatus(unknown, 'outcome_unknown');
   assert.equal(silent.calls.length, 0);
   assert.equal(silent.cache.size, 0);
 });
 
+test('a commit that does not settle synchronously is refused, never dispatched', async (t) => {
+  const fix = await fixture();
+  t.after(fix.cleanup);
+  // The at-most-once claim and the handoff must be one synchronous transaction. A
+  // gate whose commit returns a thenable reopens the window between the claim and
+  // the dispatch, so the service refuses it rather than awaiting it and handing a
+  // process off against a claim it cannot know settled.
+  const runner = harness(fix, {
+    commit: (input) => Promise.resolve({
+      decision: 'committed', handoffToken: 'handoff-1',
+      authorization: authorization({ policyFingerprint: input.policyFingerprint }),
+      lease: leaseFor(input),
+      attemptClaim: 'process-local',
+    }),
+  });
+  runner.setObservation(exited(successfulStdout()));
+  const outcome = await recompute(runner);
+  expectStatus(outcome, 'outcome_unknown');
+  assert.match((outcome as { reason: string }).reason, /did not settle synchronously/);
+  assert.equal(runner.calls.length, 0, 'no process is handed off against an unsettled claim');
+  assert.equal(runner.cache.size, 0);
+  // The commit ran to the point of returning; only the boundary, not the gate, refused it.
+  assert.deepEqual(runner.log, ['authorize:plan', 'authorize:dispatch', 'prepareCommit', 'commit']);
+});
+
 test('permission that moves between the reservation and the commit stops the run', async (t) => {
   const fix = await fixture();
   t.after(fix.cleanup);
   const runner = harness(fix, {
-    finalize: (input) => ({
+    commit: (input) => ({
       decision: 'committed', handoffToken: 'handoff-1',
       authorization: authorization({ policyFingerprint: input.policyFingerprint, sitePermissionEpoch: 8 }),
       lease: leaseFor(input),
+      attemptClaim: 'process-local',
     }),
   });
   const outcome = await recompute(runner);
@@ -925,26 +957,25 @@ test('without a durable journal the record says at-most-once is process local on
   if (outcome.status === 'succeeded') assert.equal(outcome.result.record.atMostOnce, 'process-local');
 });
 
-test('a durable journal answers before dispatch and is what the record names', async (t) => {
+test('a durable claim answers inside the commit and is what the record names', async (t) => {
   const fix = await fixture();
   t.after(fix.cleanup);
-  const store = journalDouble();
-  const runner = harness(fix, { journal: store.journal });
+  const runner = harness(fix, { durable: true });
   runner.setObservation(exited(successfulStdout()));
   assert.equal(runner.service.durableAtMostOnce, true);
 
   const first = await recompute(runner);
   expectStatus(first, 'succeeded');
   if (first.status === 'succeeded') assert.equal(first.result.record.atMostOnce, 'durable-host-journal');
-  assert.equal(store.entries.size, 1);
 
-  // The bounded in-memory map is what would normally answer a repeat. Clearing it
-  // is what a restart or an eviction does, and the journal must answer instead.
+  // The bounded in-memory result cache is what would normally answer a repeat.
+  // Clearing it is what a restart or an eviction does. The durable claim the gate
+  // wrote inside the commit must answer instead and stop a second dispatch.
   runner.service.invalidateGrant('grant-1');
   const second = await recompute(runner, { execute: { requestId: 'req-2' } });
   expectStatus(second, 'outcome_unknown');
-  assert.match((second as { reason: string }).reason, /already/);
-  assert.equal(runner.calls.length, 1, 'the durable lookup, not the map, prevented the second dispatch');
+  assert.match((second as { reason: string }).reason, /not dispatched again/);
+  assert.equal(runner.calls.length, 1, 'the durable claim, not the cache, prevented the second dispatch');
 });
 
 test('a repeated click on the same content returns the same outcome without running again', async (t) => {
@@ -1460,7 +1491,7 @@ test('a reply version the host does not hold is refused as unknown-reply', async
   const missing = new SolverExecutionService({
     context: { async resolve() { return undefined; } },
     authority: { async authorize() { return { decision: 'allowed', authorization: authorization() }; } },
-    gate: { async finalize() { return { decision: 'refused', reason: 'never called' }; } },
+    gate: { durableAtMostOnce: false, async prepareCommit() { return { commit() { return { decision: 'refused', reason: 'never called' }; } }; } },
     evidence: { async collect(policy) { return evidenceFor(policy); } },
     transport: {
       enforces: { timeout: true, outputBytes: true, memoryBytes: false, maxTimeoutMs: 30_000 },

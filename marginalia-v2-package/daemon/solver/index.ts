@@ -36,20 +36,20 @@ export {
 export { SolverResultCache, type SolverCacheEntry, type SolverCacheOptions } from './cache.ts';
 export {
   SolverExecutionService,
+  type SolverAttemptClaim,
   type SolverAuthority,
   type SolverAuthorization,
   type SolverAuthorizationDecision,
   type SolverAuthorizationInput,
   type SolverAuthorizationStage,
   type SolverAuthorizationSubject,
-  type SolverAttemptJournal,
-  type SolverAttemptJournalEntry,
   type SolverContextSource,
   type SolverEvidenceSource,
   type SolverExecutionGate,
   type SolverFinalizationDecision,
   type SolverFinalizationInput,
   type SolverGenerationLease,
+  type SolverPreparedCommit,
   type SolverRecomputeContext,
   type SolverServiceOptions,
 } from './service.ts';
