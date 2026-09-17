@@ -5,6 +5,7 @@ import { ReaderJournal } from './journal.ts';
 import { localPersistence, type CachedReply } from './persistence.ts';
 import { anchorAt, orderedThreads, outgoingPreview, sourceLocation, pageDefinition, displayPosition } from './margin-model.ts';
 import { HelperClient } from './helper.ts';
+import { isHelperPage, mountHelperManagement } from './helper-management.ts';
 import { mountReply, type MountedReply } from '../renderer/index.ts';
 import { canonicalReplyData, validateReply, type SourceBinding } from '../contracts/reply.ts';
 
@@ -21,6 +22,8 @@ export type MarginOptions = {
   initialOpen?: boolean;
   /** Disable authenticated helper access in page-embedded, clickjackable hosts. */
   allowHelper?: boolean;
+  /** Only the trusted helper webapp entry point opts into local pairing management. */
+  helperPageSettings?: boolean;
   /** Trusted host policy recheck immediately before each local outbox send. */
   authorizeHelperSend?: (sourceUrl: string) => Promise<void>;
 };
@@ -71,6 +74,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const status = el('p', '', 'm-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const toast = el('div', undefined, 'm-toast'); toast.hidden = true;
   const setup = el('section', undefined, 'm-settings'); setup.hidden = true;
+  const managementHost = el('div');
+  const management = options.helperPageSettings && options.allowHelper !== false && isHelperPage(location)
+    ? mountHelperManagement(managementHost) : undefined;
   const scroll = el('div', undefined, 'm-scroll'); scroll.append(map, reading, selectionCard, threadList, footer);
   panel.append(bar, heading, compose, setup, scroll, status, toast); shell.append(rail, panel); workspace.append(shell); root.append(workspace);
   let sectionIndex = 0, held = false, draft: Draft | undefined, selected: QuoteAnchor | undefined;
@@ -120,7 +126,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const openButton = button('Open margin', () => showPanel(true)); openButton.className = 'm-open';
   rail.append(openButton);
   const collapse = button('Collapse', closePanel);
-  const settingsButton = button('Settings', () => { setup.hidden = !setup.hidden; if (!setup.hidden) setup.querySelector<HTMLElement>('input')?.focus(); });
+  const settingsButton = button('Settings', () => { setup.hidden = !setup.hidden; if (!setup.hidden) { management?.open(); setup.querySelector<HTMLElement>('input')?.focus(); } else management?.close(); });
   bar.append(el('span', 'Marginalia', 'm-wordmark'), actions(collapse, settingsButton));
   const writeButton = button('Write here…', () => beginDraft()); writeButton.className = 'm-write'; compose.append(writeButton);
   const readingTitle = el('h2'); readingTitle.tabIndex = -1;
@@ -591,7 +597,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (journal.unsaved || pendingNoteCommitted) setup.append(el('p', journal.unsaved ? 'Changes are still in memory. Keep this page open.' : 'Your note is saved. Its draft still needs to be cleared.', 'm-error'), button('Retry saving', () => safely(async () => { await locked(() => journal.retryPersistence()); needsReconciliation = false; if (pendingNoteMutation) { pendingNoteCommitted = true; await persistence.write(draftKey, undefined); pendingNoteMutation = undefined; pendingNoteCommitted = false; draft = undefined; renderCompose(); } changed(); renderThreads(); renderSettings(); announce('Changes saved on this device.'); })));
     if (options.allowHelper === false) setup.append(el('p', 'Open the browser margin to connect the local helper.', 'm-meta'));
     else {
-    const code = el('input'); code.autocomplete = 'off'; code.setAttribute('aria-label', 'Pairing code'); code.placeholder = 'Code from the local helper';
+    const code = el('input'); code.autocomplete = 'off'; code.inputMode = 'numeric'; code.maxLength = 6; code.pattern = '[0-9]{6}'; code.setAttribute('aria-label', 'Pairing code'); code.placeholder = 'Code from the local helper';
     setup.append(el('p', 'Reading and notes work on this device without an account. Pairing also saves them in the local helper.', 'm-meta'), label('Pairing code', code), actions(button('Pair', () => safely(async () => {
       if (!helper) throw new Error('Open this page at the local helper address to pair.');
       if (!code.value.trim()) { code.focus(); return; }
@@ -608,7 +614,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     for (const value of ['system', 'light', 'dark']) { const option = el('option', value[0].toUpperCase() + value.slice(1)); option.value = value; theme.append(option); }
     theme.value = document.documentElement.dataset.theme ?? 'system';
     theme.addEventListener('change', () => { if (theme.value === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme.value; void persistence.write('theme', theme.value).catch(fail); });
-    setup.append(label('Theme', theme), el('p', denied ? 'Asking is blocked for this site.' : 'No permission to send has been given.', 'm-meta'), button(denied ? 'Allow review of future questions' : 'Block asking on this site', () => safely(async () => { denied = !denied; await persistence.write('denied:' + new URL(capture.url).origin, denied); renderSettings(); announce(denied ? 'Asking blocked.' : 'Future questions still require review.'); })), button('Close settings', () => { setup.hidden = true; settingsButton.focus(); }));
+    if (management) setup.append(managementHost);
+    setup.append(label('Theme', theme), el('p', denied ? 'Asking is blocked for this site.' : 'No permission to send has been given.', 'm-meta'), button(denied ? 'Allow review of future questions' : 'Block asking on this site', () => safely(async () => { denied = !denied; await persistence.write('denied:' + new URL(capture.url).origin, denied); renderSettings(); announce(denied ? 'Asking blocked.' : 'Future questions still require review.'); })), button('Close settings', () => { setup.hidden = true; management?.close(); settingsButton.focus(); }));
     for (const conflict of journal.state.conflicts) {
       const detail = el('details'); detail.append(el('summary', 'Updated elsewhere · review your change'), el('p', conflict.message));
       const change = conflict.change;
@@ -644,6 +651,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function destroy() {
     if (destroyed) return;
+    management?.destroy();
     closeReplies(); highlight(null); destroyed = true; abort.abort(); channel?.close();
     workspace.remove(); skip.remove();
     if (mountedMargins.get(root)?.destroy === destroy) root.classList.remove('m-app', 'm-host-only');
