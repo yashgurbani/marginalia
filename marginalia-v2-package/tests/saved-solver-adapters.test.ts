@@ -212,6 +212,24 @@ test('a binding naming an attempt this job never had is refused', async () => {
   assert.equal(context, undefined);
 });
 
+test('a historical failed attempt cannot be named as the producer of a committed reply', async () => {
+  const failed = { ...job().attempts[0], state: 'failed' as const };
+  const succeeded = { ...job().attempts[0], id: 'attempt-2', number: 2 };
+  const snapshot = job({ latestAttemptId: 'attempt-2', attempts: [failed, succeeded] });
+  const context = await contextSource(host({ snapshot }), pinned(binding({ attemptId: 'attempt-1' })))
+    .resolve('reply-1', 'solver-1');
+  assert.equal(context, undefined);
+});
+
+test('a non-succeeded latest attempt cannot be named as the producer of a committed reply', async () => {
+  const snapshot = job({
+    state: 'validating',
+    attempts: [{ ...job().attempts[0], state: 'validating' }],
+  });
+  const context = await contextSource(host({ snapshot })).resolve('reply-1', 'solver-1');
+  assert.equal(context, undefined);
+});
+
 test('a removed reply is not recomputable even while its solver file remains', async () => {
   const removed = replyVersion({ deletedAt: '2026-09-17T11:00:00.000Z' });
   const context = await contextSource(host({ version: removed })).resolve('reply-1', 'solver-1');

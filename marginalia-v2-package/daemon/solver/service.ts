@@ -283,11 +283,13 @@ export interface SolverExecutionGate {
    * path between the commit and the handoff, and a release that has to be awaited
    * is not the same host operation as the commit it undoes.
    *
-   * Optional, and honestly so. A gate that cannot release reports nothing here, and
-   * the service then answers `outcome_unknown` rather than a clean rejection, because
-   * a claim it cannot withdraw is a claim it cannot truthfully call undone.
+   * Optional, and honestly so. A gate that cannot release reports nothing here. A
+   * gate that can must return `{ decision: 'released' }` only after removing the
+   * exact request/attempt/handoff/lease claim named by the input. Missing, malformed,
+   * or asynchronous confirmation is not success. In every unconfirmed case the
+   * service answers `outcome_unknown` rather than a clean rejection.
    */
-  releaseClaim?(input: SolverClaimRelease): void;
+  releaseClaim?(input: SolverClaimRelease): SolverClaimReleaseResult;
 }
 
 /** Identifies exactly the claim to withdraw, and why the handoff never happened. */
@@ -298,6 +300,9 @@ export type SolverClaimRelease = {
   leaseId: string;
   reason: string;
 };
+
+/** Synchronous confirmation that the exact claim identified above was removed. */
+export type SolverClaimReleaseResult = { decision: 'released' };
 
 /** Actual host observations for this exact policy. `undefined` means unavailable, never assumed good. */
 export interface SolverEvidenceSource {
@@ -782,8 +787,9 @@ export class SolverExecutionService {
    * standing for work that never ran, so the honest answer is `outcome_unknown`
    * naming that fact, not a rejection that implies the host is back where it started.
    *
-   * A throwing release is not swallowed into success. It means the claim's state is
-   * unknown, which is exactly what `outcome_unknown` says.
+   * Only an explicit synchronous `released` result proves removal. A throw, missing
+   * or malformed result, or thenable leaves the claim's state unknown, which is
+   * exactly what `outcome_unknown` says.
    */
   private abandonCommitted(
     outcome: SolverOutcome,
@@ -798,7 +804,16 @@ export class SolverExecutionService {
     const gate = this.options.gate;
     if (gate.releaseClaim) {
       try {
-        gate.releaseClaim({ ...release, reason });
+        const released = gate.releaseClaim({ ...release, reason });
+        if (isThenable<SolverClaimReleaseResult>(released)) {
+          // The boundary is synchronous. Attach a rejection handler immediately so
+          // a violating async adapter cannot also create an unhandled rejection.
+          void Promise.resolve(released).catch(() => {});
+          return { status: 'outcome_unknown', reason: `${reason} Withdrawing the committed attempt claim did not settle synchronously, so whether this recompute can be asked for again is unknown.` };
+        }
+        if (!released || released.decision !== 'released') {
+          return { status: 'outcome_unknown', reason: `${reason} The host did not confirm removal of the exact committed attempt claim, so whether this recompute can be asked for again is unknown.` };
+        }
         return outcome;
       } catch (error) {
         return { status: 'outcome_unknown', reason: `${reason} Withdrawing the committed attempt claim failed, so whether this recompute can be asked for again is unknown: ${error instanceof Error ? error.message : 'the host gave no reason'}.` };

@@ -39,6 +39,7 @@ export {
   type SolverAttemptClaim,
   type SolverAuthority,
   type SolverClaimRelease,
+  type SolverClaimReleaseResult,
   type SolverAuthorization,
   type SolverAuthorizationDecision,
   type SolverAuthorizationInput,

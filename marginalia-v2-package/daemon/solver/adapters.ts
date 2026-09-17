@@ -103,9 +103,16 @@ export function createStoreSolverContextSource(options: StoreSolverContextOption
       if (!job) return undefined;
       // The job must be the one that produced this exact reply version. Without this
       // a binding could point a recompute at another job's workspace and grant.
-      if (job.replyVersionId !== replyVersionId) return undefined;
+      if (job.state !== 'succeeded' || job.replyVersionId !== replyVersionId) return undefined;
       if (job.threadId !== version.threadId || job.context.threadId !== version.threadId) return undefined;
-      if (!job.attempts.some(attempt => attempt.id === binding.attemptId)) return undefined;
+      // JobStore.succeed is the reply commit fence: it accepts only the current
+      // latest attempt, commits the reply, and moves both the job and that exact
+      // attempt to `succeeded` in one transaction. Require every persisted side of
+      // that relation. Membership in attempt history is insufficient because a
+      // failed historical attempt never produced the committed reply.
+      if (job.latestAttemptId !== binding.attemptId) return undefined;
+      const producingAttempt = job.attempts.find(attempt => attempt.id === binding.attemptId);
+      if (!producingAttempt || producingAttempt.state !== 'succeeded') return undefined;
       const replyHash = digestReply(version.reply);
       // The store records its own hash. If the two disagree the stored reply is not
       // trustworthy, and the service would refuse it a moment later anyway.

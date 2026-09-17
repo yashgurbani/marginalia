@@ -38,6 +38,7 @@ import {
   type SolverAuthorizationDecision,
   type SolverAuthorizationInput,
   type SolverClaimRelease,
+  type SolverClaimReleaseResult,
   type SolverFinalizationDecision,
   type SolverFinalizationInput,
   type SolverGenerationLease,
@@ -358,7 +359,7 @@ type HarnessOptions = {
    * How this gate withdraws a claim it committed for a handoff that never happened.
    * `'none'` is a gate that offers no release at all.
    */
-  release?: 'none' | 'ok' | 'throws';
+  release?: 'none' | 'ok' | 'no-op' | 'throws' | 'thenable-resolves' | 'thenable-rejects';
   transport?: SolverCommandTransport | null;
   realExecution?: boolean;
   now?: () => number;
@@ -463,11 +464,19 @@ function harness(fix: Fixture, options: HarnessOptions = {}): Harness {
       // A gate that can withdraw a claim it wrote. `'none'` omits the method
       // entirely, which is how a host with no release path is declared.
       ...(options.release && options.release !== 'none' ? {
-        releaseClaim(release: SolverClaimRelease) {
+        releaseClaim(release: SolverClaimRelease): SolverClaimReleaseResult {
           log.push('releaseClaim');
           releases.push(release);
           if (options.release === 'throws') throw new Error('the claim table would not give the row back');
+          if (options.release === 'no-op') return undefined as unknown as SolverClaimReleaseResult;
+          if (options.release === 'thenable-resolves') {
+            return Promise.resolve({ decision: 'released' }) as unknown as SolverClaimReleaseResult;
+          }
+          if (options.release === 'thenable-rejects') {
+            return Promise.reject(new Error('async release failed')) as unknown as SolverClaimReleaseResult;
+          }
           claims.delete(release.requestIdentity);
+          return { decision: 'released' };
         },
       } : {}),
     },
@@ -955,10 +964,11 @@ test('a durable claim committed for a handoff that never happened is withdrawn',
   const fix = await fixture();
   t.after(fix.cleanup);
 
+  let rebuilt = true;
   const runner = harness(fix, {
     durable: true,
     release: 'ok',
-    lease: (input) => ({ ...leaseFor(input), workspaceGeneration: 'gen-rebuilt' }),
+    lease: (input) => ({ ...leaseFor(input), workspaceGeneration: rebuilt ? 'gen-rebuilt' : input.workspaceGeneration }),
   });
   const outcome = await recompute(runner);
   expectStatus(outcome, 'rejected');
@@ -975,6 +985,36 @@ test('a durable claim committed for a handoff that never happened is withdrawn',
     ['commit', 'releaseClaim'],
     'the release runs after the commit and instead of the handoff',
   );
+
+  // This is the observable reason release confirmation matters: after the host
+  // confirms exact removal, the same content identity can be claimed and dispatched
+  // by a later request once the generation is stable.
+  rebuilt = false;
+  runner.setObservation(exited(successfulStdout('req-2')));
+  const retried = await recompute(runner, { execute: { requestId: 'req-2' } });
+  expectStatus(retried, 'succeeded');
+  assert.equal(runner.calls.length, 1, 'the confirmed release made a real retry dispatchable');
+});
+
+test('an unconfirmed no-op release leaves the claim standing and the retry cleanly refuses', async (t) => {
+  const fix = await fixture();
+  t.after(fix.cleanup);
+
+  const runner = harness(fix, {
+    durable: true,
+    release: 'no-op',
+    lease: (input) => ({ ...leaseFor(input), workspaceGeneration: 'gen-rebuilt' }),
+  });
+  const first = await recompute(runner);
+  expectStatus(first, 'outcome_unknown');
+  if (first.status === 'outcome_unknown') assert.match(first.reason, /did not confirm removal of the exact/);
+  assert.equal(runner.claims.size, 1, 'undefined is not confirmation and cannot clear the durable claim');
+
+  const second = await recompute(runner, { execute: { requestId: 'req-2' } });
+  expectStatus(second, 'outcome_unknown');
+  if (second.status === 'outcome_unknown') assert.match(second.reason, /not dispatched again/);
+  assert.equal(runner.calls.length, 0, 'neither the refused attempt nor its already-claimed retry dispatches');
+  assert.equal(runner.releases.length, 1, 'the already-claimed retry does not pretend to release another owner’s claim');
 });
 
 test('an unreleasable durable claim is reported as unknown, not as a clean refusal', async (t) => {
@@ -1015,6 +1055,27 @@ test('a release that fails leaves the outcome unknown rather than reporting succ
   }
   assert.equal(runner.calls.length, 0);
   assert.equal(runner.releases.length, 1, 'the withdrawal was attempted');
+});
+
+test('thenable release results are refused synchronously and rejected thenables are observed', async (t) => {
+  for (const release of ['thenable-resolves', 'thenable-rejects'] as const) {
+    const fix = await fixture();
+    t.after(fix.cleanup);
+    const runner = harness(fix, {
+      durable: true,
+      release,
+      lease: (input) => ({ ...leaseFor(input), workspaceGeneration: 'gen-rebuilt' }),
+    });
+    const outcome = await recompute(runner, { execute: { requestId: `req-${release}` } });
+    expectStatus(outcome, 'outcome_unknown');
+    if (outcome.status === 'outcome_unknown') assert.match(outcome.reason, /did not settle synchronously/);
+    assert.equal(runner.calls.length, 0);
+    assert.equal(runner.claims.size, 1, 'an asynchronous answer cannot confirm synchronous removal');
+  }
+  // Let the rejected promise's microtask run. The service attached its rejection
+  // handler in the same stack, so the test process must remain free of an unhandled
+  // rejection while reaching this assertion.
+  await new Promise<void>((resolve) => setImmediate(resolve));
 });
 
 test('a process-local claim needs no withdrawal and still refuses cleanly', async (t) => {
