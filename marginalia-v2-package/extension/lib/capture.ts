@@ -3,6 +3,8 @@ import * as quote from 'dom-anchor-text-quote';
 import { attachQuote, type QuoteAnchor } from '../../contracts/reader.ts';
 import { MAX_TEXT, pageIdentity, type Snapshot } from './protocol.ts';
 
+export type SectionMarker = { heading: Element; start: number };
+
 const excluded = 'script,style,noscript,template,form,input,textarea,select,button,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"],[hidden],[inert],[aria-hidden="true"],[id^="marginalia-host-"]';
 export function safeNode(node: Node): boolean {
   const element = node.nodeType === 1 ? node as Element : node.parentElement;
@@ -28,15 +30,18 @@ export function projectPage() {
     nodes.push({ node: node as Text, start: size, end: size + value.length });
     root.append(document.createTextNode(value)); size += value.length;
   }
-  const sections = Array.from(document.querySelectorAll('h1,h2,h3')).filter(safeNode).slice(0, 299).flatMap(heading => {
-    const first = nodes.find(entry => heading.contains(entry.node));
-    return first ? [{ title: (heading.textContent ?? '').trim().slice(0, 200), start: first.start, end: size }] : [];
-  });
-  if (!sections.length || sections[0].start > 0) sections.unshift({ title: 'Beginning', start: 0, end: size });
-  sections.forEach((section, index) => { section.end = sections[index + 1]?.start ?? size; });
-  return { root, nodes, sections, text: root.textContent ?? '' };
+  const starts = Array.from(document.querySelectorAll('h1,h2,h3')).filter(safeNode).slice(0, 299).flatMap(heading => {
+    const title = (heading.textContent ?? '').trim().slice(0, 200);
+    const first = nodes.find(entry => entry.end > entry.start && heading.contains(entry.node));
+    return title && first && first.start < size ? [{ title, start: first.start, heading }] : [];
+  }).filter((section, index, all) => index === 0 || section.start > all[index - 1].start);
+  const leading = size && (!starts.length || starts[0].start > 0) ? [{ title: 'Beginning', start: 0 }] : [];
+  const boundaries = [...leading, ...starts];
+  const sections = boundaries.map((section, index) => ({ title: section.title, start: section.start, end: boundaries[index + 1]?.start ?? size }));
+  const markers = starts.map(({ heading, start }) => ({ heading, start }));
+  return { root, nodes, sections, markers, text: root.textContent ?? '' };
 }
-export function captureSelection(documentId: string, revision: number, requireSelection = true): Snapshot | null {
+export function captureSelection(documentId: string, revision: number, requireSelection = true, onSections?: (markers: SectionMarker[]) => void): Snapshot | null {
   const selection = getSelection();
   const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
   if (requireSelection && (!range || range.collapsed || !safeNode(range.startContainer) || !safeNode(range.endContainer))) return null;
@@ -56,7 +61,8 @@ export function captureSelection(documentId: string, revision: number, requireSe
       if (range.toString() !== anchor.exact) return null;
     } else if (requireSelection) return null;
   }
-  return { document: documentId, revision, anchor, position: anchor?.start ?? 0, sections: projection.sections, capture: { url: pageIdentity(location.href), title: document.title.slice(0, 500), pageType: location.hostname.endsWith('arxiv.org') ? 'Paper' : 'Web page', text: projection.text, capturedAt: new Date().toISOString(), extractionVersion: 'dom-safe-text-v1' } };
+  onSections?.(projection.markers);
+  return { document: documentId, revision, anchor, position: anchor?.start ?? 0, sections: projection.sections, capture: { url: pageIdentity(location.href), title: document.title.slice(0, 500), pageType: location.hostname.endsWith('arxiv.org') ? 'Paper' : 'Web page', text: projection.text, capturedAt: new Date().toISOString(), extractionVersion: 'dom-safe-text-v1', sections: projection.sections } };
 }
 export function locate(anchor: QuoteAnchor): Range | null {
   const projection = projectPage(), attachment = attachQuote(anchor, projection.text);

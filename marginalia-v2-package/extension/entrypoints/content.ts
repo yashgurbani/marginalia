@@ -1,7 +1,7 @@
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { browser } from 'wxt/browser';
 import { respondAsync } from '../lib/respond.ts';
-import { captureSelection, locate, safeNode } from '../lib/capture.ts';
+import { captureSelection, locate, type SectionMarker } from '../lib/capture.ts';
 import { allowedPage, isMessage, pageIdentity, validAnchor, type Snapshot } from '../lib/protocol.ts';
 
 export default defineContentScript({
@@ -9,11 +9,16 @@ export default defineContentScript({
   main(ctx) {
     if (window.top !== window || !allowedPage(location.href)) return;
     const documentId = crypto.randomUUID();
-    let snapshot: Snapshot | null = null, revision = 0, busy = false, host: HTMLElement | null = null, dirty = true, lastProjection = 0;
+    let snapshot: Snapshot | null = null, sectionMarkers: SectionMarker[] = [], revision = 0, busy = false, host: HTMLElement | null = null, dirty = true, lastProjection = 0;
     const observer = new MutationObserver(changes => { if (changes.some(change => !host?.contains(change.target))) dirty = true; });
     observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
     const highlights = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
-    function clear() { snapshot = null; host?.remove(); host = null; highlights?.delete('marginalia-selection'); }
+    function clear() { snapshot = null; sectionMarkers = []; host?.remove(); host = null; highlights?.delete('marginalia-selection'); }
+    const rememberSections = (markers: SectionMarker[]) => { sectionMarkers = markers; };
+    const sameSections = (left: Snapshot['sections'], right: Snapshot['sections']) => left.length === right.length && left.every((section, index) => {
+      const other = right[index];
+      return section.title === other.title && section.start === other.start && section.end === other.end;
+    });
     async function permitted() { const result = await browser.runtime.sendMessage({ type: 'policy', version: 1 }); return result?.allowed === true; }
     async function open() {
       if (host?.isConnected) return;
@@ -37,7 +42,7 @@ export default defineContentScript({
       try {
         if (!await permitted()) { clear(); return; }
         if (snapshot && snapshot.capture.url !== pageIdentity(location.href)) clear();
-        const next = captureSelection(documentId, ++revision);
+        const next = captureSelection(documentId, ++revision, true, rememberSections);
         if (!next?.anchor) return;
         snapshot = next; dirty = false; lastProjection = Date.now(); await open();
       } catch (error) { console.warn('Marginalia capture unavailable:', error instanceof Error ? error.message : 'unknown'); }
@@ -47,11 +52,9 @@ export default defineContentScript({
     ctx.addEventListener(document, 'keyup', event => { if (event.isTrusted && (event.key === 'Shift' || event.key.startsWith('Arrow'))) void select(); });
     ctx.addEventListener(window, 'scroll', () => {
       if (!snapshot || dirty) return;
-      const headings = Array.from(document.querySelectorAll('h1,h2,h3')).filter(safeNode).slice(0, 299);
-      const offset = snapshot.sections.length - headings.length;
       snapshot.position = 0;
-      headings.forEach((heading, index) => {
-        if (heading.getBoundingClientRect().top <= innerHeight * .4) snapshot!.position = snapshot!.sections[index + offset]?.start ?? 0;
+      sectionMarkers.forEach(({ heading, start }) => {
+        if (heading.isConnected && heading.getBoundingClientRect().top <= innerHeight * .4) snapshot!.position = start;
       });
     }, { passive: true });
     for (const type of ['pageshow', 'resize']) ctx.addEventListener(window, type, () => { dirty = true; });
@@ -62,15 +65,15 @@ export default defineContentScript({
       if (isMessage(message, 'excluded')) { clear(); return Promise.resolve(true); }
       if (isMessage(message, 'activate')) return (async () => {
         if (!await permitted()) return;
-        snapshot = captureSelection(documentId, ++revision, false); dirty = false; lastProjection = Date.now();
+        snapshot = captureSelection(documentId, ++revision, false, rememberSections); dirty = false; lastProjection = Date.now();
         if (!message.panel) await open();
         return true;
       })();
       if (isMessage(message, 'snapshot')) return (async () => {
         if (!await permitted() || snapshot?.capture.url !== pageIdentity(location.href)) { clear(); return null; }
         if (dirty || Date.now() - lastProjection > 5000) {
-          const fresh = captureSelection(documentId, revision, false); dirty = false; lastProjection = Date.now();
-          if (fresh && snapshot && fresh.capture.text !== snapshot.capture.text) { fresh.revision = ++revision; snapshot = fresh; }
+          const fresh = captureSelection(documentId, revision, false, rememberSections); dirty = false; lastProjection = Date.now();
+          if (fresh && snapshot && (fresh.capture.text !== snapshot.capture.text || !sameSections(fresh.sections, snapshot.sections))) { fresh.revision = ++revision; snapshot = fresh; }
         }
         return snapshot;
       })();
