@@ -1,0 +1,29 @@
+{
+  "name": "marginalia",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "24.10.1",
+    "@types/ws": "8.18.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.0",
+    "wxt": "0.21.4"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "3.1.1",
+    "better-sqlite3": "13.0.3",
+    "dom-anchor-text-position": "5.0.0",
+    "dom-anchor-text-quote": "4.0.2",
+    "katex": "0.18.7",
+    "ws": "8.21.3"
+  }
+}
