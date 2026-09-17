@@ -1,5 +1,13 @@
 # Marginalia overall build report
 
+## Chief integration checkpoint — 17 September, after the parallel Pro run
+
+Integrated and pushed T07 at `dc0f963684fa616599cbe67ff183eebe6058ba7d`, merging verified Pro head `2464ce63862d70f6ec702f759f2bdd88e054839c`. The routed Luna Max verifier passed 42 native reader/store/journal tests on identical runtime code and the final project-config typecheck. [Native verification](docs/evidence/pro-t07-fixes/NATIVE-VERIFICATION.md) records exact revisions, commands and Windows-only limits. This is a tested storage checkpoint, not whole-ticket, browser, cross-platform or release acceptance. The three Pro-authored steering documents were integrated earlier at `2a43c32`.
+
+T05's current-base continuation ended **Thinking failed**; T08 ended **You've hit your limit**. Their checkpoint branches still resolved to `1517433` when checked; no current-base implementation from either was integrated. Preserve their existing chats and staged work. T06 remains running, with reported transport tests but no completed publication/acceptance receipt yet. Retrieve that existing output before starting another request.
+
+After refreshing the chief chat, the model menu explicitly showed **Pro disabled** and an advanced-usage reset tomorrow after 1:46 PM. This is an observed model restriction, not inference from the older workspace-credit banner. Do not purchase credits, change accounts, substitute models, or repeatedly replay failed requests. Continue available verification/publication recovery; resume Pro implementation when the authorized route becomes available. All-ticket scope and the source/design decisions remain unchanged. The ownership and detailed assessment below remain useful; this checkpoint supersedes their earlier active/unmerged status statements.
+
 ## Current position — 17 September 2026
 
 **Current integration baseline: `1517433968d03cdde054a70376ca26c2d9221315`, `codex/marginalia-v2`. Product incomplete; not launch-ready. All T00–T20, R1–R30 and all 71 feature-inventory items remain required.** The GitHub connector re-resolved this exact integration ref for the present documentation handoff. No new source review or test run was performed for this update.

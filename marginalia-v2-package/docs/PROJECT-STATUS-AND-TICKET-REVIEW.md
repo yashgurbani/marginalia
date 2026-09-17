@@ -1,5 +1,11 @@
 # Project status and ticket review for Claude / GPT-6 Pro
 
+## Latest acceptance change
+
+T07's continuation is integrated at `dc0f963684fa616599cbe67ff183eebe6058ba7d`. The bounded storage behavior has 42 passing native tests, and the final Pro head `2464ce63862d70f6ec702f759f2bdd88e054839c` passes project-config typecheck. [Exact evidence and limits](evidence/pro-t07-fixes/NATIVE-VERIFICATION.md) replace the earlier pending-verification status below. This does not close T07's browser/platform/product acceptance.
+
+T05's current-base Pro turn failed; T08 hit its explicit usage limit; their checkpoint refs remained at `1517433`, with no delivered current-base changes integrated. T06 remains running pending its actual output. Pro is now visibly disabled after a refresh in the idle chief chat; preserve the current chats and do not silently substitute another implementation model. Detailed scopes and requirements below remain required; current active/unmerged status is governed by this paragraph and BUILD-STATUS's latest checkpoint.
+
 ## Current assessment — 17 September 2026
 
 **Baseline: `1517433968d03cdde054a70376ca26c2d9221315`, `codex/marginalia-v2`. Product incomplete; not launch-ready. All T00–T20 and all 71 feature-inventory entries remain in scope.** This assessment carries forward the accepted current-revision advisory and the user's latest coordination facts; this documentation update performs no additional source review or tests.

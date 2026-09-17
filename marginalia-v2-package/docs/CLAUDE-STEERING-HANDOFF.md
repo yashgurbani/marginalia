@@ -1,5 +1,13 @@
 # Claude steering handoff
 
+## Latest checkpoint — read before the earlier ownership snapshot
+
+T07's bounded device-choice/migration continuation is now integrated and pushed at `dc0f963684fa616599cbe67ff183eebe6058ba7d`, from Pro head `2464ce63862d70f6ec702f759f2bdd88e054839c`. See [native verification](evidence/pro-t07-fixes/NATIVE-VERIFICATION.md): 42 reader/store/journal tests passed on the identical runtime implementation and assertions; the final type-only correction passed project-config typecheck. Windows Node 24.14.1 / better-sqlite3 13.0.3 was exercised. Browser conflict controls, Linux/macOS and whole-ticket acceptance remain open. The merge differs from the tested Pro head only in the three steering documents.
+
+T05 current-base continuation ended Thinking failed; T08 stopped at an explicit usage limit. Neither checkpoint branch had advanced from `1517433`; do not count their progress messages or staged blobs as delivered changes. T06 is still running and must be recovered from its existing chat before another dispatch. The chief refreshed the idle advisor chat and verified Pro is disabled in the model menu, with reset text tomorrow after 1:46 PM. Preserve the requested Pro-only implementation route; no account rotation, credit purchase or silent model fallback. The build goal remains unfinished. These status facts supersede the earlier active/unmerged entries below.
+
+The existing verifier is runtime-confirmed `gpt-5.6-luna` / `max`, dynamic MCP thread `01a0af0b-ec6a-7dd2-8df4-7034e9f49bcc`. Its report was recovered despite the outer tool's 300-second timeout. No duplicate verification session is needed. Continue from the published exact checkpoints and report failures to the owning Pro chat when available.
+
 ## Current direction — 17 September 2026
 
 **Continue all T00–T20 tickets through separate parallel 6Pro chats. Astra chief steers only; dynamically routed MCP Luna Max verifies independently. No new Sol or Opus implementation.** The earlier outgoing-chief stop, T05-only continuation, Astra implementation exceptions and Sol/Opus implementation routing are superseded. Parallelism never overrides one-writer-per-path ownership.
