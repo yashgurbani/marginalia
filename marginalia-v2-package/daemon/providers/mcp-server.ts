@@ -3,6 +3,7 @@ import type { RpcTransport } from './stdio.ts';
 import { checkPolicy } from './app-server.ts';
 import { pages, PINNED_CODEX_VERSION } from './preflight.ts';
 import { randomUUID } from 'node:crypto';
+import { formatMcpPrompt } from './prompt.ts';
 
 export async function initializeMcp(rpc: RpcTransport): Promise<any[]> {
   const info = await rpc.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'marginalia', version: '0.2.0' } });
@@ -72,17 +73,19 @@ export class McpServerRunner implements JobRunner {
     const h = await this.save({ jobId: request.jobId, provider: 'mcp-server', workspace: request.workspace,
       policyKey: request.policyKey, auditScope: policy.auditScope, providerInstanceId: this.instanceId, mode: request.mode, model: request.model, state: 'running', tombstone: false });
     if (this.fenced(h).tombstone) return this.save({ ...h, state: 'cancelled', tombstone: true });
-    this.dispatch(h, request, 'codex', { ...policy.mcp, model: request.model });
+    try { await this.dispatch(h, request, 'codex', { ...policy.mcp, model: request.model }); }
+    catch { return this.save({ ...h, state: 'failed', reason: 'pre-dispatch-authorization-rejected' }); }
     return h;
   }); }
-  private dispatch(h: ProviderHandle, request: ProviderRequest, name: 'codex' | 'codex-reply', args: Record<string, unknown>): void {
-    const prompt = request.mode === 'structured-final'
-      ? `${request.prompt}\nReturn only JSON matching this schema; do not write files:\n${JSON.stringify(request.outputSchema)}` : request.prompt;
-    if (this.fenced(h).tombstone) return;
-    this.ownedAttempts.add(h.jobId);
-    if (h.threadId) this.latestByThread.set(h.threadId, h.jobId);
+  private async dispatch(h: ProviderHandle, request: ProviderRequest, name: 'codex' | 'codex-reply', args: Record<string, unknown>): Promise<void> {
+    await this.hooks.authorizeSend(structuredClone(request), structuredClone(h), this.audit);
+    const prompt = formatMcpPrompt(request);
+    const sendHandle = this.current(h);
+    if (sendHandle.tombstone) return;
+    this.ownedAttempts.add(sendHandle.jobId);
+    if (sendHandle.threadId) this.latestByThread.set(sendHandle.threadId, sendHandle.jobId);
     // tools/call responds when inference ends, unlike app-server's immediate turn id.
-    void this.rpc.request('tools/call', { name, arguments: { ...args, prompt } }, { onRequestId: id => { this.requestIds.set(h.jobId, id); } })
+    void this.rpc.request('tools/call', { name, arguments: { ...args, prompt } }, { onRequestId: id => { this.requestIds.set(sendHandle.jobId, id); } })
       .then(result => this.serial(async () => {
         const now = this.current(h);
         if (now.tombstone) return; // Cancellation was durably fenced before abandoning.
@@ -140,7 +143,8 @@ export class McpServerRunner implements JobRunner {
       const next = await this.save({ ...h, revision: undefined, auditScope: policy.auditScope, providerInstanceId: this.instanceId, jobId: followup.jobId, mode: followup.mode, state: 'running', output: undefined, reason: undefined });
       if (this.fenced(next).tombstone) return this.save({ ...next, state: 'cancelled', tombstone: true });
       // codex-reply cannot accept changed policy/model: the host's policy identity must be unchanged.
-      this.dispatch(next, followup, 'codex-reply', { threadId: h.threadId });
+      try { await this.dispatch(next, followup, 'codex-reply', { threadId: h.threadId }); }
+      catch { return this.save({ ...next, state: 'failed', reason: 'pre-dispatch-authorization-rejected' }); }
       return next;
     }
     if (h.tombstone || ['completed', 'failed', 'cancelled'].includes(h.state)) return h;

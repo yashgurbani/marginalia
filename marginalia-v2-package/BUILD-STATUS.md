@@ -1,12 +1,12 @@
 # Marginalia overall build report
 
-Updated 17 September 2026 after integration of 3e56232 and 4d49117. Chief task: 01a0adaf-dd71-7583-8307-b877547c9189.
+Updated 17 September 2026 after receipt of Claude design pass 2 and the latest owner source freezes. Chief task: 01a0adaf-dd71-7583-8307-b877547c9189.
 
 ## Current position
 
 The helper, corrected durable storage/journal, both Codex provider adapters, basic reader margin, extension capture/hosts, corrected samples contract and typed reply renderer/kernel are integrated. The samples consumer is now integrated as 70f21a4 after chief source inspection and a match against all 20 frozen file hashes. T05 owns real saved-reply mounting, T06 durable jobs/authenticated APIs, T13 consent/provider sessions, and T11 the library/settings modules. No end-to-end live inference or release gate is complete.
 
-**User direction: leave all testing for later.** New test writing, test execution and browser QA are deferred across tasks. Historical evidence below is retained only for the versions it covered. Subsequent implementation is unverified. Source review, Pro advisory, implementation and coordination continue; deferral does not turn an open gate into a pass.
+**Current user direction:** consolidate all work, obtain detailed 6Pro review for each ticket and the combined product, then ask 6Pro for code review, refactoring and testing. Testing remains paused during consolidation; the latest instruction authorizes the testing phase after the source snapshot is assembled. Historical evidence below covers only its recorded versions. Source review is not runtime acceptance.
 
 ## Source and vision
 
@@ -15,6 +15,10 @@ The helper, corrected durable storage/journal, both Codex provider adapters, bas
 Marginalia is a margin beside whatever you are reading. Source stays unchanged; notes are senior; inference needs explicit consent; the reader owns the work. Selection offers Keep and Ask without sending. Preserve all four computation paths: local kernel, samples within their envelope, saved solver without a model turn, explicit Ask again. Mechanical checks are not scientific truth. Preserve separate storage, inference, tool-network and retrieval boundaries. No silent scope cuts for the Astra challenge.
 
 Design source: D:\UserData\reader\Downloads\marginalia-v1-package\design. T05 combines this system with Pro advice and Impeccable/taste guidance. Material changes to vision or scope are escalated; minor improvements proceed within these rules.
+
+Pass 2 is now delivered in the adjacent `design-pass-2` folder: frames 6–14 and frame 5 addendum, with both themes and floating-host variations. See [chief intake and decisions](docs/DESIGN-PASS-2-INTAKE.md). T05's Astra Medium owner is reconciling it against the sources and existing Pro advice. The user confirmed the composer stays at the reading position and the rail uses one map preserving density, section boundaries and current position. Recipient wording must distinguish local Codex from remote inference. This is design intent, with no new runtime or accessibility acceptance evidence.
+
+Latest handoffs awaiting integration: T02 final-send hook/canonical prompt correction; T11's five review fixes; T06 durable engine/routes and host-derived prepare plan; T13 permission epochs, CAS, consent-sheet fencing and pinned-protocol parsing corrections. They are owner-frozen, not yet accepted or integrated. T05 saved-reply review found no P0/P1 and one P2 concerning unbounded recovery snapshots; a data-preserving correction is assigned. These updates supersede older active-work labels below, without implying completed runtime gates.
 
 ## Ticket board
 
@@ -41,7 +45,7 @@ Integrated means code is committed; it does not mean the full user-facing accept
 | T16 | Full note workflow and vocabulary | Queued; basic notes in T05 | Note-version Ask, origin/deletion and full persistence flow |
 | T17 | Page header | Queued | T05/T13; local identity, granted enrichment, return position |
 | T18 | Complete renderer and kernel | Baseline integrated 1c5a1f0; samples consumer integrated 70f21a4 | Trusted host sidecar delivery and real margin/helper plumbing; all runtime verification deferred |
-| T19 | Install and recovery | Queued | T01/T11; fresh-machine and sign-out recovery |
+| T19 | Install and recovery | Experience/copy slice reserved for user's Opus/Fable; not yet claimed | Exact handoff in docs/FABLE-T19-HANDOFF.md; installer/runtime work still queued, T01/T11 and fresh-machine/sign-out recovery required |
 | T20 | Saved solver execution | Queued | T02/T06; sandboxed rerun with zero model turns |
 
 The basic T05 margin is implemented before rich rendering to resolve the original dependency cycle. This sequencing removes no T05/T16/T18 requirements. Later inventory tiers remain required beyond these immediate build tickets.
@@ -49,6 +53,8 @@ The basic T05 margin is implemented before rich rendering to resolve the origina
 ## Owners and Pro coordination
 
 Chief owns dispatch, dependency decisions, source fidelity, integration, evidence accounting and higher-order Pro consultation. Ticket owners implement only their assigned paths. Technical execution/review uses **Sol Medium**; bounded bulk work uses **Luna Max**. T05 retains the explicitly requested **Astra Medium** design owner. Model changes were sent to active technical tasks; this does not retroactively relabel earlier work.
+
+Standing account-routing correction: current-account ticket coordination/design/judgment uses Astra (Astra Low for technical-ticket coordination, T05 Astra Medium). All Sol implementation and review goes through the Codex MCP Router with automatic complementary account selection. Native Sol fallback is no longer allowed without an explicit user override. Existing owner labels below describe prior implementation; new coordinator messages carry the Astra override. Router failures must be traced/repaired rather than consuming the desktop account's Sol tokens.
 
 | Ticket | Codex task | Ownership | Own Pro review |
 |---|---|---|---|

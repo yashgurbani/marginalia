@@ -84,10 +84,12 @@ export class AppServerRunner implements JobRunner {
       const dispatchPolicy = await this.hooks.authorize(request, this.audit, 'dispatch'); checkPolicy(request, dispatchPolicy);
       if (this.cancelIntents.has(h.jobId)) return this.save({ ...h, tombstone: true, state: 'cancelled', reason: 'cancelled-before-turn' });
       // Persist the dispatch boundary. A timeout from this point is not permission to retry.
-      h = await this.save({ ...h, auditScope: dispatchPolicy.auditScope, state: 'outcome_unknown', reason: 'turn-dispatch-pending' });
-      if (this.fenced(h).tombstone) return this.save({ ...h, state: 'cancelled', tombstone: true, reason: 'cancelled-before-turn' });
+      h = await this.save({ ...h, auditScope: dispatchPolicy.auditScope, state: 'starting', reason: 'turn-dispatch-pending' });
+      await this.hooks.authorizeSend(structuredClone(request), structuredClone(h), this.audit);
+      const sendHandle = this.current(h);
+      if (sendHandle.tombstone) return this.save({ ...sendHandle, state: 'cancelled', tombstone: true, reason: 'cancelled-before-turn' });
       dispatched = true;
-      const result = await this.rpc.request('turn/start', { ...dispatchPolicy.turn, threadId: h.threadId, model: request.model,
+      const result = await this.rpc.request('turn/start', { ...dispatchPolicy.turn, threadId: sendHandle.threadId, model: request.model,
         input: [{ type: 'text', text: request.prompt, text_elements: [] }],
         ...(request.mode === 'structured-final' ? { outputSchema: request.outputSchema } : {}) });
       if (!result.turn?.id) throw new Error('missing-turn-id');
@@ -144,18 +146,23 @@ export class AppServerRunner implements JobRunner {
     const policy = await this.hooks.authorize(followup, this.audit, 'dispatch'); checkPolicy(followup, policy);
     if (followup.mode === 'structured-final' && !followup.outputSchema) throw new Error('output-schema-required');
     let next = await this.save({ ...recovered, revision: undefined, providerInstanceId: this.instanceId, auditScope: policy.auditScope, jobId: followup.jobId, mode: followup.mode, turnId: undefined,
-      output: undefined, state: 'outcome_unknown', reason: 'turn-dispatch-pending' });
+      output: undefined, state: 'starting', reason: 'turn-dispatch-pending' });
     this.requests.set(next.jobId, followup);
+    let dispatched = false;
     try {
-      if (this.fenced(next).tombstone) return this.save({ ...next, state: 'cancelled', tombstone: true, reason: 'cancelled-before-turn' });
+      await this.hooks.authorizeSend(structuredClone(followup), structuredClone(next), this.audit);
+      const sendHandle = this.current(next);
+      if (sendHandle.tombstone) return this.save({ ...sendHandle, state: 'cancelled', tombstone: true, reason: 'cancelled-before-turn' });
       this.successorByAttempt.set(recovered.jobId, next.jobId);
-      const result = await this.rpc.request('turn/start', { ...policy.turn, threadId: next.threadId, model: followup.model,
+      dispatched = true;
+      const result = await this.rpc.request('turn/start', { ...policy.turn, threadId: sendHandle.threadId, model: followup.model,
         input: [{ type: 'text', text: followup.prompt, text_elements: [] }],
         ...(followup.mode === 'structured-final' ? { outputSchema: followup.outputSchema } : {}) });
       if (!result.turn?.id) throw new Error('missing-turn-id');
       next = await this.save({ ...next, turnId: result.turn.id, state: 'running', reason: undefined });
       return result.turn.status === 'inProgress' ? next : this.observe(next, result.turn);
-    } catch { return this.save({ ...next, state: 'outcome_unknown', reason: 'dispatch-outcome-unknown' }); }
+    } catch { return this.save({ ...next, state: dispatched ? 'outcome_unknown' : 'failed',
+      reason: dispatched ? 'dispatch-outcome-unknown' : 'pre-dispatch-authorization-rejected' }); }
   }); }
   inspect(h: ProviderHandle): Promise<ProviderHandle> { h = structuredClone(h); return this.serial(() => this.recover(h, false)); }
   cancel(handle: ProviderHandle): Promise<ProviderHandle> {

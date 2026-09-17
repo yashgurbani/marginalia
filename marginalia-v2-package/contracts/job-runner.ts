@@ -74,6 +74,9 @@ export interface ProviderHooks {
   /** Bootstrap separately authorizes session creation side effects, never inference.
    * Dispatch must perform the full current audit, including returned thread observations. */
   authorize(request: ProviderRequest, audit: ProviderAudit, stage: 'bootstrap' | 'dispatch'): Promise<AuditedPolicy>;
+  /** Last current grant/policy check after durable handoff, immediately before provider transmission.
+   * The adapter performs no awaited work between this result, its cancellation check, and rpc.request. */
+  authorizeSend(request: ProviderRequest, handle: ProviderHandle, audit: ProviderAudit): Promise<void>;
   /** Validate recovered operations against current grants and original policy identity. */
   authorizeRecovery(handle: ProviderHandle, audit: ProviderAudit): Promise<void>;
   /** Observe returned effective policy/instruction sources before sending granted input. */

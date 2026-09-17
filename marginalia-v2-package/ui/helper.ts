@@ -1,4 +1,6 @@
-import type { ReaderMutation, Thread } from '../contracts/reader.ts';
+import type { ReaderMutation, Thread, ReplyVersion, ReplyViewState, SourceVersion } from '../contracts/reader.ts';
+import type { HostCheckReport } from '../contracts/host-checks.ts';
+import type { ReplyViewChange } from './persistence.ts';
 
 export class HelperClient {
   origin: string;
@@ -17,4 +19,16 @@ export class HelperClient {
   async pair(challenge: string) { this.token = (await this.request('/pair', { challenge })).token; return this.token; }
   async change(change: ReaderMutation) { await this.request('/api/change', change); }
   async list(): Promise<Thread[]> { return (await this.request('/api/threads?removed=true')).threads; }
+  async replies(threadId: string): Promise<{ replies: ReplyVersion[]; source: SourceVersion; views: ReplyViewState[] }> {
+    return this.request('/api/replies?threadId=' + encodeURIComponent(threadId));
+  }
+  async replyView(threadId: string, replyVersionId: string): Promise<ReplyViewState> {
+    return (await this.request('/api/reply-view?' + new URLSearchParams({ threadId, replyVersionId }))).view;
+  }
+  async saveReplyView(threadId: string, change: ReplyViewChange): Promise<ReplyViewState> {
+    return (await this.request('/api/reply-view', { threadId, ...change })).view;
+  }
+  async checkReply(threadId: string, replyVersionId: string, parameters: Readonly<Record<string, number>>): Promise<HostCheckReport> {
+    return (await this.request('/api/reply-check', { threadId, replyVersionId, parameters })).report;
+  }
 }

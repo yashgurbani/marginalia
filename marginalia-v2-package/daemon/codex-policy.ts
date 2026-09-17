@@ -6,6 +6,7 @@ export const PINNED_CODEX_VERSION = '0.153.4' as const;
 export const CODEX_POLICY_VERSION = 'marginalia.codex-policy.v1' as const;
 export type Platform = 'win32' | 'linux' | 'darwin';
 export type Operation = 'definition' | 'generation' | 'saved-solver';
+export type PolicyAdapter = 'app-server' | 'mcp-server';
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 export type ClosedSandbox =
   | { readonly type: 'readOnly'; readonly networkAccess: false }
@@ -15,6 +16,7 @@ export type ClosedSandbox =
 type CommonInput = {
   version: string;
   platform: Platform;
+  adapter: PolicyAdapter;
   workspace: string;
   codexHome: string;
   /** Host-owned worker/attempt/configuration identity; replace after restart or any config change. */
@@ -40,6 +42,8 @@ type PolicyBase = {
   readonly version: typeof PINNED_CODEX_VERSION;
   readonly policyVersion: typeof CODEX_POLICY_VERSION;
   readonly platform: Platform;
+  readonly adapter: PolicyAdapter;
+  readonly reviewedProfile: ReviewedPolicyProfile;
   readonly workspace: string;
   readonly codexHome: string;
   readonly evidenceScope: string;
@@ -68,6 +72,46 @@ const disabledFeatures = [
   'multi_agent', 'multi_agent_v2', 'memories', 'shell_snapshot', 'shell_snapshot_v2', 'code_mode', 'code_mode_host',
 ] as const;
 const generationTools = new Set(['shell_command', 'exec_command', 'write_stdin', 'apply_patch', 'update_plan', 'view_image']);
+const SHA256_DIGEST = /^[a-f0-9]{64}$/;
+export const REVIEWED_PROVIDER_ENVIRONMENT_KEYS = [
+  'SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'PATH', 'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'LANG', 'LC_ALL',
+] as const;
+export type ReviewedPolicyProfile = {
+  readonly id: string;
+  readonly reviewRef: string;
+  readonly reviewedSourceRevision: string;
+  readonly manifestSha256: string;
+  readonly version: typeof PINNED_CODEX_VERSION;
+  readonly adapter: PolicyAdapter;
+  readonly platform: Platform;
+  readonly operation: Operation;
+  readonly reviewedBuiltinTools: readonly string[];
+  readonly reviewedAdapterCapabilities: readonly string[];
+  readonly reviewedInstructionSources: readonly string[];
+  readonly inheritedEnvironmentKeys: readonly string[];
+  readonly requiredEvidence: readonly string[];
+  readonly catalogRequiredForDispatch: false;
+};
+function reviewedProfile(adapter: PolicyAdapter, operation: Operation, platform: Platform): ReviewedPolicyProfile {
+  const modelTurn = operation !== 'saved-solver';
+  const capabilities = adapter === 'app-server'
+    ? ['thread/start', 'thread/resume', 'turn/start', 'turn/interrupt', 'thread/read']
+    : ['codex', 'codex-reply', 'codex/event'];
+  const manifest: Omit<ReviewedPolicyProfile, 'manifestSha256'> = {
+    id: `codex-0.153.4:${adapter}:${operation}:review-2026-09-17`, version: PINNED_CODEX_VERSION,
+    reviewRef: 'wayfinder/build-receipts/T13-pro.md', reviewedSourceRevision: '3d2ee51ca2d5db578f328aa75e20aa22c0197c9a',
+    adapter, platform, operation, reviewedBuiltinTools: operation === 'generation' ? [...generationTools] : [],
+    reviewedAdapterCapabilities: modelTurn ? capabilities : ['command/exec'],
+    reviewedInstructionSources: modelTurn ? ['marginalia-request-instructions'] : [],
+    inheritedEnvironmentKeys: [...REVIEWED_PROVIDER_ENVIRONMENT_KEYS],
+    requiredEvidence: [
+      'dedicated-auth', 'effective-config', 'capability-closure', 'instruction-manifest', 'environment',
+      'model-reachable-read-confinement', 'write-confinement', 'tool-network', 'model-traffic-separation',
+    ],
+    catalogRequiredForDispatch: false,
+  };
+  return freeze({ ...manifest, manifestSha256: scope(manifest) });
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) &&
@@ -108,7 +152,9 @@ function within(root: string, candidate: string, platform: Platform): boolean {
 export function createCodexPolicy(input: PolicyInput): CodexPolicy {
   if (input.version !== PINNED_CODEX_VERSION) throw new Error('Codex version requires a new reviewed policy.');
   if (!['win32', 'linux', 'darwin'].includes(input.platform)) throw new Error('Unknown platform.');
+  if (!['app-server', 'mcp-server'].includes(input.adapter)) throw new Error('Unknown provider adapter.');
   if (!['definition', 'generation', 'saved-solver'].includes(input.operation)) throw new Error('Unknown operation.');
+  if (input.operation === 'saved-solver' && input.adapter !== 'app-server') throw new Error('Saved solver command execution requires the reviewed app-server adapter.');
   if (!nonempty(input.auditId)) throw new Error('A host-owned audit identity is required.');
   const workspace = absolute(input.workspace, input.platform);
   const codexHome = absolute(input.codexHome, input.platform);
@@ -134,6 +180,7 @@ export function createCodexPolicy(input: PolicyInput): CodexPolicy {
   if (input.platform === 'win32') configOverrides['windows.sandbox'] = 'elevated';
   const base = {
     version: PINNED_CODEX_VERSION, policyVersion: CODEX_POLICY_VERSION, platform: input.platform,
+    adapter: input.adapter, reviewedProfile: reviewedProfile(input.adapter, input.operation, input.platform),
     workspace, codexHome, configOverrides, sandboxPolicy, readAccess: 'not-job-confined' as const,
     requiresRuntimeVerification: true as const, automaticRetry: false as const, disconnectOutcome: 'outcome_unknown' as const,
   };
@@ -177,7 +224,12 @@ export function createCodexPolicy(input: PolicyInput): CodexPolicy {
  */
 export type Observation<T> = { scope: string; source: string; reference: string; complete: boolean; value: T };
 export type InventoryEntry = { name: string; enabled: boolean; origin: 'builtin' | 'marginalia' | 'inherited' | 'unknown' };
+export type CatalogObservation =
+  | { status: 'observed'; scope: string; source: string; reference: string; complete: true; entries: InventoryEntry[] }
+  | { status: 'incomplete'; scope: string; source: string; reference: string; reason: string; entries: InventoryEntry[] }
+  | { status: 'unavailable'; scope: string; source: string; reference: string; reason: string };
 export type PolicyEvidence = {
+  authentication?: Observation<{ available: boolean; dedicatedHome: boolean; accountReference: string }>;
   config?: Observation<{ values: Record<string, unknown>; layersReviewed: boolean }>;
   requirements?: Observation<{ compatible: boolean; unresolved: string[] }>;
   /** Model jobs only: returned thread/start or thread/resume policy, plus effective turn overrides.
@@ -188,22 +240,33 @@ export type PolicyEvidence = {
   /** Non-tool side effects: hooks, apps, plugins, background agents/memory, etc. */
   capabilities?: Observation<InventoryEntry[]>;
   instructions?: Observation<InventoryEntry[]>;
-  /** Must be an independently captured full catalog, never synthesized from mcpServerStatus/list. */
-  toolCatalog?: Observation<InventoryEntry[]>;
+  /** Observability only. MCP tools/list is recorded as incomplete, never promoted to a full model catalog. */
+  catalog?: CatalogObservation;
   environment?: Observation<{
     serverCwd: string; codexHome: string; dedicatedHome: boolean; credentialsCopied: boolean;
     normalSettingsChanged: boolean; inheritedEnvironmentKeys: string[]; environmentReviewed: boolean;
+    inheritedEnvironmentValueDigests: Record<string, string>; windowsKeyCasingReviewed: boolean;
+    executableResolutionReviewed: boolean;
   }>;
   runtime?: Observation<{
-    version: string; sandboxPolicy: unknown; backend: string;
+    version: string; adapter: PolicyAdapter; sandboxPolicy: unknown; backend: string;
+    providerInstanceId: string; profileManifestSha256: string;
+    modelReachableReadProbe: 'passed' | 'failed' | 'not-run';
     filesystemWriteProbe: 'passed' | 'failed' | 'not-run';
-    toolEgressProbe: 'passed' | 'failed' | 'not-run';
+    closedToolNetworkProbe: 'passed' | 'failed' | 'not-run';
     modelTrafficDistinguished: boolean;
   }>;
 };
 export type AuditIssue = { code: string; field: string };
+export type AuditStage = 'bootstrap' | 'dispatch';
 export type AuditDecision = {
   decision: 'reject' | 'evidence-consistent'; issues: AuditIssue[];
+  stage: AuditStage;
+  bootstrapPolicySatisfied: boolean;
+  dispatchPolicySatisfied: boolean;
+  catalogObservation: CatalogObservation['status'];
+  perRequestCatalogVeto: 'none' | 'unsupported';
+  unsupportedCatalogEntries: string[];
   /** Even a positive decision reports consistency of supplied evidence, not verification by this module. */
   runtimeVerifiedHere: false;
 };
@@ -223,7 +286,7 @@ function same(value: unknown, expected: unknown): boolean {
 }
 
 /** No IO. Reject missing, stale, partial or contradictory evidence. Never returns credentials or config values. */
-export function auditCodexPolicy(policy: CodexPolicy, evidence: PolicyEvidence): AuditDecision {
+export function auditCodexPolicy(policy: CodexPolicy, evidence: PolicyEvidence, stage: AuditStage = 'dispatch'): AuditDecision {
   const issues: AuditIssue[] = [];
   const issue = (code: string, field: string) => { issues.push({ code, field }); };
   if (policy.platform !== 'win32') issue('platform-unverified', 'platform');
@@ -235,7 +298,11 @@ export function auditCodexPolicy(policy: CodexPolicy, evidence: PolicyEvidence):
     if (item.source !== source || !nonempty(item.reference)) { issue('evidence-source-unresolved', key); return undefined; }
     return item.value;
   };
-  const config = read('config', 'config/read');
+  const authentication = read('authentication', policy.adapter === 'app-server' ? 'account/read' : 'host-dedicated-auth-audit');
+  if (!record(authentication) || authentication.available !== true || authentication.dedicatedHome !== true || !nonempty(authentication.accountReference)) {
+    issue('dedicated-authentication-unavailable', 'authentication');
+  }
+  const config = read('config', policy.adapter === 'app-server' ? 'config/read' : 'host-effective-config-audit');
   if (!record(config) || !record(config.values) || config.layersReviewed !== true) issue('config-unresolved', 'config');
   else {
     for (const [key, value] of Object.entries(policy.configOverrides)) {
@@ -262,16 +329,17 @@ export function auditCodexPolicy(policy: CodexPolicy, evidence: PolicyEvidence):
       }
     }
   }
-  const requirements = read('requirements', 'configRequirements/read');
+  const requirements = read('requirements', policy.adapter === 'app-server' ? 'configRequirements/read' : 'host-config-requirements-audit');
   if (!record(requirements) || requirements.compatible !== true || !Array.isArray(requirements.unresolved) || requirements.unresolved.length) {
     issue('requirements-unresolved', 'requirements');
   }
-  if (policy.modelTurn || evidence?.threadState !== undefined) {
+  if (stage === 'dispatch' && policy.modelTurn && policy.adapter === 'app-server') {
     const thread = read('threadState', 'host-thread-state-audit');
     if (!record(thread) || thread.cwd !== policy.workspace || thread.approvalPolicy !== 'never' ||
         !same(thread.sandboxPolicy, policy.sandboxPolicy)) issue('thread-policy-unresolved', 'threadState');
   }
-  const inventory = (key: 'mcp' | 'skills' | 'capabilities' | 'instructions' | 'toolCatalog', source: string) => {
+  const inventory = (key: 'mcp' | 'skills' | 'capabilities' | 'instructions', source: string, allowed: ReadonlySet<string>, required = true) => {
+    if (!required && evidence[key] === undefined) return;
     const entries = read(key, source);
     if (!Array.isArray(entries)) { issue('inventory-unresolved', key); return; }
     entries.forEach((entry, i) => {
@@ -280,27 +348,62 @@ export function auditCodexPolicy(policy: CodexPolicy, evidence: PolicyEvidence):
           !['builtin', 'marginalia', 'inherited', 'unknown'].includes(String(entry.origin))) { issue('inventory-unresolved', field); return; }
       if (!entry.enabled) return;
       if (entry.origin === 'inherited' || entry.origin === 'unknown') { issue('inherited-capability', field); return; }
-      if (key === 'instructions') return; // Only reviewed builtin/explicit Marginalia instructions.
-      if (key === 'toolCatalog' && policy.operation === 'generation' && entry.origin === 'builtin' && generationTools.has(entry.name)) return;
+      if (allowed.has(entry.name) && (entry.origin === 'builtin' || entry.origin === 'marginalia')) return;
       issue('capability-not-allowed', field);
     });
   };
-  inventory('mcp', 'mcpServerStatus/list');
-  inventory('skills', 'skills/list');
-  inventory('capabilities', 'host-capability-audit');
-  inventory('instructions', 'thread-instruction-audit');
-  inventory('toolCatalog', 'instrumented-tool-catalog');
+  const none = new Set<string>();
+  if (policy.adapter === 'app-server') {
+    inventory('mcp', 'mcpServerStatus/list', none);
+    inventory('skills', 'skills/list', none);
+    inventory('capabilities', 'host-capability-audit', new Set(policy.reviewedProfile.reviewedAdapterCapabilities));
+    inventory('instructions', 'thread-instruction-audit', new Set(policy.reviewedProfile.reviewedInstructionSources));
+  } else {
+    // An MCP process cannot borrow app-server inventory observations. Its supported tools/list
+    // surface is checked against the pinned adapter profile and is still not a full model catalog.
+    inventory('capabilities', 'mcp-tools/list', new Set(policy.reviewedProfile.reviewedAdapterCapabilities));
+    inventory('mcp', 'host-mcp-config-audit', none);
+    inventory('skills', 'host-skill-config-audit', none);
+    inventory('instructions', 'host-instruction-config-audit', new Set(policy.reviewedProfile.reviewedInstructionSources));
+  }
+  const catalog = evidence.catalog ?? { status: 'unavailable' as const, scope: policy.evidenceScope, source: 'not-observed', reference: 'none', reason: 'No complete model-visible catalog endpoint was established.' };
+  const unsupportedCatalogEntries: string[] = [];
+  if (catalog.scope !== policy.evidenceScope || !nonempty(catalog.source) || !nonempty(catalog.reference)) issue('catalog-observation-invalid', 'catalog');
+  if (catalog.status === 'observed' || catalog.status === 'incomplete') {
+    if ((catalog.status === 'observed' && catalog.complete !== true) || !Array.isArray(catalog.entries)) issue('catalog-observation-invalid', 'catalog');
+    else for (const [index, entry] of catalog.entries.entries()) {
+      if (!record(entry) || !nonempty(entry.name) || typeof entry.enabled !== 'boolean' || !['builtin', 'marginalia', 'inherited', 'unknown'].includes(String(entry.origin))) {
+        issue('catalog-observation-invalid', `catalog.entries[${index}]`); continue;
+      }
+      if (!entry.enabled) continue;
+      const reviewed = entry.origin === 'builtin' && policy.reviewedProfile.reviewedBuiltinTools.includes(entry.name);
+      if (!reviewed) unsupportedCatalogEntries.push(entry.name);
+    }
+    if (catalog.status === 'incomplete' && !nonempty(catalog.reason)) issue('catalog-observation-invalid', 'catalog.reason');
+  } else if (!nonempty(catalog.reason)) issue('catalog-observation-invalid', 'catalog.reason');
   const environment = read('environment', 'host-environment-audit');
+  const allowedEnvironment = new Set<string>(REVIEWED_PROVIDER_ENVIRONMENT_KEYS);
   if (!record(environment) || environment.serverCwd !== policy.workspace || environment.codexHome !== policy.codexHome ||
       environment.dedicatedHome !== true || environment.credentialsCopied !== false || environment.normalSettingsChanged !== false ||
-      environment.environmentReviewed !== true || !Array.isArray(environment.inheritedEnvironmentKeys) || environment.inheritedEnvironmentKeys.length) {
+      environment.environmentReviewed !== true || !Array.isArray(environment.inheritedEnvironmentKeys) ||
+      environment.inheritedEnvironmentKeys.some(key => typeof key !== 'string' || !allowedEnvironment.has(key)) ||
+      !record(environment.inheritedEnvironmentValueDigests) || environment.windowsKeyCasingReviewed !== true ||
+      environment.executableResolutionReviewed !== true || environment.inheritedEnvironmentKeys.some(key => !SHA256_DIGEST.test(String(environment.inheritedEnvironmentValueDigests[key] ?? '')))) {
     issue('environment-unresolved', 'environment');
   }
   const runtime = read('runtime', 'controlled-sandbox-probe');
-  if (!record(runtime) || runtime.version !== PINNED_CODEX_VERSION || runtime.backend !== 'windows-native' ||
-      !same(runtime.sandboxPolicy, policy.sandboxPolicy) || runtime.filesystemWriteProbe !== 'passed' ||
-      runtime.toolEgressProbe !== 'passed' || runtime.modelTrafficDistinguished !== true) issue('runtime-evidence-unresolved', 'runtime');
-  return { decision: issues.length ? 'reject' : 'evidence-consistent', issues, runtimeVerifiedHere: false };
+  if (!record(runtime) || runtime.version !== PINNED_CODEX_VERSION || runtime.adapter !== policy.adapter || runtime.backend !== 'windows-native' ||
+      !nonempty(runtime.providerInstanceId) || runtime.profileManifestSha256 !== policy.reviewedProfile.manifestSha256 ||
+      !same(runtime.sandboxPolicy, policy.sandboxPolicy) || runtime.modelReachableReadProbe !== 'passed' || runtime.filesystemWriteProbe !== 'passed' ||
+      runtime.closedToolNetworkProbe !== 'passed' || runtime.modelTrafficDistinguished !== true) issue('runtime-evidence-unresolved', 'runtime');
+  const perRequestCatalogVeto = unsupportedCatalogEntries.length ? 'unsupported' : 'none';
+  const bootstrapPolicySatisfied = issues.length === 0;
+  const dispatchPolicySatisfied = stage === 'dispatch' && bootstrapPolicySatisfied;
+  return {
+    decision: bootstrapPolicySatisfied && perRequestCatalogVeto === 'none' ? 'evidence-consistent' : 'reject',
+    issues, stage, bootstrapPolicySatisfied, dispatchPolicySatisfied, catalogObservation: catalog.status, perRequestCatalogVeto,
+    unsupportedCatalogEntries, runtimeVerifiedHere: false,
+  };
 }
 
 export type CancellationDecision = {
