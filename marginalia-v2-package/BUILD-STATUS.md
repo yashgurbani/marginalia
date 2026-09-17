@@ -26,10 +26,10 @@ Integrated means code is committed; it does not mean the full user-facing accept
 | T01 | Local helper and pairing | Integrated 302fe52 + Pro corrections e61389e | Extension lifecycle and runtime isolation remain open; final fixes untested |
 | T02 | Codex app-server + MCP adapters | Integrated 889fb27 | Real authenticated inference, T06 integration, recovery and independent runtime evidence |
 | T03 | Reply contract and host checks | Foundation plus samples binding integrated fc9a258; consumer integrated 70f21a4 | Actual host generation-record creation, persistence and delivery remain |
-| T04 | Extension capture and private margin host | Integrated 078d265, including chief source corrections | Final worker recovery, hostile-page, native panel and live Ask gates deferred |
+| T04 | Extension capture and private margin host | Integrated 078d265; bounded section-metadata follow-up active, Sol Medium | Preserve extracted sections inside stored capture; final worker recovery, hostile-page, native panel and live Ask gates deferred |
 | T05 | Margin and design | Basic margin integrated aee5750; saved-reply integration active, Astra Medium | Real reply/view APIs, cross-mount persistence and lifecycle, consent/jobs/solver callbacks; verification deferred |
 | T06 | Durable jobs, cancellation and progressive replies | Active, Sol Medium | Persisted attempts, atomic cancellation/commit, authenticated routes and deferred live gates |
-| T07 | Durable store, threads and journal | Integrated 3c72429 + Pro corrections 33aa698 | Final conflict/reattachment fixes source-reviewed, untested; browser gate open |
+| T07 | Durable store, threads and journal | Integrated 3c72429 + Pro corrections 33aa698; optional section metadata follow-up active, Sol Medium | Preserve validated source sections without changing historical snapshots; runtime gates deferred |
 | T08 | Contextual definition | Queued | T02, T05 and T13; unseen term through real provider |
 | T09 | Simulation | Queued | T06 and T18; real new passage, not fixture-only |
 | T10 | WebMCP adapter | Queued | Stable T05 integration; typed replies and honest unsupported state |
@@ -53,11 +53,11 @@ Chief owns dispatch, dependency decisions, source fidelity, integration, evidenc
 | Ticket | Codex task | Ownership | Own Pro review |
 |---|---|---|---|
 | T02 | 01a0add5-2436-7231-9727-63a11ab0c75a | daemon/providers, job-runner contract, provider evidence | [Provider advisory](https://chatgpt.com/c/6aab7cff-9ba4-83eb-9ad5-8e3a536800f8) reconciled; fixes source-reviewed |
-| T04 | 01a0add2-39b2-7591-b86b-9635b85c5d1c | extension and extension evidence | [Extension review](https://chatgpt.com/c/6aab7d11-52c4-83eb-99e4-2b649e28c0dc) reconciled; frozen |
+| T04 | 01a0add2-39b2-7591-b86b-9635b85c5d1c | current follow-up: extension capture/protocol and evidence only | [Extension review](https://chatgpt.com/c/6aab7d11-52c4-83eb-99e4-2b649e28c0dc) reconciled; additive section capture active |
 | T05 | 01a0adc8-a066-7d11-8248-9cb5a63cd737 | margin/helper/persistence UI and webapp main; excludes T11 library and T13 consent modules | Basic [margin review](https://chatgpt.com/c/6aab7cb6-cd84-83eb-ac23-6941621ab496) reconciled; saved-reply follow-up active |
 | T18 | 01a0addb-ef93-77e0-8a57-45873cead42e | renderer and kernel | [Renderer advisory](https://chatgpt.com/c/6aab7cd5-31fc-83ed-9125-c1c2057277e2) and two code reviews reconciled; final fixes untested |
 | T01 | 01a0adc8-8f4d-73a3-9e13-abdb015c842b | helper main/server/pairing/diagnostics | Fresh 6 Pro verified; consolidated chief review avoids duplication |
-| T07 | 01a0adcb-25bd-7451-831f-40197dade46a | store, reader contract, journal | Fresh 6 Pro verified; consolidated chief review avoids duplication |
+| T07 | 01a0adcb-25bd-7451-831f-40197dade46a | current follow-up: store, reader contract and evidence only | Prior Pro findings integrated; additive section metadata active |
 | T03 samples | 01a0ae01-0695-7b61-bd4d-0bacdbce172f | reply.ts/schema, CONTRACT.md, optional sample-provenance.ts | Chief higher-order advice supplied; own bounded review assigned |
 | T06 | 01a0ae02-dc03-7ec2-ae86-26b6be5bf319 | contracts/jobs.ts, daemon/jobs, helper server/main integration | Own lifecycle advisory and exact source review assigned |
 | T13 | 01a0ae07-41af-7b83-ae7f-d73ecb608090 | daemon/consent, retrieval, codex-policy, provider policy-gate, contracts/consent, modular consent UI | Chief higher-order profile decision supplied; own Pro advisory and scoped execution allowed |
@@ -91,6 +91,7 @@ Counts are historical snapshots, not additive, not a current full-build pass. Re
 4. T18's bounded source review, T03's chief corrections and the sample-readiness consumer are integrated. Finish T05 saved-reply mounting while T06 and T13 converge on actual authenticated job/grant APIs. Reply wiring must serialize view writes across mounts and prevent destroyed mounts' async callbacks from changing a newer mount. T11 is active using its agreed independent mounting boundary. Rich replies, note-version Ask, saved solver and the full inventory remain required.
 5. No launch-ready claim: fresh-machine install, live consent/inference, cancellation, saved solver and final release demonstrations remain open. The challenge sets priority, not permission to remove capabilities.
 6. Chief found the active T06 workspace serialized full captured source into provider-readable packet.json while the prompt was assembled separately. T06/T13 are assigned one bounded outgoing packet shared by preview, digest, prompt and workspace: selection at most 4,000 characters, adjacent context at most 12,000, real page facts and explicit omissions. Full source remains private validation data. The blanket workspace instruction against executable code must also preserve the required T20 saved-solver path while excluding browser/interface code. These are source findings against unfinished code, not observed transmissions.
+7. The section-context correction exposed dropped metadata: extension capture already calculates sections, but SourceCapture/SourceVersion did not retain them. T07 owns an optional validated section array in the shared contract/store; T04 owns its capture/protocol propagation; T06 consumes it for adjacent-section context. Legacy captures remain readable with an explicit fallback. Separately, T06/T13 must compose the bundled runtime after ReaderStore construction so ordinary startup shares one database; an externally supplied runtime module alone is not a finished user entry point. Missing login or runtime evidence must continue to gate dispatch honestly.
 
 ## Integration record
 
