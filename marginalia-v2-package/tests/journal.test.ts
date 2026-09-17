@@ -494,7 +494,7 @@ test('T07 F7 a failed rejection save blocks sending and reconciliation retains t
   shared.fail();
   const sent: string[] = [];
   await assert.rejects(journal.sync(async change => { sent.push(change.id); }, async () => remote), /Storage full/);
-  assert.deepEqual(sent, []);
+  assert.deepEqual(sent, [] as string[]);
   assert.equal(journal.unsaved, true);
   assert.deepEqual(journal.state.conflicts[0].change, invalid);
   const other = new ReaderJournal(shared.persistence);
