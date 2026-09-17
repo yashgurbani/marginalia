@@ -1,5 +1,11 @@
 # Marginalia steering handoff — 17 September 2026
 
+## Latest accepted checkpoint and remaining review — 18 September 2026
+
+T05 merged through96eef734; receipt/canonical independent report at4a497d0. Final correction41207c4 preserves saved question key and gates retry/error status; independent closure51655d8 accepts source/history behavior and withdraws stale Q1/R1/T1 findings. Combined final-pro-combined-check includes finalT05+T06 source;669tests pass,2skip,0fail; app/extensionbuilds and extensiontypecheck pass; prior fulltypecheck passed. Historical current-source-equality proposal was correctly rejected: saved replies retain original source and navigation safely reattaches/refuses.
+
+T06 source9945cc5/e838488 remains unmerged pending independent source verdict. Luna session01a0b170 ended usage_limit_exceeded at22:48UTC with no report. Replacement dynamic SolMedium session01a0b192-07ef-7a71-b87c-f794eb1fb68e also returned usage_limit_exceeded, no review. Do not repeat either or claim completed independent review. Use authorized Pro consultation for remaining T06 verification while preserving fullpostconsolidation comprehensive assignment. No account change, credit purchase or native fallback authorized/used. Other candidate sources and main userdirty files remain preserved.
+
 This is the current coordination entry point. It supersedes older active-owner tables and the earlier Pro-access blocker in `CLAUDE-STEERING-HANDOFF.md`. Codex is still coordinating: the user subsequently asked it to resume implementation. Do not start a second chief or duplicate these workers without an explicit handover. Read [the whole-project stocktake](PROJECT-CONSOLIDATION-REVIEW.md) for all-ticket direction, integration order and drift risks.
 
 ## Active consolidation — 18 September 2026
