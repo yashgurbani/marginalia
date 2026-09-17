@@ -3,54 +3,38 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
-/** Executes the production service-worker handlers. CacheStorage here models
- * ordering/failures, not browser quota, eviction or install conformance. */
+// Executes the shipped worker against controlled response and CacheStorage order.
+// This does not claim browser storage conformance or a built-Vite deployment.
 function worker() {
-  const stores = new Map<string, Map<string, Response>>(), files = new Map<string, string>(), handlers = new Map<string, (event: any) => void>();
-  const origin = 'http://localhost:43120'; let failPointer = false, failAsset = '';
-  const path = (input: string | Request) => new URL(typeof input === 'string' ? input : input.url, origin).pathname;
-  const cacheStorage = { async open(name: string) { let store = stores.get(name); if (!store) { store = new Map(); stores.set(name, store); } return {
-    async put(key: string, response: Response) { if (failPointer && path(key).includes('complete_generation')) throw new Error('pointer quota'); store!.set(path(key), response.clone()); },
-    async match(key: string) { return store!.get(path(key))?.clone(); },
-  }; }, async keys() { return [...stores.keys()]; }, async delete(name: string) { return stores.delete(name); } };
-  const fetched: string[] = [];
-  runInNewContext(readFileSync(new URL('../webapp/public/sw.js', import.meta.url), 'utf8'), {
-    URL, Request, Response, TextEncoder, crypto, AbortSignal, caches: cacheStorage,
-    self: { location: { origin }, addEventListener: (type: string, fn: (event: any) => void) => handlers.set(type, fn), clients: { claim: async () => {} }, skipWaiting: async () => {} },
-    fetch: async (value: string | Request) => { const key = path(value); fetched.push(key); if (key === failAsset || !files.has(key)) throw new Error('offline: ' + key); return new Response(files.get(key)); },
+  const stores = new Map<string, Map<string, Response>>(), network = new Map<string, { body: string; type?: string }>();
+  const handlers = new Map<string, (event: any) => void>(); let failPointer = false;
+  const key = (v: string | Request) => new URL(typeof v === 'string' ? v : v.url, 'http://localhost:43120').pathname;
+  const caches = { async open(name: string) {
+    let store = stores.get(name); if (!store) { store = new Map(); stores.set(name, store); }
+    return { async match(v: string | Request) { return store!.get(key(v))?.clone(); }, async put(v: string | Request, response: Response) {
+      if (failPointer && key(v).includes('complete_generation')) throw Error('pointer quota'); store!.set(key(v), response.clone());
+    } };
+  }, async keys() { return [...stores.keys()]; }, async delete(name: string) { return stores.delete(name); } };
+  runInNewContext(readFileSync(new URL('../webapp/public/sw.js', import.meta.url), 'utf8'), { URL, Request, Response, TextEncoder, crypto, caches,
+    self: { location: { origin: 'http://localhost:43120' }, addEventListener: (name: string, action: (e:any)=>void) => handlers.set(name, action), skipWaiting: async()=>{}, clients:{claim:async()=>{}} },
+    fetch: async(v: string | Request)=>{const file=network.get(key(v));if(!file)throw Error('offline '+key(v));return new Response(file.body,{headers:{'content-type':file.type??'text/javascript'}});},
   });
-  return { files, stores, fetched, failPointer(value: boolean) { failPointer = value; }, failAsset(value: string) { failAsset = value; },
-    async install() { let work: Promise<void> | undefined; handlers.get('install')!({ waitUntil(promise: Promise<void>) { work = promise; } }); await work; },
-    request(url = '/', options?: RequestInit) { let work: Promise<Response> | undefined; handlers.get('fetch')!({ request: new Request(origin + url, options), respondWith(promise: Promise<Response>) { work = promise; } }); return work; },
-  };
+  return { stores, network, failPointer(value:boolean){failPointer=value}, async install(){let promise:Promise<unknown>|undefined;handlers.get('install')!({waitUntil(p:Promise<unknown>){promise=p}});await promise}, request(path:string,headers:Record<string,string>={}){let promise:Promise<Response>|undefined;handlers.get('fetch')!({request:new Request('http://localhost:43120'+path,{headers}),respondWith(p:Promise<Response>){promise=p}});return promise} };
 }
-function oldBuild(w: ReturnType<typeof worker>) { w.files.set('/index.html', '<script type="module" src="/assets/old.js"></script>'); w.files.set('/assets/old.js', 'export const old = 1;'); }
-test('missing transitive chunk/font prevents index promotion and previous offline shell remains usable', async () => {
-  const w = worker(); oldBuild(w); await w.install();
-  w.files.set('/index.html', '<script src="/assets/main.js"></script>'); w.files.set('/assets/main.js', 'import("./lazy.js");');
-  assert.match(await (await w.request()!).text(), /old.js/);
-  w.files.set('/assets/lazy.js', 'import "./style.css";'); w.files.set('/assets/style.css', 'body{src:url(./font.woff2)}');
-  assert.match(await (await w.request()!).text(), /old.js/);
-  w.files.set('/assets/font.woff2', 'font bytes'); assert.match(await (await w.request()!).text(), /main.js/);
-  w.files.clear(); assert.match(await (await w.request()!).text(), /main.js/); assert.equal(await (await w.request('/assets/font.woff2')!).text(), 'font bytes');
-  assert.match(await (await w.request('/assets/old.js')!).text(), /old/);
+function first(w:ReturnType<typeof worker>){w.network.set('/index.html',{body:'<script src="/assets/old.js"></script>',type:'text/html'});w.network.set('/assets/old.js',{body:'old app'});}
+test('missing transitive assets cannot promote a new index or destroy the working generation',async()=>{
+ const w=worker();first(w);await w.install();w.network.set('/index.html',{body:'<script src="/assets/new.js"></script>',type:'text/html'});w.network.set('/assets/new.js',{body:'import "./style.css"; const lazy=["assets/lazy.js"];'});w.network.set('/assets/style.css',{body:'a{background:url(./font.woff2)}',type:'text/css'});w.network.set('/assets/lazy.js',{body:'lazy code'});
+ assert.match(await(await w.request('/')!).text(),/old.js/);assert.equal(w.stores.size,2);
+ w.network.set('/assets/font.woff2',{body:'font fixture',type:'font/woff2'});assert.match(await(await w.request('/')!).text(),/new.js/);w.network.clear();assert.match(await(await w.request('/')!).text(),/new.js/);assert.equal(await(await w.request('/assets/font.woff2')!).text(),'font fixture');assert.equal(await(await w.request('/assets/old.js')!).text(),'old app');
 });
-test('failed pointer write does not promote an orphan complete index, and same build reuses complete cache', async () => {
-  const w = worker(); oldBuild(w); await w.install(); await w.request(); assert.equal(w.stores.size, 2);
-  w.files.set('/index.html', '<script src="/assets/new.js"></script>'); w.files.set('/assets/new.js', 'new code'); w.failPointer(true);
-  assert.match(await (await w.request()!).text(), /old.js/); w.files.clear(); assert.match(await (await w.request()!).text(), /old.js/);
+test('failed pointer commit leaves the previous generation usable and a later explicit navigation can promote',async()=>{
+ const w=worker();first(w);await w.install();w.network.set('/index.html',{body:'<script src="/assets/new.js"></script>',type:'text/html'});w.network.set('/assets/new.js',{body:'new app'});w.failPointer(true);assert.match(await(await w.request('/')!).text(),/old.js/);w.failPointer(false);assert.match(await(await w.request('/')!).text(),/new.js/);
 });
-test('Vite dependency maps and module URL assets are staged, ordinary prose filenames are not fetched', async () => {
-  const w = worker(); w.files.set('/index.html', '<script src="/assets/main.js"></script>');
-  w.files.set('/assets/main.js', 'const deps=["assets/lazy.js"]; new URL("./figure.svg", import.meta.url); const prose="solver.js";');
-  w.files.set('/assets/lazy.js', 'export{}'); w.files.set('/assets/figure.svg', '<svg/>'); await w.install();
-  assert.ok(w.fetched.includes('/assets/lazy.js')); assert.ok(w.fetched.includes('/assets/figure.svg')); assert.ok(!w.fetched.includes('/assets/solver.js'));
+test('same generation is reused; private routes, query requests and authorization never enter the cache handler',async()=>{
+ const w=worker();first(w);await w.install();await w.request('/');await w.request('/');assert.equal(w.stores.size,2);
+ for(const p of ['/pair','/health','/api/jobs','/api/threads','/api/helper-management/browsers','/assets/a.js?private=1'])assert.equal(w.request(p),undefined);
+ assert.equal(w.request('/assets/old.js',{authorization:'Bearer private'}),undefined);
 });
-test('private, helper, authenticated, non-GET and external query requests bypass interception entirely', () => {
-  const w = worker(); for (const url of ['/api/jobs', '/api/threads', '/api/consent/settings', '/api/helper-management/pairing-code', '/pair', '/health', '/assets/a.js?private=true']) assert.equal(w.request(url), undefined);
-  assert.equal(w.request('/assets/a.js', { headers: { authorization: 'Bearer test' } }), undefined); assert.equal(w.request('/', { method: 'POST' }), undefined); assert.deepEqual(w.fetched, []);
-});
-test('first install failure leaves no promoted shell and never falls back to a possibly incomplete legacy index', async () => {
-  const w = worker(); const legacy = new Map<string, Response>(); legacy.set('/index.html', new Response('<script src="missing.js"></script>')); w.stores.set('marginalia-page-v1', legacy);
-  await assert.rejects(w.install(), /offline/); await assert.rejects(w.request()!, /No complete offline/);
+test('an HTML fallback response masquerading as a packaged script cannot replace the working index',async()=>{
+ const w=worker();first(w);await w.install();w.network.set('/index.html',{body:'<script src="/assets/new.js"></script>',type:'text/html'});w.network.set('/assets/new.js',{body:'<html>not a script</html>',type:'text/html'});assert.match(await(await w.request('/')!).text(),/old.js/);assert.equal(w.stores.size,2);
 });

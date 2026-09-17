@@ -40,6 +40,8 @@ Domain: interactive reading companion; see the whitepaper (Claude Doc) for ethos
 
 ## Build execution status
 
+Current coordination and all-ticket assessment: [steering handoff](../docs/FABLE-STEERING-HANDOFF.md) and [whole-project consolidation review](../docs/PROJECT-CONSOLIDATION-REVIEW.md). The latter distinguishes integrated, review-held, actively implemented and runtime-unaccepted work. Decision history above (including early local sandbox observations) is not evidence that the dedicated product runtime or all platforms have passed acceptance. No product decision or inventory scope is changed by this execution update.
+
 The build is active. See [BUILD-STATUS.md](../BUILD-STATUS.md) for current owners and observed gates, [PRO-COLLABORATION.md](PRO-COLLABORATION.md) for GitHub handoffs, and build-receipts/ for per-ticket evidence. Closed decision tickets do not mean implemented, tested or released. The basic margin is split from rich rendering to break the T05/T16 stage cycle; all T18 and T05 rich-reply requirements remain required.
 
 ## Open tickets

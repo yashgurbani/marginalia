@@ -35,8 +35,7 @@ export function mountNoteEditor(host: HTMLElement, actions: {
   const status = el('p', '', 'm-meta'); status.setAttribute('role', 'status');
   field.addEventListener('input', () => {
     if (field.readOnly) return;
-    actions.edit(field.value); save.disabled = !field.value.trim();
-    ask.hidden = !field.value.trimEnd().endsWith('?');
+    actions.edit(field.value); ask.hidden = !field.value.trimEnd().endsWith('?');
   });
   field.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !field.readOnly) {

@@ -1,5 +1,7 @@
 # Build plan — stage-gated (v2; supersedes the hour plan)
 
+Execution update, 17 September: the source destination and gates below remain governing; live ownership and completion evidence are tracked in [the steering handoff](../docs/FABLE-STEERING-HANDOFF.md) and [whole-project review](../docs/PROJECT-CONSOLIDATION-REVIEW.md). Historical model/lane names below do not override current explicit assignments. All feature scope remains required. Do not treat a passed module test as a passed reader journey or stage gate.
+
 Destination: a working extension + daemon in which selecting a passage on a real page opens the margin, suggestions appear instantly, a definition arrives, a deep transform runs through the reader's own Codex, the reply streams into the margin as typed blocks the browser runs, the assumptions and the egress record are visible, and the thread survives a reload and a daemon restart. Hours are gone; gates remain. Publish the scope that passed its gate on launch day.
 
 ## Default decisions (override any; otherwise these stand)

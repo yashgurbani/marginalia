@@ -1,0 +1,4 @@
+interface:
+  display_name: "Contextual Definition"
+  short_description: "Explain a term beside its captured passage"
+  default_prompt: "Explain this term in the approved captured passage, using the supplied Marginalia reply schema."

@@ -58,8 +58,9 @@ export function captureSelection(documentId: string, revision: number, requireSe
       if (offsets.end - offsets.start > 20000 || offsets.end <= offsets.start) return null;
       const projectedRange = position.toRange(projection.root, offsets);
       const measured = position.fromRange(projection.root, projectedRange);
-      anchor = { ...measured, ...quote.fromTextPosition(projection.root, measured) };
-      if (range.toString() !== anchor.exact) return null;
+      const capturedAnchor: QuoteAnchor = { ...measured, ...quote.fromTextPosition(projection.root, measured) };
+      if (range.toString() !== capturedAnchor.exact) return null;
+      anchor = capturedAnchor;
     } else if (requireSelection) return null;
   }
   onSections?.(projection.markers);
