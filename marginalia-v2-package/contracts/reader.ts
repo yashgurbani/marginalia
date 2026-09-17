@@ -37,8 +37,7 @@ export function attachQuote(anchor: QuoteAnchor, text: string): Attachment {
     from = start + 1;
   }
   if (!candidates.length) return { state: 'lost', candidates };
-  let matches = candidates;
-  if (matches.length > 1) matches = candidates.filter(({ start, end }) =>
+  const matches = candidates.filter(({ start, end }) =>
     (!anchor.prefix || text.slice(Math.max(0, start - anchor.prefix.length), start) === anchor.prefix) &&
     (!anchor.suffix || text.slice(end, end + anchor.suffix.length) === anchor.suffix));
   if (matches.length !== 1) return { state: 'unsure', candidates };

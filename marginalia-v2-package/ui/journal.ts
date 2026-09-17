@@ -61,10 +61,74 @@ export class ReaderJournal {
     });
   }
 
+  /** Caller must hold the same cross-tab lock used for load, change and sync. */
+  async reconcilePersistence(): Promise<JournalState> {
+    return this.enqueue(async () => {
+      if (!this.unsaved) throw new Error('There are no unsaved local changes to reconcile.');
+
+      const local = structuredClone(this.state);
+      const baseline = this.durableBaseline;
+      let durable: JournalState | undefined;
+      try {
+        durable = await this.persistence.load();
+      } catch (error) {
+        this.persistenceError = asError(error);
+        throw error;
+      }
+      if (!durable) {
+        const error = new Error('The durable journal is missing. Your unsaved changes were kept in memory.');
+        this.persistenceError = error;
+        throw error;
+      }
+
+      const durableFingerprintNow = durableFingerprint(durable);
+      if (baseline === undefined) {
+        const error = new Error('The previous durable journal is unknown. Load it before reconciling unsaved changes.');
+        this.persistenceError = error;
+        throw error;
+      }
+      if (durableFingerprintNow === baseline) {
+        const error = new Error('Local storage has not changed elsewhere. Retry persistence instead.');
+        this.persistenceError = error;
+        throw error;
+      }
+
+      let reconciled: JournalState;
+      try {
+        reconciled = reconcileStates(normalizeState(durable), normalizeState(local));
+      } catch (error) {
+        this.persistenceError = asError(error);
+        throw error;
+      }
+
+      try {
+        await this.persistence.save(structuredClone(reconciled));
+      } catch (error) {
+        this.persistenceError = asError(error);
+        throw error;
+      }
+      this.state = reconciled;
+      this.unsaved = false;
+      this.persistenceError = undefined;
+      this.durableBaseline = durableFingerprint(reconciled);
+      return this.state;
+    });
+  }
+
   async change(mutation: ReaderMutation) {
     const change = structuredClone(mutation);
     await this.enqueue(async () => {
       await this.ensureDurableStateInitialized();
+      assertValidMutation(change);
+      const existingConflict = this.state.conflicts.find(({ change: existing }) => existing.id === change.id);
+      if (existingConflict) {
+        if (!sameMutation(existingConflict.change, change)) duplicateIdError();
+        if (this.unsaved) {
+          await this.verifyDurableBaseline();
+          if (this.unsaved) await this.persist(this.state);
+        }
+        throw new Error(existingConflict.message);
+      }
       const known = findKnownFingerprint(this.state, change.id);
       if (known) {
         if (known !== mutationFingerprint(change)) throw new Error('This change identifier was already used for different content.');
@@ -78,7 +142,14 @@ export class ReaderJournal {
       const applyAndPersist = async () => {
         if (this.unsaved) await this.verifyDurableBaseline();
         const next = structuredClone(this.state);
-        applyMutation(next, change);
+        try {
+          applyMutation(next, change);
+        } catch (error) {
+          if (!(error instanceof RecoverableMutationConflict)) throw error;
+          addConflict(next, change, error.message);
+          await this.persist(next);
+          throw error;
+        }
         next.pending.push(change);
         await this.persist(next);
       };
@@ -115,6 +186,26 @@ export class ReaderJournal {
       const remote = structuredClone(await list());
       const next = structuredClone(this.state);
       next.threads = mergeRemoteThreads(next, remote);
+      await this.persist(next);
+    });
+  }
+
+  /** Caller must hold the same cross-tab lock used for the reconciliation operation. */
+  async acceptCurrentConflict(changeId: string): Promise<void> {
+    await this.enqueue(async () => {
+      await this.ensureDurableStateInitialized();
+      this.requireDurable();
+      const conflictIndex = this.state.conflicts.findIndex(({ change }) => change.id === changeId);
+      if (conflictIndex < 0) throw new Error('The conflicting draft could not be found.');
+
+      const next = structuredClone(this.state);
+      const [conflict] = next.conflicts.splice(conflictIndex, 1);
+      (next.resolutions ??= []).push({
+        change: structuredClone(conflict.change),
+        message: conflict.message,
+        resolvedAt: new Date().toISOString(),
+        resolution: 'accepted-remote',
+      });
       await this.persist(next);
     });
   }
@@ -279,6 +370,80 @@ function normalizeState(state: JournalState): JournalState {
   return cloned;
 }
 
+function reconcileStates(durable: JournalState, local: JournalState): JournalState {
+  const durableIdentities = mutationIdentities(durable);
+  const localIdentities = mutationIdentities(local);
+  for (const [id, fingerprint] of localIdentities) {
+    const durableFingerprintForId = durableIdentities.get(id);
+    if (durableFingerprintForId !== undefined && durableFingerprintForId !== fingerprint) duplicateIdError();
+  }
+
+  const reconciled = structuredClone(durable);
+  const localAcknowledged = new Map((local.acknowledged ?? []).map(receipt => [receipt.id, receipt]));
+  for (const change of [...reconciled.pending]) {
+    const receipt = localAcknowledged.get(change.id);
+    if (!receipt) continue;
+    if (receipt.fingerprint !== mutationFingerprint(change)) duplicateIdError();
+    addConflict(reconciled, change, 'The server accepted this change, but its acknowledgement was not saved locally. Review the current saved version before resolving it.');
+  }
+
+  for (const draft of local.pending) {
+    assertValidMutation(draft);
+    addConflict(reconciled, draft, 'Local storage changed before this draft was saved. Review the current saved version before replacing it.');
+  }
+  for (const conflict of local.conflicts) {
+    assertValidMutation(conflict.change);
+    mergeConflict(reconciled, conflict);
+  }
+
+  const resolutionFingerprints = new Set((reconciled.resolutions ?? []).map(resolution => canonicalJson(resolution)));
+  for (const resolution of local.resolutions ?? []) {
+    const fingerprint = canonicalJson(resolution);
+    if (!resolutionFingerprints.has(fingerprint)) {
+      (reconciled.resolutions ??= []).push(structuredClone(resolution));
+      resolutionFingerprints.add(fingerprint);
+    }
+  }
+
+  const acknowledged = new Map((reconciled.acknowledged ?? []).map(receipt => [receipt.id, receipt]));
+  for (const receipt of local.acknowledged ?? []) {
+    const previous = acknowledged.get(receipt.id);
+    if (previous && previous.fingerprint !== receipt.fingerprint) duplicateIdError();
+    if (!previous) acknowledged.set(receipt.id, structuredClone(receipt));
+  }
+  reconciled.acknowledged = [...acknowledged.values()];
+  return normalizeState(reconciled);
+}
+
+function mergeConflict(state: JournalState, conflict: JournalConflict) {
+  const existing = state.conflicts.find(item => item.change.id === conflict.change.id);
+  if (!existing) {
+    addConflict(state, conflict.change, conflict.message);
+    return;
+  }
+  if (!sameMutation(existing.change, conflict.change)) duplicateIdError();
+  if (existing.message !== conflict.message && !existing.message.includes(conflict.message)) {
+    existing.message = `${existing.message}\n\nRecovered local conflict: ${conflict.message}`;
+  }
+}
+
+function mutationIdentities(state: JournalState) {
+  const identities = new Map<string, string>();
+  const add = (id: string, fingerprint: string) => {
+    const previous = identities.get(id);
+    if (previous !== undefined && previous !== fingerprint) duplicateIdError();
+    identities.set(id, fingerprint);
+  };
+  for (const change of state.pending) add(change.id, mutationFingerprint(change));
+  for (const conflict of state.conflicts) add(conflict.change.id, mutationFingerprint(conflict.change));
+  for (const resolution of state.resolutions ?? []) {
+    add(resolution.change.id, mutationFingerprint(resolution.change));
+    if (resolution.replacement) add(resolution.replacement.id, mutationFingerprint(resolution.replacement));
+  }
+  for (const receipt of state.acknowledged ?? []) add(receipt.id, receipt.fingerprint);
+  return identities;
+}
+
 function applyMutation(state: JournalState, mutation: ReaderMutation) {
   const now = new Date().toISOString();
   if (mutation.kind === 'keep') {
@@ -302,11 +467,12 @@ function applyMutation(state: JournalState, mutation: ReaderMutation) {
   }
 
   const thread = state.threads.find(candidate => candidate.id === mutation.threadId);
-  if (!thread) throw new Error('The saved passage could not be found.');
+  if (!thread) throw new RecoverableMutationConflict('The saved passage changed or was removed. Your draft was kept for review.');
   if (mutation.kind === 'note') {
-    if (thread.deletedAt) throw new Error('Restore the thread before editing it.');
+    if (thread.deletedAt) throw new RecoverableMutationConflict('The saved passage was removed. Your note draft was kept for review.');
     const note = thread.notes.find(candidate => candidate.id === mutation.noteId);
-    if ((note?.revision ?? 0) !== mutation.expectedRevision) throw new Error('The note changed. Keep your draft and reopen the saved version.');
+    if (note?.deletedAt) throw new RecoverableMutationConflict('The note was removed. Your draft was kept for review.');
+    if ((note?.revision ?? 0) !== mutation.expectedRevision) throw new RecoverableMutationConflict('The note changed. Your draft was kept for review.');
     if (note) {
       note.text = mutation.text;
       note.revision++;
@@ -314,12 +480,62 @@ function applyMutation(state: JournalState, mutation: ReaderMutation) {
       thread.notes.push({ id: mutation.noteId, threadId: mutation.threadId, text: mutation.text, revision: 1, createdAt: now, deletedAt: null });
     }
   } else {
-    if (thread.revision !== mutation.expectedRevision) throw new Error('This thread changed. Reopen it before applying the change.');
+    if (thread.deletedAt && (mutation.kind === 'thread-state' || mutation.removed)) throw new RecoverableMutationConflict('The saved passage was removed. Your change was kept for review.');
+    if (thread.revision !== mutation.expectedRevision) throw new RecoverableMutationConflict('This thread changed. Your change was kept for review.');
     if (mutation.kind === 'thread-state') thread.state = mutation.state;
     else thread.deletedAt = mutation.removed ? now : null;
   }
   thread.revision++;
   thread.updatedAt = now;
+}
+
+class RecoverableMutationConflict extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RecoverableMutationConflict';
+  }
+}
+
+function assertValidMutation(mutation: ReaderMutation) {
+  const value = mutation as unknown as Record<string, unknown>;
+  if (!value || typeof value !== 'object' || !nonEmptyString(value.id) || !nonEmptyString(value.threadId)) invalidMutation();
+  if (value.kind === 'keep') {
+    const capture = value.capture as Record<string, unknown> | undefined;
+    const anchor = value.anchor as Record<string, unknown> | undefined;
+    if (!capture || typeof capture !== 'object' || !anchor || typeof anchor !== 'object' ||
+      !['url', 'title', 'pageType', 'text', 'capturedAt', 'extractionVersion'].every(key => typeof capture[key] === 'string') ||
+      !['exact', 'prefix', 'suffix'].every(key => typeof anchor[key] === 'string') ||
+      typeof anchor.start !== 'number' || !Number.isInteger(anchor.start) ||
+      typeof anchor.end !== 'number' || !Number.isInteger(anchor.end) ||
+      (anchor.kind !== undefined && !['quote', 'section', 'whole-page'].includes(String(anchor.kind))) ||
+      (value.note !== undefined && typeof value.note !== 'string')) invalidMutation();
+    return;
+  }
+  if (value.kind === 'note') {
+    if (!nonEmptyString(value.noteId) || typeof value.text !== 'string' || !validRevision(value.expectedRevision, 0)) invalidMutation();
+    return;
+  }
+  if (value.kind === 'thread-state') {
+    if (!['open', 'parked', 'done', 'archived'].includes(String(value.state)) || !validRevision(value.expectedRevision, 1)) invalidMutation();
+    return;
+  }
+  if (value.kind === 'remove') {
+    if (typeof value.removed !== 'boolean' || !validRevision(value.expectedRevision, 1)) invalidMutation();
+    return;
+  }
+  invalidMutation();
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function validRevision(value: unknown, minimum: number) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= minimum;
+}
+
+function invalidMutation(): never {
+  throw new Error('This change is malformed.');
 }
 
 function mergeRemoteThreads(state: JournalState, remote: Thread[], protectedOverride?: Set<string>) {
