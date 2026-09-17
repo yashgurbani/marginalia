@@ -1,5 +1,24 @@
 # Marginalia — whole-project review and integration direction
 
+## Current consolidation update — 18 September 2026
+
+This update supersedes the historical branch ownership and merge-state rows below. Integration is `codex/marginalia-v2` through `a13a955` (documentation checkpoint); accepted T05 source merged at `96eef734`, T08 at `8a08853`, and T20 corrected source at `4466e32`. The corrected Evidence/Explore implementation and four Luna regression slices are also accepted in this integration history. Earlier “active Pro,” “active Opus,” and “review hold” labels in the dated assessment below describe the 17 September checkpoint, not live assignments.
+
+| Ticket / workstream | Current source disposition | Remaining acceptance |
+|---|---|---|
+| T05 reader integration | Final Pro recovery reconciled with concurrent UI work and independently accepted. Saved question keys and retry/error display corrected; original-source historical replies retained. | Full live reader/provider journey, accessibility and platform evidence remain open. |
+| T06 send/runtime | Final artifact recovered and applied; reconciled candidate `2e77f3a` includes accepted T05/T08/T20 composition. Not merged into the integration branch yet. | Fresh independent Pro review is running at the URL in FABLE-STEERING-HANDOFF.md. It owns concrete T06 corrections on a separate branch. Both exhausted MCP review attempts produced no verdict. Real runtime/confinement acceptance is still distinct. |
+| T08 explicit Ask | Reviewed source and two UI corrections merged. The reviewed plan remains visible while working; connection labels reflect the actual method. | End-to-end execution depends on T06 review/composition and live evidence. |
+| T14/T15 Evidence/Explore | Original hold resolved through bounded corrections and saved-reopen fix `184c12a`. Fetched evidence does not imply support; saved shelves preserve source context and explicit navigation. | Genuine retrieval/generation and reader-facing acceptance remain open; accepted modules are not complete product proof. |
+| T20 saved solver | Opus delivery corrected by Sol and independently accepted at `d2a67b5`; merge `4466e32`. Exact producing attempt and explicit claim release are required. | Real runtime mount, confinement and observed recompute still required. No model turn or cloud grant may be consumed for local arithmetic. |
+| Four Luna regression slices / two Sol corrections | Integrated corrections and regression coverage are preserved; their old worktrees are not evidence of active work. | Do not restart or merge superseded copies merely because ancestry lists an unmerged branch. Verify patch equivalence and receipts first. |
+
+Combined candidate checks: **669 passed, 2 skipped, 0 failed**, full typecheck, app build, extension build and extension typecheck passed. These checks do not establish authenticated provider execution, confinement, accessibility or macOS/Linux runtime acceptance. All 21 tickets and 71 feature inventory entries retain their original scope; no launch-readiness claim is made.
+
+Next sequence: recover the current Pro T06 verdict/corrections, verify and integrate accepted changes, update receipts and push; then submit the prepared comprehensive Pro review against the exact consolidated SHA. The comprehensive reviewer must implement justified improvements and assess all original requirements, not only recent changes. Existing worktrees and user edits remain preserved.
+
+## Historical assessment — 17 September 2026
+
 17 September 2026. Chief review requested by Yash after restoring shared Pro chats and adding Opus4.8Medium. This assesses source documents, existing implementation receipts, published branch heads and observed worker state. It is not a new full application test.
 
 ## Where the project stands
