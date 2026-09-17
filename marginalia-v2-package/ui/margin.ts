@@ -28,12 +28,20 @@ export type MarginOptions = {
   draftScope?: string;
   /** The default composes the separately owned T08 public module when installed. */
   asking?: AskingMountFactory;
+  onLibrary?: () => void;
   /** Disable authenticated helper access in page-embedded, clickjackable hosts. */
   allowHelper?: boolean;
   /** Trusted host policy recheck immediately before each local outbox send. */
   authorizeHelperSend?: (sourceUrl: string) => Promise<void>;
 };
 type Draft = MarginDraft;
+
+export function sectionIndexAt(sections: MarginSection[], position: number): number {
+  const found = sections.findIndex(section => position >= section.start && position < section.end);
+  if (found >= 0) return found;
+  for (let index = sections.length - 1; index >= 0; index--) if (position >= sections[index].start) return index;
+  return 0;
+}
 
 export function marginItemSize(section: number, current: number, expanded: boolean, focused: boolean): 'full' | 'line' | 'tick' {
   if (section < 0 || section === current || expanded || focused) return 'full';
@@ -382,7 +390,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const saveHelper = button('Save all queued device changes to local helper', () => { void safely(async () => {
       await sync();
       if (!questionDraft) return;
-      const current = questionDraft.threadId && currentThread(questionDraft.threadId);
+      const current = questionDraft.threadId ? currentThread(questionDraft.threadId) : undefined;
       if (current?.sourceVersionId) { questionDraft.sourceVersionId = current.sourceVersionId; await saveQuestion(questionDraft); message.textContent = 'Saved context can now be reviewed. Pairing and local saving do not authorize inference.'; }
     }); });
     const reviewButton = button(value.resumeJobId || value.resumeReplyId ? 'Check saved request or reply' : 'Review with local helper', () => { void openQuestionWithHelper(message, reviewButton); });
@@ -811,8 +819,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       await locked(() => journal.reconcilePersistence()); needsReconciliation = false; pendingNoteCommitted = false;
       changed(); renderThreads(); renderCompose(); renderSettings(); announce('Recovered changes need deliberate review. Your note and question drafts are retained.');
     })));
-    if (journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() || pendingNoteMutation || pendingNoteCommitted) settingsBody.append(el('p', 'Some work needs saving or conflict review. Memory-only recovery lasts only while this document stays open; export before closing.', 'm-error'), button('Retry saving', () => safely(async () => {
-      if (draft?.mutation || pendingNoteMutation) await saveDraftNow();
+    if (hydrationFinished) settingsBody.append(el('p', 'Some work needs saving or conflict review. Memory-only recovery lasts only while this document stays open; export before closing.', 'm-error'), button('Retry saving', () => safely(async () => {
+      if (draft || pendingNoteMutation) await saveDraftNow();
       else { await locked(() => journal.retryPersistence()); await draftBuffer.flush(); }
       if (questionBuffer.unsaved()) await questionBuffer.save(questionBuffer.get());
       changed(); renderThreads(); renderCompose(); renderSettings();
@@ -902,6 +910,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   const api = {
     sourceUrl: capture.url, connection: trustedHelper, exportWork, drain: lifecycle.drain,
+    getThread: currentThread,
+    focusThread(threadId: string) { expanded.add(threadId); renderThreads(); const thread = currentThread(threadId); if (thread) hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); },
     select: showSelection,
     setReadingPosition(start: number) { if (alive() && !suspended && !held) { readingPosition = Math.max(0, Math.min(capture.text.length, start)); sectionIndex = sectionFor(readingPosition); renderPosition(); } },
     suspend() { highlight(null); suspended = true; management?.close(); askingMount?.setVisible(false); },
