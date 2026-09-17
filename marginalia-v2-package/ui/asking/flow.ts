@@ -229,7 +229,10 @@ export function createAskingFlow(options: AskingOptions) {
         assertPreparation(p, op.expected!, binding, now()); requireCurrent(op);
         op.grant = grant;
         const receiveEpoch = op.receiveEpoch;
-        publish({ phase: 'submitting', preparation: undefined, message: 'Submitting the approved request. Provider sending has not yet been observed.' });
+        // Keep the detached, reviewed host plan visible while this exact operation is active. Submission
+        // continues to use `p`/`op.preparation`; the public state copy is display-only and is cleared by
+        // begin()/invalidate()/close() before it could describe different work.
+        publish({ phase: 'submitting', preparation: hostCopy(p), message: 'Submitting the approved request. Provider sending has not yet been observed.' });
         try {
           requireCurrent(op);
           // A synchronous display callback may outlive the preview; check expiry again at the local handoff.

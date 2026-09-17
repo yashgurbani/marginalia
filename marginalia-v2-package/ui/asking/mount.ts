@@ -26,6 +26,15 @@ const traceLabels: Record<keyof CompletionTrace, string> = {
   grantId: 'Permission reference', preparedPayloadDigest: 'Reviewed text fingerprint', sourceVersionId: 'Source version', sourceHash: 'Source fingerprint',
   requestedAt: 'Requested', savedAt: 'Saved', attemptEndedAt: 'Finished', parentReplyId: 'Earlier reply', answeredNote: 'Answered note version',
 };
+const connectionLabels: Record<CompletionTrace['provider'], string> = {
+  'app-server': 'Codex app connection',
+  'mcp-server': 'Codex compatibility connection',
+};
+const intentLabels: Record<Intent, string> = {
+  define: 'Explain this passage', simulate: 'Simulate this idea', instantiate: 'Show a concrete example', derive: 'Work through the steps',
+  diagram: 'Make a diagram', evidence: 'Check supporting evidence', explore: 'Explore further', unsure: 'Answer this question',
+};
+const planPhases = new Set<AskingState['phase']>(['submitting', 'queued', 'sending', 'working', 'provisional', 'validating', 'cancel_requested']);
 
 /** Append to a T05 child slot at the reading position, below reader notes. Never replace the source or parent editor. */
 export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
@@ -49,12 +58,13 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
   contextDetails.append(make('summary', 'What should the reply assume you know?'), contextLabel);
   const submit = make('button', 'Ask'); submit.type = 'submit'; form.append(suggestions, more, label, contextDetails, submit); form.hidden = true;
   const status = make('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+  const plan = make('p'); plan.setAttribute('aria-label', 'Reviewed plan'); plan.hidden = true;
   const localStatus = make('p'); localStatus.setAttribute('role', 'status');
   const elapsed = make('p'); elapsed.setAttribute('aria-label', 'Elapsed time'); elapsed.hidden = true;
   const consentRoot = make('div'), provisionalRoot = make('div'), replyRoot = make('div');
   const trace = make('details'), traceBody = make('dl'); trace.append(make('summary', 'Completion record'), traceBody); trace.hidden = true;
   const workActions = make('div'); workActions.className = 'm-asking__actions';
-  root.append(breadcrumb, definition, noDefinition, actions, form, status, elapsed, localStatus, consentRoot, provisionalRoot, replyRoot, trace, workActions);
+  root.append(breadcrumb, definition, noDefinition, actions, form, status, plan, elapsed, localStatus, consentRoot, provisionalRoot, replyRoot, trace, workActions);
   host.append(root);
   const busyButtons = new Set<HTMLButtonElement>();
   function action(text: string, callback?: () => void | Promise<void>) {
@@ -109,7 +119,8 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
       if (destroyed) return;
       trace.hidden = false; traceBody.replaceChildren();
       for (const [key, value] of Object.entries(result.trace)) traceBody.append(make('dt', traceLabels[key as keyof CompletionTrace]),
-        make('dd', typeof value === 'object' ? `${value.noteId}, version ${value.revision}` : value));
+        make('dd', key === 'provider' ? connectionLabels[value as CompletionTrace['provider']]
+          : typeof value === 'object' ? `${value.noteId}, version ${value.revision}` : value));
       options.onCommitted?.(result);
     },
   });
@@ -119,6 +130,10 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
     definition.hidden = !state.definition; noDefinition.hidden = !!state.definition || state.phase !== 'local';
     const definitionText = state.definition?.text ?? ''; if (quote.textContent !== definitionText) quote.textContent = definitionText;
     if (status.textContent !== state.message) status.textContent = state.message;
+    const reviewed = state.preparation && state.intent && planPhases.has(state.phase)
+      ? `Reviewed plan: ${intentLabels[state.intent]} with ${state.preparation.preview.recipientLabel} using ${state.preparation.job.model}.`
+      : '';
+    plan.hidden = !reviewed; if (plan.textContent !== reviewed) plan.textContent = reviewed;
     elapsed.hidden = state.elapsedSeconds === undefined;
     const duration = state.elapsedSeconds === undefined ? '' : `${state.elapsedSeconds} s elapsed.`;
     if (elapsed.textContent !== duration) elapsed.textContent = duration;

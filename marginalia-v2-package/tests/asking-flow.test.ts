@@ -313,6 +313,33 @@ test('submitting is not sending; host states and elapsed time are observations, 
   assert.equal(h.flow.getState().elapsedSeconds, 31); assert.equal(h.flow.getState().result, undefined); assert.equal(h.count('readReply'), 0);
 });
 
+test('the reviewed host plan remains visible through submitting, working and provisional, then clears on invalidation', async () => {
+  const h = harness(), d = dom(), gate = deferred<JobSnapshot>();
+  const mount = mountAskingCard(d.host, { flow: h.flow, mountConsent: () => ({ update() {}, destroy() {} }),
+    mountReply: mountedStub, replyOptions: () => ({}) });
+  h.host.start = async input => { h.calls.push({ name: 'start', input }); return gate.promise; };
+  await h.flow.ask('define', 'Explain'); const reviewed = hostCopy(h.prepared);
+  const pending = h.approve(); await settle();
+  const plan = d.node.all().find(n => n.getAttribute('aria-label') === 'Reviewed plan')!;
+  assert.equal(h.flow.getState().phase, 'submitting'); assert.deepEqual(h.flow.getState().preparation, reviewed);
+  assert.equal(plan.hidden, false); assert.equal(plan.textContent, 'Reviewed plan: Explain this passage with OpenAI Codex using host-selected.');
+  gate.resolve(job(h.prepared, h.binding, 'running')); await pending;
+  assert.equal(h.flow.getState().phase, 'working'); assert.deepEqual(h.flow.getState().preparation, reviewed); assert.equal(plan.hidden, false);
+  h.setObserved({ ...job(h.prepared, h.binding, 'running', 2), provisional: candidate('partial') }); await h.flow.refresh();
+  assert.equal(h.flow.getState().phase, 'provisional'); assert.deepEqual(h.flow.getState().preparation, reviewed); assert.equal(plan.hidden, false);
+  h.flow.invalidate(); assert.equal(h.flow.getState().preparation, undefined); assert.equal(plan.hidden, true); assert.equal(plan.textContent, '');
+  mount.destroy();
+});
+
+test('starting new work clears the prior reviewed plan before the replacement host preparation returns', async () => {
+  const h = harness(false); await h.flow.ask('define', 'Explain'); await h.approve(); await h.complete();
+  const gate = deferred<AskingPreparation>(); let replacement!: PrepareJobInput;
+  h.host.prepareFollowup = async (_id, input) => { replacement = { ...input, threadId: h.binding.threadId, intent: 'define', question: input.question }; return gate.promise; };
+  const pending = h.flow.followup('Why?'); assert.equal(h.flow.getState().phase, 'preparing'); assert.equal(h.flow.getState().preparation, undefined);
+  await settle(); h.flow.invalidate(); gate.resolve(preparation(replacement, h.binding)); await pending;
+  assert.equal(h.flow.getState().phase, 'stale'); assert.equal(h.flow.getState().preparation, undefined);
+});
+
 test('invalid provisional updates are withheld and the previous valid partial is retained', async () => {
   const h = harness(); await h.flow.ask('define', 'Explain'); await h.approve();
   h.setObserved({ ...job(h.prepared, h.binding, 'running', 2), provisional: candidate('partial') }); await h.flow.refresh();
@@ -586,6 +613,20 @@ test('inline and narrow-sheet cards preserve the editor, keep actions local, inv
       mount.destroy(); mount.destroy(); assert.equal(d.node.children.length, 0); assert.strictEqual(d.doc.activeElement, original);
       assert.deepEqual(exposure, ['shown', 'no-choice']);
     } finally { mount.destroy(); }
+  }
+});
+
+test('completion records render reader-facing connection names for both provider adapters', async () => {
+  for (const [provider, expected] of [['app-server', 'Codex app connection'], ['mcp-server', 'Codex compatibility connection']] as const) {
+    const h = harness(), d = dom(), prepare = h.host.prepare.bind(h.host);
+    h.host.prepare = async (input, signal) => { const value = await prepare(input, signal); value.job.provider = provider; value.preview.provider = provider; return value; };
+    const mount = mountAskingCard(d.host, { flow: h.flow, mountConsent: () => ({ update() {}, destroy() {} }),
+      mountReply: mountedStub, replyOptions: () => ({}) });
+    await h.flow.ask('define', 'Explain'); await h.approve(); await h.complete();
+    const nodes = d.node.all(), connection = nodes.findIndex(n => n.tagName === 'dt' && n.textContent === 'Connection');
+    assert.notEqual(connection, -1); assert.equal(nodes[connection + 1].textContent, expected);
+    assert.equal(nodes.some(n => /(?:app|mcp)-server/.test(n.textContent)), false);
+    mount.destroy();
   }
 });
 
