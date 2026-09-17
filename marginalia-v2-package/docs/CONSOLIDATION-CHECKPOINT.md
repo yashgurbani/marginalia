@@ -1,5 +1,12 @@
 # Chief consolidation checkpoint
 
+## Accepted group 5 — T20 reviewed corrections and merge
+
+Merged `d2a67b5` through `4466e32cc29a1148e344bea3eda0817810528165`, preserving Opus4.8, Opus5, Sol correction `a8a3a34`, and both independent review dispositions. Luna closed both concrete findings: the saved reply now resolves only to its succeeded producing attempt, and durable claim release requires explicit synchronous confirmation. Its five targeted regressions passed. Chief's combined candidate `be69eae` passed 550 tests, one existing skip, zero failures, and full pinned typecheck. Production/contracts/tests/UI trees match the merged integration exactly; no redundant full-suite rerun was needed.
+
+This accepts the unmounted solver module. Persisted artifact bindings, a real durable execution gate/lease, observed confinement evidence, route/session mounting and live runtime evidence remain open. No new model turn or cloud grant is consumed by local recompute.
+
+T05 and T06 final Pro responses are recovered. Final source archives are still needed locally: browser clicks did not expose accessible downloads, and the user has been asked for their downloaded paths. Do not substitute earlier remote milestones for final deliveries. T05 remote `c5d7d5134294625b2343db19728b6f1d3ba2954c` is preserved in isolated `codex/t05-final-consolidation`; final ZIP must be reconciled against it. T06 isolated `codex/t06-final-consolidation` is pinned to final patch base `18596813401704785825a6689aaa2c73e9190627`.
 ## Accepted group 4 — corrected T08 module
 
 Merged Pro finala9a6a08 plus Sol correctionefb30310111c75f5f428c1273cab4aec009f39d2 via8a08853cd2dd864ffd629b86dd642afb6504ba1e. Chief inspected F4/F5 diff: detached reviewed preparation remains display-only during submitting/working/provisional; private preparation remains dispatch authority. Plan line renders current reviewed intent/recipient/model. Provider identifiers map to Codex app connection / Codex compatibility connection. Invalidation/replacement clears display state. Fresh integrated56asking tests pass; full package typecheck exit0. Prior premerge baseline full suite338pass/1skip.
