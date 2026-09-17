@@ -31,10 +31,12 @@ export type AskingContext = {
   prepareReplyView?(threadId: string, replyVersionId: string): Promise<void>;
   onClosed?(): void;
   retainedQuestion?(selection: AskingSelection): void;
+  /** Observed peer state only; no inference or readiness is inferred by the host. */
+  activity?(state: { phase: string; sending: boolean; elapsedSeconds?: number }): void;
 };
 export const createAskingHost = (context: AskingContext) => context;
 
-// Public-peer subset verified against T08 48dc726a. No T08 implementation is
+// Public-peer subset verified against T08 a9a6a08d. No T08 implementation is
 // copied here. The optional build entry permits the owner commits to merge in
 // either order without claiming the missing module exists.
 type Binding = {
@@ -44,7 +46,7 @@ type Binding = {
 };
 type Access = { epoch: string; paired: boolean; canAuthorize: boolean; excluded: boolean; supported: boolean; helper: 'connected' | 'unknown'; surface: 'localhost' | 'native-panel' | 'floating'; login: 'unknown' };
 type Result = { reply: ReplyVersion; source: SourceVersion; view?: ReplyViewState; binding: Binding; trace: { jobId: string } };
-type FlowState = { phase: string; intent?: Intent; requestId?: string; submitted: boolean; canCheck: boolean; question?: string; job?: { id: string; state: string }; result?: Result };
+type FlowState = { phase: string; sending?: boolean; elapsedSeconds?: number; intent?: Intent; requestId?: string; submitted: boolean; canCheck: boolean; question?: string; job?: { id: string; state: string }; result?: Result };
 type Flow = {
   ask(intent: Intent, question: string): Promise<void>; openAsk(): void; reopen(target: { jobId: string } | { replyVersionId: string }): Promise<void>;
   refresh(): Promise<void>; close(): void; invalidate(): void; reconcile(): void;
@@ -92,6 +94,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
     const captureId = crypto.randomUUID();
     const abort = new AbortController();
     const cancel = () => abort.abort(); context.signal.addEventListener('abort', cancel, { once: true });
+    if (context.signal.aborted) abort.abort();
     const readers = new Map<string, Awaited<ReturnType<ReturnType<typeof localPersistence>['replies']['open']>>>();
     const writers = new Set<{ mounted: MountedReply; flush(): Promise<void> }>();
     const active = (epoch: number) => !destroyed && !abort.signal.aborted && epoch === generation;
@@ -119,7 +122,8 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       const question = host.querySelector<HTMLTextAreaElement>('.m-asking form textarea');
       const fields = host.querySelectorAll<HTMLTextAreaElement>('.m-asking form textarea');
       if (!question) return;
-      const value = { ...structuredClone(currentSelection), question: question.value, context: fields[1]?.value ?? '', intent: flow?.getState().intent ?? currentSelection.intent };
+      const intent = flow?.getState().intent ?? currentSelection.intent;
+      const value = { ...structuredClone(currentSelection), question: question.value, context: fields[1]?.value ?? '', ...(intent ? { intent } : {}) };
       const identity = canonicalReplyData(value);
       if (identity === lastDraft) return;
       lastDraft = identity; lastQuestionSnapshot = value; context.retainedQuestion?.(value);
@@ -163,7 +167,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       };
       const raw = peer.createAskingHost({
         request: async (path, body) => {
-          const current = await connection();
+          const current = await connection(), permissions = current.permissionVersion;
           fence();
           let submissionId: string | undefined;
           // Store the exact request identity BEFORE a possible job side effect.
@@ -183,6 +187,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
           // Final synchronous fence after local durability/authorization awaits.
           // T08 cancellation/Not now may have happened while those writes waited.
           fence(submissionId);
+          if (submissionId && permissions !== current.permissionVersion) { mountedFlow?.reconcile(); throw new Error('Permissions changed while this request was being preserved. Review again; nothing was sent.'); }
           return current.request(path, body, abort.signal);
         },
         get: async path => { const current = await connection(); fence(); return current.request(path, undefined, abort.signal); },
@@ -203,9 +208,13 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       const binding = currentBinding;
       flow = peer.createAskingFlow({ binding, host: peerHost, validateReply,
         currentBinding: () => { try { checkBinding(selection); return active(epoch) ? structuredClone(binding) : undefined; } catch { return undefined; } },
-        currentAccess: () => ({ epoch: `${captureId}:${context.helper().connectionVersion}:${context.helper().permissionVersion}`, paired: !!context.helper().token,
-          canAuthorize: context.helper().origin === location.origin, excluded: false, supported: true,
-          helper: connected ? 'connected' : 'unknown', surface: 'localhost', login: 'unknown' }),
+        currentAccess: () => {
+          let current: HelperClient | undefined;
+          try { current = context.helper(); } catch { /* A disconnected margin supplies unavailable facts, not an exception to a view update. */ }
+          return { epoch: `${captureId}:${current?.connectionVersion ?? client?.connectionVersion ?? -1}:${current?.permissionVersion ?? -1}`, paired: !!current?.token,
+            canAuthorize: !!current && current.origin === location.origin, excluded: false, supported: true,
+            helper: current?.token && connected ? 'connected' : 'unknown', surface: 'localhost', login: 'unknown' };
+        },
         ensureContextSaved: async (_binding, signal) => { signal.throwIfAborted(); await context.ensureContextSaved(selection); await connection(); signal.throwIfAborted(); },
       });
       mountedFlow = flow;
@@ -247,6 +256,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       if (inputs[1]) inputs[1].value = selection.context;
       unsubscribe = flow.subscribe(state => {
         if (!active(epoch)) return;
+        context.activity?.({ phase: state.phase, sending: state.sending === true, ...(state.elapsedSeconds === undefined ? {} : { elapsedSeconds: state.elapsedSeconds }) });
         if (state.phase === 'closed') { snapshotQuestion(); context.onClosed?.(); }
         // Identity was durably recorded at transport start; subscriptions are view updates only.
         if (state.result) {
@@ -271,12 +281,13 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       }
       // Read-only lifecycle observation while visible; never retry or dispatch from a timer.
       timer = setInterval(() => { if (!active(epoch) || !visible || !flow) return; const state = flow.getState();
-        if (state.submitted && state.canCheck && ['queued', 'sending', 'working', 'provisional', 'validating', 'cancel_requested'].includes(state.phase)) void flow.refresh();
+        if (state.submitted && state.canCheck && ['queued', 'sending', 'working', 'provisional', 'validating', 'cancel_requested'].includes(state.phase)) void flow.refresh().catch(() => { /* The peer retains its last honest state; no retry or new send. */ });
       }, 1000);
     }
     function dispose() {
       snapshotQuestion(); clearInterval(timer); timer = undefined; unsubscribe?.(); unsubscribe = undefined;
       card?.destroy(); card = undefined; flow?.close(); flow = undefined;
+      context.activity?.({ phase: 'closed', sending: false });
     }
     return {
       open(selection) {
