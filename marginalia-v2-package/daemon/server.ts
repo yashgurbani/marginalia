@@ -296,7 +296,12 @@ export async function startServer(options: { database: string; port?: number; we
 function validateReplyParameters(declared: { name: string; min: number; max: number }[], value: unknown): asserts value is Record<string, number> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid reply parameters.');
   const parameters = value as Record<string, unknown>;
-  if (Object.keys(parameters).length !== declared.length || declared.some(parameter => !Object.hasOwn(parameters, parameter.name)
-    || typeof parameters[parameter.name] !== 'number' || !Number.isFinite(parameters[parameter.name])
-    || parameters[parameter.name] < parameter.min || parameters[parameter.name] > parameter.max)) throw new Error('Invalid reply parameters.');
+  if (Object.keys(parameters).length !== declared.length) throw new Error('Invalid reply parameters.');
+  for (const parameter of declared) {
+    const candidate = parameters[parameter.name];
+    if (!Object.hasOwn(parameters, parameter.name) || typeof candidate !== 'number' ||
+      !Number.isFinite(candidate) || candidate < parameter.min || candidate > parameter.max) {
+      throw new Error('Invalid reply parameters.');
+    }
+  }
 }

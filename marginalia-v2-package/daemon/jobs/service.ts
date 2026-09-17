@@ -274,7 +274,8 @@ export class JobService {
       if (!parent || parent.deletedAt) throw new Error('The parent reply is unavailable.');
       const sourceBytes = Buffer.from(canonicalReplyData(parent.reply), 'utf8');
       const excerpt = utf8Prefix(sourceBytes, 4_000);
-      outgoing.parentReply = { replyVersionId: parent.id, excerpt, omittedBytes: sourceBytes.length - Buffer.byteLength(excerpt) };
+      outgoing.parentReply = { replyVersionId: parent.id, attribution: 'Prior generated work, not source evidence.',
+        excerpt, omittedBytes: sourceBytes.length - Buffer.byteLength(excerpt) };
       if (outgoing.parentReply.omittedBytes) outgoing.omissions.push('The accepted parent reply was truncated to a 4,000-byte host-owned excerpt.');
     }
     return { threadId: thread.id, sourceVersionId: thread.sourceVersionId, sourceUrl: thread.sourceUrl, sourceTitle: thread.sourceTitle,

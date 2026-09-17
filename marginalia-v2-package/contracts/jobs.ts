@@ -73,7 +73,7 @@ export type ProviderJobPacket = {
   answeredNote?: { noteId: string; revision: number; text: string; originalCharacters: number; omittedCharacters: number };
   parentReplyId?: string;
   /** Host-frozen excerpt of the immutable accepted parent reply for a provider fork. */
-  parentReply?: { replyVersionId: string; excerpt: string; omittedBytes: number };
+  parentReply?: { replyVersionId: string; attribution: 'Prior generated work, not source evidence.'; excerpt: string; omittedBytes: number };
   availableCapabilities: ReplyCapability[];
   omissions: string[];
 };

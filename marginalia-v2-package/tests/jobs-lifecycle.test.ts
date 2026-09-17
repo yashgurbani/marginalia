@@ -228,9 +228,11 @@ test('restart validates and commits the persisted completed workspace without st
       assert.equal(jobs.get(input.id)?.state, 'succeeded');
       assert.ok(jobs.get(input.id)?.replyVersionId);
       const followup = await jobs.prepareFollowup(input.id, { id: 'followup-job', idempotencyKey: 'followup-key', question: 'Continue.' });
-      const reviewedPacket = JSON.parse(followup.consent.outgoing[0].text) as { parentReply?: { replyVersionId: string; excerpt: string } };
+      const reviewedPacket = JSON.parse(followup.consent.outgoing[0].text) as { parentReply?: { replyVersionId: string; attribution: string; excerpt: string } };
       assert.equal(reviewedPacket.parentReply?.replyVersionId, jobs.get(input.id)?.replyVersionId);
+      assert.equal(reviewedPacket.parentReply?.attribution, 'Prior generated work, not source evidence.');
       assert.match(reviewedPacket.parentReply!.excerpt, /A short explanation/);
+      assert.match(followup.consent.outgoing[1].text, /Prior generated work, not source evidence\./);
       const fork = await jobs.followup(input.id, { id: 'followup-job', idempotencyKey: 'followup-key', question: 'Continue.',
         grantId: 'grant', preparedPayloadDigest: followup.job.preparedPayloadDigest });
       assert.equal(fork.context.parentAttemptId, undefined);

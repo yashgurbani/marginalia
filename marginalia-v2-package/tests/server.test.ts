@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ReaderMutation } from '../contracts/reader.ts';
+import type { CandidateReply } from '../contracts/reply.ts';
 
 const diagnostics = () => ({ status: 'unavailable', login: 'unknown', sandbox: 'unverified' });
 const extensionOrigin = 'chrome-extension://' + 'a'.repeat(32);
@@ -72,6 +73,28 @@ test('diagnostics rejection does not break liveness or pairing', async () => {
     assert.equal(payload.codex.status, 'unavailable');
     assert.equal(payload.codex.login, 'unknown');
     assert.ok(payload.token);
+  } finally { await helper.close(); }
+});
+
+test('reply-check accepts only exact finite parameters within the declared range', async () => {
+  const helper = await startServer({ database: ':memory:', port: 0, diagnostics });
+  try {
+    helper.store.apply(keep);
+    const reply: CandidateReply = { schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete',
+      title: 'Example', summary: 'A saved reply.', sourceBindings: [],
+      parameters: [{ name: 'x', label: 'Value', default: 1, min: 0, max: 2, unit: '' }],
+      assumptions: [], limitations: [], blocks: [{ id: 'text', type: 'text', md: 'A source passage.' }],
+      checks: [], staticFallback: 'A saved reply.' };
+    helper.store.commitReply({ id: 'checked-reply', threadId: keep.threadId, reply });
+    const token = await pair(helper);
+    const headers = { Origin: extensionOrigin, Authorization: `Bearer ${token}` };
+    const input = (parameters: unknown) => JSON.stringify({ threadId: keep.threadId, replyVersionId: 'checked-reply', parameters });
+    const check = (body: string) => fetch(helper.origin + '/api/reply-check', { method: 'POST', headers, body });
+    assert.equal((await check(input({ x: 1 }))).status, 200);
+    for (const parameters of [{ x: '1' }, { x: null }, { x: -1 }, { x: 3 }, { x: 1, extra: 2 }, {}]) {
+      assert.equal((await check(input(parameters))).status, 400);
+    }
+    assert.equal((await check(input({ x: 1 }).replace('"x":1', '"x":1e400'))).status, 400);
   } finally { await helper.close(); }
 });
 
