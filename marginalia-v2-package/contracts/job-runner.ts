@@ -81,6 +81,14 @@ export interface AuditedPolicy {
   turn: Record<string, unknown>;
   mcp: Record<string, unknown>;
 }
+/** Exact inference RPC identity, computed before asynchronous preparation. Not dispatch authority. */
+export interface ProviderSendBinding {
+  method: 'turn/start' | 'tools/call';
+  params: unknown;
+  requestId: number;
+  transportGeneration: string;
+  wireSha256: string;
+}
 export interface ProviderHooks {
   /** Persist before dispatch; reject duplicate attempt claims and stale revisions atomically.
    * T06 persists user cancellation before cancel(), and refuses output against its durable fence. */
@@ -89,9 +97,12 @@ export interface ProviderHooks {
   /** Bootstrap separately authorizes session creation side effects, never inference.
    * Dispatch must perform the full current audit, including returned thread observations. */
   authorize(request: ProviderRequest, audit: ProviderAudit, stage: 'bootstrap' | 'dispatch'): Promise<AuditedPolicy>;
-  /** Last current grant/policy check after durable handoff, immediately before provider transmission.
-   * The adapter performs no awaited work between this result, its cancellation check, and rpc.request. */
-  authorizeSend(request: ProviderRequest, handle: ProviderHandle, audit: ProviderAudit): Promise<void>;
+  /** Non-consuming asynchronous preparation. No permission to transmit is implied. */
+  authorizeSend(request: ProviderRequest, handle: ProviderHandle, audit: ProviderAudit, binding: ProviderSendBinding): Promise<void>;
+  /** One-use synchronous authority, called by the prepared transport directly before write.
+   * Commit grant/egress/handoff/initial checkpoint together; roll back all DB effects on throw.
+   * Do not yield, transmit or enqueue work. A returned Promise is invalid at this boundary. */
+  finalizeSend(request: ProviderRequest, handle: ProviderHandle, audit: ProviderAudit, binding: ProviderSendBinding): ProviderHandle;
   /** Validate recovered operations against current grants and original policy identity. */
   authorizeRecovery(handle: ProviderHandle, audit: ProviderAudit): Promise<void>;
   /** Observe returned effective policy/instruction sources before sending granted input. */

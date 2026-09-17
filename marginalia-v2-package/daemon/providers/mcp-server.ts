@@ -1,6 +1,7 @@
 import { ProviderNotSentError } from '../../contracts/job-runner.ts';
 import type { AuditedPolicy, JobRunner, ProviderAudit, ProviderHandle, ProviderHooks, ProviderRequest } from '../../contracts/job-runner.ts';
 import type { RpcTransport } from './stdio.ts';
+import { sendProviderRequest } from './send.ts';
 import { checkPolicy } from './app-server.ts';
 import { pages, PINNED_CODEX_VERSION } from './preflight.ts';
 import { randomUUID } from 'node:crypto';
@@ -22,6 +23,7 @@ export class McpServerRunner implements JobRunner {
   private hooks: ProviderHooks;
   private audit: ProviderAudit;
   private handles = new Map<string, ProviderHandle>();
+  private staged = new Set<string>();
   private cancelIntents = new Set<string>();
   private requestIds = new Map<string, number>();
   private transportAlive = true;
@@ -39,7 +41,11 @@ export class McpServerRunner implements JobRunner {
   private fenced(h: ProviderHandle): ProviderHandle {
     return this.cancelIntents.has(h.jobId) ? { ...h, tombstone: true, state: 'cancelled', output: undefined, reason: 'abandoned-process-stop-unconfirmed' } : h;
   }
+  private stage(h: ProviderHandle): ProviderHandle {
+    const value = this.fenced(h); this.staged.add(h.jobId); this.handles.set(h.jobId, value); return { ...value };
+  }
   private async save(h: ProviderHandle): Promise<ProviderHandle> {
+    if (this.staged.has(h.jobId)) return this.stage(h);
     h = this.fenced(h);
     const committed = await this.hooks.checkpoint({ ...h });
     if (committed) {
@@ -74,22 +80,33 @@ export class McpServerRunner implements JobRunner {
       policy = await this.hooks.authorize(request, this.audit, 'dispatch'); checkPolicy(request, policy);
       if (policy.mcp.cwd !== request.workspace || policy.mcp['approval-policy'] !== 'never') throw new Error('mcp-policy-binding-mismatch');
     } catch (error) { throw new ProviderNotSentError('mcp-server', request.jobId, error); }
-    const h = await this.save({ jobId: request.jobId, provider: 'mcp-server', workspace: request.workspace,
-      policyKey: request.policyKey, auditScope: policy.auditScope, providerInstanceId: this.instanceId, mode: request.mode, model: request.model, state: 'running', tombstone: false });
-    if (this.fenced(h).tombstone) return this.save({ ...h, state: 'cancelled', tombstone: true });
-    try { await this.dispatch(h, request, 'codex', { ...policy.mcp, model: request.model }); }
-    catch { return this.save({ ...h, state: 'failed', reason: 'pre-dispatch-authorization-rejected' }); }
-    return h;
+    const h = this.stage({ jobId: request.jobId, provider: 'mcp-server', workspace: request.workspace,
+      policyKey: request.policyKey, auditScope: policy.auditScope, providerInstanceId: this.instanceId, mode: request.mode, model: request.model, state: 'starting', tombstone: false });
+    return this.dispatch(h, request, 'codex', { ...policy.mcp, model: request.model });
   }); }
-  private async dispatch(h: ProviderHandle, request: ProviderRequest, name: 'codex' | 'codex-reply', args: Record<string, unknown>): Promise<void> {
-    await this.hooks.authorizeSend(structuredClone(request), structuredClone(h), this.audit);
-    const prompt = formatMcpPrompt(request);
-    const sendHandle = this.current(h);
-    if (sendHandle.tombstone) return;
-    this.ownedAttempts.add(sendHandle.jobId);
-    if (sendHandle.threadId) this.latestByThread.set(sendHandle.threadId, sendHandle.jobId);
-    // tools/call responds when inference ends, unlike app-server's immediate turn id.
-    void this.rpc.request('tools/call', { name, arguments: { ...args, prompt } }, { onRequestId: id => { this.requestIds.set(sendHandle.jobId, id); } })
+  /** Synchronous process/attempt ownership observation, never an authorization grant. */
+  canResume(handle: ProviderHandle): boolean {
+    const known = this.handles.get(handle.jobId);
+    return this.transportAlive && !handle.tombstone && handle.state === 'completed' && !this.cancelIntents.has(handle.jobId) &&
+      this.ownedAttempts.has(handle.jobId) && !!known && handle.revision === known.revision &&
+      handle.providerInstanceId === known.providerInstanceId &&
+      !known.tombstone && known.state === 'completed' && known.providerInstanceId === this.instanceId &&
+      handle.provider === 'mcp-server' && handle.threadId === known.threadId && handle.workspace === known.workspace &&
+      handle.policyKey === known.policyKey && handle.model === known.model && handle.mode === known.mode &&
+      !!known.threadId && this.latestByThread.get(known.threadId) === handle.jobId;
+  }
+  private async dispatch(h: ProviderHandle, request: ProviderRequest, name: 'codex' | 'codex-reply', args: Record<string, unknown>): Promise<ProviderHandle> {
+    let sent;
+    try {
+      sent = await sendProviderRequest(this.rpc, this.hooks, this.audit, request, h, 'tools/call',
+        { name, arguments: { ...args, prompt: formatMcpPrompt(request) } }, () => this.current(h),
+        id => { this.requestIds.set(h.jobId, id); });
+    } catch (error) { this.stage({ ...h, state: 'failed', reason: 'not-sent' }); throw error; }
+    h = sent.handle; this.staged.delete(h.jobId); this.handles.set(h.jobId, h);
+    this.ownedAttempts.add(h.jobId);
+    if (h.threadId) this.latestByThread.set(h.threadId, h.jobId);
+    // tools/call responds at completion; there is no app-server-style turn acknowledgement.
+    void sent.response
       .then(result => this.serial(async () => {
         const now = this.current(h);
         if (now.tombstone) return; // Cancellation was durably fenced before abandoning.
@@ -114,6 +131,7 @@ export class McpServerRunner implements JobRunner {
         const now = this.current(h);
         if (!now.tombstone) await this.save({ ...now, state: 'outcome_unknown', reason: 'mcp-call-outcome-unknown' });
       })).catch(() => {});
+    return this.save({ ...h, state: 'running' });
   }
   cancel(handle: ProviderHandle): Promise<ProviderHandle> {
     handle = structuredClone(handle);
@@ -121,6 +139,7 @@ export class McpServerRunner implements JobRunner {
     if (!['completed', 'failed', 'cancelled'].includes(before.state)) this.cancelIntents.add(handle.jobId);
     return this.serial(async () => {
     const h = this.current(handle);
+    if (this.staged.has(h.jobId)) return this.stage({ ...h, tombstone: true, state: 'cancelled', output: undefined });
     const ownedHere = this.ownedAttempts.has(h.jobId) && h.providerInstanceId === this.instanceId;
     if (['completed', 'failed', 'cancelled'].includes(h.state) && !this.cancelIntents.has(h.jobId)) return h;
     // This closes this adapter's dedicated transport, not proof that the server-side work stopped.
@@ -146,12 +165,9 @@ export class McpServerRunner implements JobRunner {
       try { policy = await this.hooks.authorize(followup, this.audit, 'dispatch'); checkPolicy(followup, policy); }
       catch (error) { throw new ProviderNotSentError('mcp-server', followup.jobId, error); }
       if (followup.mode === 'structured-final' && !followup.outputSchema) throw new Error('output-schema-required');
-      const next = await this.save({ ...h, revision: undefined, auditScope: policy.auditScope, providerInstanceId: this.instanceId, jobId: followup.jobId, mode: followup.mode, state: 'running', output: undefined, reason: undefined });
-      if (this.fenced(next).tombstone) return this.save({ ...next, state: 'cancelled', tombstone: true });
-      // codex-reply cannot accept changed policy/model: the host's policy identity must be unchanged.
-      try { await this.dispatch(next, followup, 'codex-reply', { threadId: h.threadId }); }
-      catch { return this.save({ ...next, state: 'failed', reason: 'pre-dispatch-authorization-rejected' }); }
-      return next;
+      const next = this.stage({ ...h, revision: undefined, auditScope: policy.auditScope, providerInstanceId: this.instanceId, jobId: followup.jobId, mode: followup.mode, state: 'starting', output: undefined, reason: undefined });
+      // codex-reply cannot accept changed policy/model: the host's identity must be unchanged.
+      return this.dispatch(next, followup, 'codex-reply', { threadId: h.threadId });
     }
     if (h.tombstone || ['completed', 'failed', 'cancelled'].includes(h.state)) return h;
     return this.save({ ...h, state: 'outcome_unknown', reason: 'unsupported:mcp-recovery-without-new-model-turn' });

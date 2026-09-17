@@ -11,10 +11,14 @@ import { prepareContinuationWorkspace, prepareWorkspace, restoreCompletedWorkspa
 import { JOB_WORKSPACE_INSTRUCTIONS } from '../daemon/jobs/envelope.ts';
 import type { AuthorizedRuntimeFactory } from '../daemon/jobs/runtime.ts';
 import type { FrozenJobContext, StartJobInput } from '../contracts/jobs.ts';
-import { ProviderNotSentError } from '../contracts/job-runner.ts';
+import { ProviderNotSentError, type ProviderHandle, type ProviderRequest } from '../contracts/job-runner.ts';
 import type { CandidateReply } from '../contracts/reply.ts';
 
 const policyKey = 'a'.repeat(64);
+function starting(request: ProviderRequest): ProviderHandle {
+  const { jobId, workspace, policyKey, model, mode } = request;
+  return { jobId, workspace, policyKey, model, mode, provider: 'app-server', providerInstanceId: 'test-provider', state: 'starting', tombstone: false };
+}
 function fixture(sourceText = 'Start with this passage.') {
   const reader = new ReaderStore(':memory:');
   reader.apply({ id: 'keep-job-test', kind: 'keep', threadId: 'thread-job-test',
@@ -42,8 +46,8 @@ test('preparation reports the shared result shape and bounds duplicated UTF-8 co
   try {
     const prepared = await jobs.prepare({ id: 'large-job', idempotencyKey: 'large-key', threadId: 'thread-job-test', intent: 'explore', question: 'Explain.' });
     assert.equal(prepared.consent.bindingDigest, prepared.job.preparedPayloadDigest);
-    assert.ok(prepared.consent.outgoing.reduce((sum, part) => sum + Buffer.byteLength(part.text), 0) <= 64 * 1024);
-    assert.match(prepared.consent.outgoing[0].text, /64 KiB UTF-8/);
+    assert.ok(prepared.consent.outgoing.reduce((sum, part) => sum + Buffer.byteLength(part.text), 0) <= 60 * 1024);
+    assert.match(prepared.consent.outgoing[0].text, /UTF-8 preview budget/);
     assert.equal(prepared.job.mode, 'workspace-files');
   } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -84,15 +88,18 @@ test('cancel before handoff settles locally and cannot become a timeout', async 
   } finally { release(); await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('only a matching current provider-not-sent error classifies a handed-off attempt as failed', async () => {
-  for (const [suffix, provider, expected] of [['matching', 'app-server', 'failed'], ['mismatch', 'mcp-server', 'outcome_unknown']] as const) {
+test('pre-handoff refusals are not sent; a canonical handoff cannot be downgraded by an error label', async () => {
+  for (const [suffix, provider, finalized, expected] of [
+    ['matching', 'app-server', false, 'failed'], ['mismatch', 'mcp-server', false, 'failed'],
+    ['post-handoff', 'app-server', true, 'outcome_unknown'],
+  ] as const) {
     const root = await mkdtemp(join(tmpdir(), 'marginalia-jobs-'));
     const reader = fixture();
     const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
     const runtimeFactory: AuthorizedRuntimeFactory = { ...base,
-      create: async () => ({ close: () => undefined, runner: {
+      create: async (_job, _attempt, _workspace, host) => ({ close: () => undefined, runner: {
         capabilities: { interrupt: 'turn-interrupt', recovery: 'thread-state', structuredFinal: true, schemaEnforced: true, liveEvents: true },
-        start: async request => { throw new ProviderNotSentError(provider, request.jobId, new Error('authorization')); },
+        start: async request => { if (finalized) host.finalizeSend(request, starting(request)); throw new ProviderNotSentError(provider, request.jobId, new Error('authorization')); },
         resume: async () => { throw new Error('Unexpected resume.'); },
         inspect: async () => { throw new Error('Unexpected inspect.'); },
         cancel: async () => { throw new Error('Unexpected cancel.'); },
@@ -107,7 +114,8 @@ test('only a matching current provider-not-sent error classifies a handed-off at
         await new Promise(resolve => setTimeout(resolve, 10));
       }
       assert.equal(jobs.get(`not-sent-${suffix}`)?.state, expected);
-      assert.equal(jobs.get(`not-sent-${suffix}`)?.attempts[0].dispatchClaimed, false);
+      assert.equal(jobs.get(`not-sent-${suffix}`)?.attempts[0].dispatchClaimed, finalized);
+      assert.equal(jobs.get(`not-sent-${suffix}`)?.attempts[0].handoffMarked, finalized);
     } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
   }
 });
@@ -140,9 +148,9 @@ test('runner uncertainty after handoff stays unknown with one finalization', asy
   const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
   const runtimeFactory: AuthorizedRuntimeFactory = { ...base,
     consent: { ...base.consent, finalizeDispatch: (...args) => { finalized++; return base.consent.finalizeDispatch(...args); } },
-    create: async () => ({ close: () => undefined, runner: {
+    create: async (_job, _attempt, _workspace, host) => ({ close: () => undefined, runner: {
       capabilities: { interrupt: 'turn-interrupt', recovery: 'thread-state', structuredFinal: true, schemaEnforced: true, liveEvents: true },
-      start: async () => { starts++; throw new Error('send outcome unconfirmed'); },
+      start: async request => { host.finalizeSend(request, starting(request)); starts++; throw new Error('send outcome unconfirmed'); },
       resume: async () => { throw new Error('Unexpected resume.'); },
       inspect: async () => { throw new Error('Unexpected inspect.'); },
       cancel: async () => { throw new Error('Unexpected cancel.'); },
@@ -166,9 +174,9 @@ test('real once grant stays spent and handoff marked after uncertain transport',
   const reader = fixture(), consent = new ConsentSessionService({ db: reader.db });
   let starts = 0;
   const runtimeFactory: AuthorizedRuntimeFactory = { dispatchReady: true, consent,
-    create: async () => ({ close: () => undefined, runner: {
+    create: async (_job, _attempt, _workspace, host) => ({ close: () => undefined, runner: {
       capabilities: { interrupt: 'turn-interrupt', recovery: 'thread-state', structuredFinal: true, schemaEnforced: true, liveEvents: true },
-      start: async () => { starts++; throw new Error('transport outcome unconfirmed'); },
+      start: async request => { host.finalizeSend(request, starting(request)); starts++; throw new Error('transport outcome unconfirmed'); },
       resume: async () => { throw new Error('Unexpected resume.'); },
       inspect: async () => { throw new Error('Unexpected inspect.'); },
       cancel: async () => { throw new Error('Unexpected cancel.'); },
