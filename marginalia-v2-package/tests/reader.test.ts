@@ -213,7 +213,7 @@ test('T07 continuation device releases only the explicitly selected thread and d
 // On-disk tests use only a new temporary directory and SQLite-created snapshots.
 async function migrationFixture(run: (context: {
   ReaderStore: typeof import('../daemon/store.ts').ReaderStore;
-  Database: typeof import('better-sqlite3').default;
+  Database: typeof import('better-sqlite3');
   filename: string; root: string; directory: string;
 }) => void) {
   const { ReaderStore } = await import('../daemon/store.ts');
