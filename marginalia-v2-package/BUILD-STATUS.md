@@ -8,6 +8,8 @@ The consolidated implementation is published at `2c35157c38a59a3a84c8eaa1265aaf1
 
 Post-review integration: T01 Pro commit `2c926c5` is integrated as `39ff68c`. Chief inspected its three-path diff; the T01 owner independently ran the exact commit on local Node 24.14.1, with 9/9 diagnostics tests passing. Diagnostics now probes only the explicitly configured executable and dedicated home. T06 must still wire the same canonical runtime identity into both runtime creation and diagnostics; until then the no-argument caller honestly reports unavailable/unknown. This fixes the component, not the complete sign-in/recovery journey.
 
+T02 Pro commit `e979312` is integrated as `eefb8b6`. Chief inspected all five paths and ran `node --test --test-timeout=60000 tests/provider-adapters.test.ts tests/provider-stdio.test.ts` on local Node 24: 49/49 passed, no failures, cancellations or skips. Completed-parent continuation is now read-only, and pre-inference authorization rejection has an attempt-bound `ProviderNotSentError`. T06 still owns consumption of that error and acknowledgement of durable cancellation fences; real provider acceptance remains open.
+
 Ten ticket owners have completed or are reconciling exact-source 6Pro reviews and have submitted bounded implementation follow-ups. Pro is producing fixes and regression tests on isolated branches or patch/ZIP artifacts. Astra owners inspect those outputs; chief controls integration. The [combined Pro review](https://chatgpt.com/c/6aab9618-74b8-83eb-9518-da28543f1429) remains active against the same revision, full spec, whitepaper and both design passes. Its initial write scope is review documents only, under `docs/evidence/pro-consolidated/`.
 
 Testing is now authorized: the user lifted the pause after consolidation. The local baseline failed with 45 TypeScript diagnostics. The test run stalled in a provider-adapter child and was interrupted; its aggregate was 91 tests, 59 passing and 32 failing. This is not a completed-suite result. A real Node strip-only loader failure prevents server tests from loading. See [baseline evidence](docs/evidence/CONSOLIDATION-BASELINE.md). Fixes must address both genuine source defects and outdated test contracts without weakening product requirements.
@@ -32,7 +34,7 @@ Integrated means committed for review, not that the full reader experience passe
 |---|---|---|
 | T00 | Numerical fixture | Foundation integrated; final rendered/live fixture remains |
 | T01 | Helper and pairing | Pro diagnostics correction integrated as 39ff68c, 9/9 focused owner checks on Node 24; T06 canonical identity wiring and live recovery remain |
-| T02 | App-server and MCP adapters | Integrated; Pro fixing adapter lifecycle/hooks and tests; real authenticated asking and recovery remain |
+| T02 | App-server and MCP adapters | Pro continuation/not-sent correction integrated as eefb8b6; 49/49 local focused checks pass; T06 integration and real authenticated asking/recovery remain |
 | T03 | Reply contract/host authority | Integrated with samples binding; Pro contract corrections/tests active; real host records and delivery remain |
 | T04 | Extension capture/private host | Integrated with section metadata; Pro extension fixes active; hostile-page, worker recovery, port/identity and live Ask checks remain |
 | T05 | Margin/design | Saved replies and recovery history integrated; Pro persistence/lifecycle, reading-position UI and library mount fixes active; browser/visual acceptance remains |
