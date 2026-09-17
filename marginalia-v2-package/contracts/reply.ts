@@ -114,9 +114,11 @@ export type IndependentCheckResult = {
   criterion: string;
   model: string;
   classification: string;
+  /** A numerical pass can retain domain limits while headline admission is withheld. */
   status: 'pass' | 'fail' | 'unsupported';
   reason: string;
   outcome?: GrowthConclusion;
+  /** Present only when shared admission permits a sentence; never grants host authority. */
   headline?: string;
 };
 
@@ -175,9 +177,11 @@ function finite(value: unknown, path: string, errors: string[], min = -1e12, max
   return true;
 }
 
-function arrayValue(value: unknown, path: string, errors: string[], max: number): value is unknown[] {
+function arrayValue(value: unknown, path: string, errors: string[], max: number, min = 0): value is unknown[] {
   if (!Array.isArray(value)) { errors.push(`${path}: expected an array.`); return false; }
   if (value.length > max) errors.push(`${path}: array exceeds the ${max}-item limit.`);
+  if (value.length < min) errors.push(`${path}: array requires at least ${min} item(s).`);
+  // Keep checking present items even when cardinality is invalid.
   return true;
 }
 
@@ -201,8 +205,9 @@ function validateJsonShape(value: unknown, errors: string[]) {
       seen.add(item.value);
       if (Array.isArray(item.value)) {
         arrayItems += item.value.length;
-        if (arrayItems > REPLY_LIMITS.totalArrayItems) errors.push(`$: arrays exceed the total ${REPLY_LIMITS.totalArrayItems}-item limit.`);
-        item.value.forEach((child, index) => stack.push({ value: child, depth: item.depth + 1, path: `${item.path}[${index}]` }));
+        if (arrayItems > REPLY_LIMITS.totalArrayItems) { errors.push(`$: arrays exceed the total ${REPLY_LIMITS.totalArrayItems}-item limit.`); return; }
+        // Indexed traversal also rejects sparse-array holes as non-JSON values.
+        for (let index = 0; index < item.value.length; index++) stack.push({ value: item.value[index], depth: item.depth + 1, path: `${item.path}[${index}]` });
       } else if (isRecord(item.value)) {
         for (const [key, child] of Object.entries(item.value)) stack.push({ value: child, depth: item.depth + 1, path: `${item.path}.${key}` });
       } else errors.push(`${item.path}: expected JSON objects with a plain prototype.`);
@@ -215,32 +220,67 @@ function validateExpression(source: unknown, names: readonly string[], path: str
   try { compileExpression(source, names); } catch (error) { errors.push(`${path}: ${error instanceof Error ? error.message : 'invalid expression'}`); }
 }
 
+function privateIpv4(octets: readonly number[]): boolean {
+  const [a, b] = octets;
+  return a === 0 || a === 10 || a === 127 || a === 192 && b === 168 ||
+    a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 ||
+    a === 100 && b >= 64 && b <= 127;
+}
+
+/** Receives only the canonical bracketed IPv6 hostname produced by URL. */
+function privateIpv6(host: string): boolean {
+  const halves = host.slice(1, -1).split('::');
+  const words = (part: string) => part ? part.split(':').map(word => Number.parseInt(word, 16)) : [];
+  const left = words(halves[0]);
+  const right = halves.length === 2 ? words(halves[1]) : [];
+  const address = halves.length === 2 ? [...left, ...Array<number>(8 - left.length - right.length).fill(0), ...right] : left;
+  if (address.length !== 8 || address.some(word => !Number.isInteger(word) || word < 0 || word > 0xffff)) return true;
+  if (address.slice(0, 7).every(word => word === 0) && address[7] <= 1) return true; // unspecified / loopback
+  if ((address[0] & 0xfe00) === 0xfc00 || (address[0] & 0xffc0) === 0xfe80) return true;
+  // URL serializes both dotted and hexadecimal IPv4-mapped forms as hextets.
+  if (address.slice(0, 5).every(word => word === 0) && address[5] === 0xffff) {
+    return privateIpv4([address[6] >>> 8, address[6] & 255, address[7] >>> 8, address[7] & 255]);
+  }
+  return false;
+}
+
 function validateUrl(value: unknown, path: string, errors: string[]) {
   if (!stringValue(value, path, errors, { max: 2048 })) return;
   let url: URL;
   try { url = new URL(value); } catch { errors.push(`${path}: invalid URL.`); return; }
   if (url.protocol !== 'https:') errors.push(`${path}: only HTTPS URLs are allowed.`);
   if (url.username || url.password) errors.push(`${path}: URL credentials are not allowed.`);
-  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0' || host === '::1' || host.startsWith('127.') || host.startsWith('10.') || host.startsWith('192.168.') || host.startsWith('169.254.') || /^100\.(6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host) || /^(?:fc|fd|fe8|fe9|fea|feb)/.test(host) || host.endsWith('.local') || host.endsWith('.internal')) errors.push(`${path}: local and private destinations are not allowed.`);
+  const host = url.hostname.toLowerCase();
+  const name = host.replace(/\.$/, '');
+  const local = host.startsWith('[') ? privateIpv6(host) :
+    /^\d+\.\d+\.\d+\.\d+$/.test(host) ? privateIpv4(host.split('.').map(Number)) :
+    name === 'localhost' || name.endsWith('.localhost') || name.endsWith('.local') || name.endsWith('.internal');
+  if (local) errors.push(`${path}: local and private destinations are not allowed.`);
+  // DNS resolution, redirects and actual network enforcement belong to T13.
 }
 
 function validateSelector(selector: unknown, sourceText: string, path: string, errors: string[]) {
   if (!objectValue(selector, path, errors)) return;
+  const errorsBefore = errors.length;
   keys(selector, ['exact', 'prefix', 'suffix'], path, errors, ['exact']);
   if (!stringValue(selector.exact, `${path}.exact`, errors, { max: 4_000 })) return;
   if (Object.hasOwn(selector, 'prefix')) stringValue(selector.prefix, `${path}.prefix`, errors, { max: 256, empty: true });
   if (Object.hasOwn(selector, 'suffix')) stringValue(selector.suffix, `${path}.suffix`, errors, { max: 256, empty: true });
+  // stringValue records length errors but is primarily a type guard. Never search invalid text.
+  if (errors.length !== errorsBefore) return;
   const exact = selector.exact;
   const prefix = typeof selector.prefix === 'string' ? selector.prefix : '';
   const suffix = typeof selector.suffix === 'string' ? selector.suffix : '';
-  let at = sourceText.indexOf(exact);
+  let from = 0;
   let matched = false;
-  while (at >= 0) {
+  // Each unsuccessful match advances, and the search position is bounded by the source.
+  while (from <= sourceText.length - exact.length) {
+    const at = sourceText.indexOf(exact, from);
+    if (at < 0) break;
     const before = sourceText.slice(Math.max(0, at - prefix.length), at);
     const after = sourceText.slice(at + exact.length, at + exact.length + suffix.length);
     if ((!prefix || before === prefix) && (!suffix || after === suffix)) { matched = true; break; }
-    at = sourceText.indexOf(exact, at + 1);
+    from = at + 1;
   }
   if (!matched) errors.push(`${path}: selector does not match the supplied source text.`);
 }
@@ -272,7 +312,7 @@ function validateBlock(block: unknown, index: number, parameterNames: string[], 
       else if (kind === 'map') keys(block, [...common, 'kind', 'state', 'next', 'initial', 'iterations'], path, errors);
       else { errors.push(`${path}.kind: expected ode or map.`); break; }
       const state: string[] = [];
-      if (arrayValue(block.state, `${path}.state`, errors, 6) && block.state.length > 0) block.state.forEach((name, n) => { if (idValue(name, `${path}.state[${n}]`, errors) && validName(name)) state.push(name); else if (typeof name === 'string' && !validName(name)) errors.push(`${path}.state[${n}]: invalid mathematical name.`); });
+      if (arrayValue(block.state, `${path}.state`, errors, 6, 1)) block.state.forEach((name, n) => { if (idValue(name, `${path}.state[${n}]`, errors) && validName(name)) state.push(name); else if (typeof name === 'string' && !validName(name)) errors.push(`${path}.state[${n}]: invalid mathematical name.`); });
       const allNames = [...parameterNames, ...state, ...(kind === 'ode' ? ['t'] : ['n'])];
       if (kind === 'ode') {
         validateNamedExpressionMap(block.rhs, state, allNames, `${path}.rhs`, errors);
@@ -284,7 +324,7 @@ function validateBlock(block: unknown, index: number, parameterNames: string[], 
         if (Object.hasOwn(block, 'events') && arrayValue(block.events, `${path}.events`, errors, 16)) block.events.forEach((event, n) => {
           const p = `${path}.events[${n}]`; if (!objectValue(event, p, errors)) return;
           keys(event, ['id', 'when', 'direction', 'terminal'], p, errors); idValue(event.id, `${p}.id`, errors); validateExpression(event.when, allNames, `${p}.when`, errors);
-          if (!['any', 'rising', 'falling'].includes(String(event.direction))) errors.push(`${p}.direction: invalid direction.`);
+          if (typeof event.direction !== 'string' || !['any', 'rising', 'falling'].includes(event.direction)) errors.push(`${p}.direction: invalid direction.`);
           if (typeof event.terminal !== 'boolean') errors.push(`${p}.terminal: expected a boolean.`);
         });
       } else {
@@ -297,7 +337,7 @@ function validateBlock(block: unknown, index: number, parameterNames: string[], 
     case 'plot':
       keys(block, [...common, 'from', 'x', 'y', 'xRange', 'yRange', 'labels'], path, errors, [...common, 'from', 'x', 'y', 'labels']);
       idValue(block.from, `${path}.from`, errors); idValue(block.x, `${path}.x`, errors);
-      if (arrayValue(block.y, `${path}.y`, errors, 6) && block.y.length > 0) block.y.forEach((name, n) => idValue(name, `${path}.y[${n}]`, errors));
+      if (arrayValue(block.y, `${path}.y`, errors, 6, 1)) block.y.forEach((name, n) => idValue(name, `${path}.y[${n}]`, errors));
       for (const key of ['xRange', 'yRange'] as const) if (Object.hasOwn(block, key)) validateRange(block[key], `${path}.${key}`, errors);
       validateStringMap(block.labels, `${path}.labels`, errors, 16); break;
     case 'derived':
@@ -313,15 +353,15 @@ function validateBlock(block: unknown, index: number, parameterNames: string[], 
       validateStringMap(block.labels, `${path}.labels`, errors, 16, true); break;
     case 'table':
       keys(block, [...common, 'columns', 'rows'], path, errors);
-      if (arrayValue(block.columns, `${path}.columns`, errors, 32) && block.columns.length > 0) block.columns.forEach((column, n) => { const p = `${path}.columns[${n}]`; if (!objectValue(column, p, errors)) return; keys(column, ['key', 'label', 'unit'], p, errors, ['key', 'label']); idValue(column.key, `${p}.key`, errors); stringValue(column.label, `${p}.label`, errors, { max: 256, safeText: true }); if (Object.hasOwn(column, 'unit')) stringValue(column.unit, `${p}.unit`, errors, { max: 64, empty: true }); });
+      if (arrayValue(block.columns, `${path}.columns`, errors, 32, 1)) block.columns.forEach((column, n) => { const p = `${path}.columns[${n}]`; if (!objectValue(column, p, errors)) return; keys(column, ['key', 'label', 'unit'], p, errors, ['key', 'label']); idValue(column.key, `${p}.key`, errors); stringValue(column.label, `${p}.label`, errors, { max: 256, safeText: true }); if (Object.hasOwn(column, 'unit')) stringValue(column.unit, `${p}.unit`, errors, { max: 64, empty: true }); });
       if (arrayValue(block.rows, `${path}.rows`, errors, 200)) block.rows.forEach((row, n) => { if (!objectValue(row, `${path}.rows[${n}]`, errors)) return; for (const [key, value] of Object.entries(row)) { if (!identifier.test(key) || !['string', 'number', 'boolean'].includes(typeof value) && value !== null) errors.push(`${path}.rows[${n}].${key}: invalid table cell.`); if (typeof value === 'string') stringValue(value, `${path}.rows[${n}].${key}`, errors, { max: 2048, safeText: true }); } });
       break;
     case 'diagram':
       validateDiagram(block, path, sourceNames, errors); break;
     case 'steps':
-      keys(block, [...common, 'steps'], path, errors); if (arrayValue(block.steps, `${path}.steps`, errors, 64) && block.steps.length > 0) block.steps.forEach((step, n) => { const p = `${path}.steps[${n}]`; if (!objectValue(step, p, errors)) return; keys(step, ['id', 'text', 'tex'], p, errors, ['id']); idValue(step.id, `${p}.id`, errors); if (Object.hasOwn(step, 'text')) stringValue(step.text, `${p}.text`, errors, { max: 2048, safeText: true }); if (Object.hasOwn(step, 'tex')) texValue(step.tex, `${p}.tex`, errors, 2048); if (!Object.hasOwn(step, 'text') && !Object.hasOwn(step, 'tex')) errors.push(`${p}: a text or tex value is required.`); }); break;
+      keys(block, [...common, 'steps'], path, errors); if (arrayValue(block.steps, `${path}.steps`, errors, 64, 1)) block.steps.forEach((step, n) => { const p = `${path}.steps[${n}]`; if (!objectValue(step, p, errors)) return; keys(step, ['id', 'text', 'tex'], p, errors, ['id']); idValue(step.id, `${p}.id`, errors); if (Object.hasOwn(step, 'text')) stringValue(step.text, `${p}.text`, errors, { max: 2048, safeText: true }); if (Object.hasOwn(step, 'tex')) texValue(step.tex, `${p}.tex`, errors, 2048); if (!Object.hasOwn(step, 'text') && !Object.hasOwn(step, 'tex')) errors.push(`${p}: a text or tex value is required.`); }); break;
     case 'compare':
-      keys(block, [...common, 'variants'], path, errors); if (arrayValue(block.variants, `${path}.variants`, errors, 8) && block.variants.length >= 2) block.variants.forEach((variant, n) => { const p = `${path}.variants[${n}]`; if (!objectValue(variant, p, errors)) return; keys(variant, ['id', 'label', 'blocks'], p, errors); idValue(variant.id, `${p}.id`, errors); stringValue(variant.label, `${p}.label`, errors, { max: 256, safeText: true }); validateIdArray(variant.blocks, `${p}.blocks`, errors, 32); }); break;
+      keys(block, [...common, 'variants'], path, errors); if (arrayValue(block.variants, `${path}.variants`, errors, 8, 2)) block.variants.forEach((variant, n) => { const p = `${path}.variants[${n}]`; if (!objectValue(variant, p, errors)) return; keys(variant, ['id', 'label', 'blocks'], p, errors); idValue(variant.id, `${p}.id`, errors); stringValue(variant.label, `${p}.label`, errors, { max: 256, safeText: true }); validateIdArray(variant.blocks, `${p}.blocks`, errors, 32); }); break;
     case 'question':
       keys(block, [...common, 'prompt', 'answers', 'allowFreeText'], path, errors); stringValue(block.prompt, `${path}.prompt`, errors, { max: 1024, safeText: true }); if (typeof block.allowFreeText !== 'boolean') errors.push(`${path}.allowFreeText: expected a boolean.`);
       if (arrayValue(block.answers, `${path}.answers`, errors, 12)) block.answers.forEach((answer, n) => { const p = `${path}.answers[${n}]`; if (!objectValue(answer, p, errors)) return; keys(answer, ['id', 'label', 'value'], p, errors); idValue(answer.id, `${p}.id`, errors); stringValue(answer.label, `${p}.label`, errors, { max: 256, safeText: true }); stringValue(answer.value, `${p}.value`, errors, { max: 512, safeText: true }); }); break;
@@ -336,15 +376,15 @@ function validateBlock(block: unknown, index: number, parameterNames: string[], 
     case 'solver':
       keys(block, [...common, 'path', 'inputNames', 'outputBlocks'], path, errors); validateSafePath(block.path, `${path}.path`, errors); validateIdArray(block.inputNames, `${path}.inputNames`, errors, 32); validateIdArray(block.outputBlocks, `${path}.outputBlocks`, errors, 32); break;
     case 'media':
-      keys(block, [...common, 'kind', 'url', 'alt', 'transcript', 'timecodes'], path, errors, [...common, 'kind', 'url']); if (!['audio', 'image', 'video'].includes(String(block.kind))) errors.push(`${path}.kind: invalid media kind.`); validateUrl(block.url, `${path}.url`, errors); if (Object.hasOwn(block, 'alt')) stringValue(block.alt, `${path}.alt`, errors, { max: 1024, safeText: true }); if (Object.hasOwn(block, 'transcript')) stringValue(block.transcript, `${path}.transcript`, errors, { max: 16_384, safeText: true }); if (!Object.hasOwn(block, 'alt') && !Object.hasOwn(block, 'transcript')) errors.push(`${path}: media requires alt text or a transcript.`); if (Object.hasOwn(block, 'timecodes') && arrayValue(block.timecodes, `${path}.timecodes`, errors, 200)) block.timecodes.forEach((timecode, n) => { const p = `${path}.timecodes[${n}]`; if (!objectValue(timecode, p, errors)) return; keys(timecode, ['seconds', 'label'], p, errors); finite(timecode.seconds, `${p}.seconds`, errors, 0, 1e8); stringValue(timecode.label, `${p}.label`, errors, { max: 512, safeText: true }); }); break;
+      keys(block, [...common, 'kind', 'url', 'alt', 'transcript', 'timecodes'], path, errors, [...common, 'kind', 'url']); if (typeof block.kind !== 'string' || !['audio', 'image', 'video'].includes(block.kind)) errors.push(`${path}.kind: invalid media kind.`); validateUrl(block.url, `${path}.url`, errors); if (Object.hasOwn(block, 'alt')) stringValue(block.alt, `${path}.alt`, errors, { max: 1024, safeText: true }); if (Object.hasOwn(block, 'transcript')) stringValue(block.transcript, `${path}.transcript`, errors, { max: 16_384, safeText: true }); if (!Object.hasOwn(block, 'alt') && !Object.hasOwn(block, 'transcript')) errors.push(`${path}: media requires alt text or a transcript.`); if (Object.hasOwn(block, 'timecodes') && arrayValue(block.timecodes, `${path}.timecodes`, errors, 200)) block.timecodes.forEach((timecode, n) => { const p = `${path}.timecodes[${n}]`; if (!objectValue(timecode, p, errors)) return; keys(timecode, ['seconds', 'label'], p, errors); finite(timecode.seconds, `${p}.seconds`, errors, 0, 1e8); stringValue(timecode.label, `${p}.label`, errors, { max: 512, safeText: true }); }); break;
   }
   return block as ReplyBlock;
 }
 
 function validateRange(value: unknown, path: string, errors: string[]) {
-  if (!arrayValue(value, path, errors, 2) || value.length !== 2) { errors.push(`${path}: expected exactly two bounds.`); return; }
-  const a = finite(value[0], `${path}[0]`, errors); const b = finite(value[1], `${path}[1]`, errors);
-  if (a && b && (value[0] as number) >= (value[1] as number)) errors.push(`${path}: lower bound must be below upper bound.`);
+  if (!arrayValue(value, path, errors, 2, 2)) return;
+  const valid = value.map((item, index) => finite(item, `${path}[${index}]`, errors));
+  if (value.length === 2 && valid.every(Boolean) && (value[0] as number) >= (value[1] as number)) errors.push(`${path}: lower bound must be below upper bound.`);
 }
 
 function validateStringMap(value: unknown, path: string, errors: string[], max: number, noPlaceholders = false) {
@@ -374,7 +414,7 @@ function validateSamples(block: Record<string, unknown>, path: string, parameter
   const axes: string[] = [];
   if (objectValue(block.envelope, `${path}.envelope`, errors)) {
     const envelope = block.envelope; keys(envelope, ['axes', 'fixedInputs', 'interpolation', 'errorEvidence', 'forbiddenRegions'], `${path}.envelope`, errors, ['axes', 'interpolation', 'errorEvidence', 'forbiddenRegions']);
-    if (arrayValue(envelope.axes, `${path}.envelope.axes`, errors, 6) && envelope.axes.length > 0) envelope.axes.forEach((axis, n) => { const p = `${path}.envelope.axes[${n}]`; if (!objectValue(axis, p, errors)) return; keys(axis, ['name', 'min', 'max', 'count'], p, errors); if (idValue(axis.name, `${p}.name`, errors)) { if (axes.includes(axis.name)) errors.push(`${p}.name: duplicate sample axis.`); axes.push(axis.name); if (!parameterNames.includes(axis.name)) errors.push(`${p}.name: unknown parameter.`); } const min = finite(axis.min, `${p}.min`, errors); const max = finite(axis.max, `${p}.max`, errors); if (min && max && (axis.min as number) >= (axis.max as number)) errors.push(`${p}: min must be below max.`); if (!finite(axis.count, `${p}.count`, errors, 2, 200) || !Number.isInteger(axis.count)) errors.push(`${p}.count: expected an integer.`); });
+    if (arrayValue(envelope.axes, `${path}.envelope.axes`, errors, 6, 1)) envelope.axes.forEach((axis, n) => { const p = `${path}.envelope.axes[${n}]`; if (!objectValue(axis, p, errors)) return; keys(axis, ['name', 'min', 'max', 'count'], p, errors); if (idValue(axis.name, `${p}.name`, errors)) { if (axes.includes(axis.name)) errors.push(`${p}.name: duplicate sample axis.`); axes.push(axis.name); if (!parameterNames.includes(axis.name)) errors.push(`${p}.name: unknown parameter.`); } const min = finite(axis.min, `${p}.min`, errors); const max = finite(axis.max, `${p}.max`, errors); if (min && max && (axis.min as number) >= (axis.max as number)) errors.push(`${p}: min must be below max.`); if (!finite(axis.count, `${p}.count`, errors, 2, 200) || !Number.isInteger(axis.count)) errors.push(`${p}.count: expected an integer.`); });
     if (Object.hasOwn(envelope, 'fixedInputs') && objectValue(envelope.fixedInputs, `${path}.envelope.fixedInputs`, errors)) {
       const fixedNames = Object.keys(envelope.fixedInputs);
       if (fixedNames.length > REPLY_LIMITS.parameters) errors.push(`${path}.envelope.fixedInputs: object exceeds ${REPLY_LIMITS.parameters} entries.`);
@@ -406,9 +446,15 @@ function requiredCapability(block: ReplyBlock): ReplyCapability | undefined {
 }
 
 export function validateReply(input: unknown, context: ValidationContext): ValidationResult {
+  try { return validateReplyData(input, context); }
+  catch { return { ok: false, errors: ['$: candidate could not be read as plain JSON data.'] }; }
+}
+
+function validateReplyData(input: unknown, context: ValidationContext): ValidationResult {
   const errors: string[] = [];
   if (typeof context?.sourceText !== 'string') return { ok: false, errors: ['context.sourceText: expected the captured source text.'] };
   validateJsonShape(input, errors);
+  if (errors.length) return { ok: false, errors: [...new Set(errors)] };
   if (!objectValue(input, '$', errors)) return { ok: false, errors };
   keys(input, ['schema', 'intent', 'status', 'title', 'summary', 'illustration', 'sourceBindings', 'parameters', 'assumptions', 'limitations', 'requiredCapabilities', 'blocks', 'checks', 'staticFallback'], '$', errors, ['schema', 'intent', 'status', 'title', 'summary', 'sourceBindings', 'parameters', 'assumptions', 'limitations', 'blocks', 'checks', 'staticFallback']);
   if (input.schema !== REPLY_SCHEMA) errors.push('$.schema: unsupported reply schema.');
@@ -429,12 +475,14 @@ export function validateReply(input: unknown, context: ValidationContext): Valid
   if (Object.hasOwn(input, 'requiredCapabilities') && arrayValue(input.requiredCapabilities, '$.requiredCapabilities', errors, capabilities.size)) input.requiredCapabilities.forEach((item, n) => { if (!capabilities.has(item as ReplyCapability)) errors.push(`$.requiredCapabilities[${n}]: unknown capability.`); else declaredCapabilities.add(item as ReplyCapability); });
   const blocks: ReplyBlock[] = [];
   const blockIds = new Set<string>();
-  if (arrayValue(input.blocks, '$.blocks', errors, REPLY_LIMITS.blocks) && input.blocks.length > 0) input.blocks.forEach((block, n) => { const parsed = validateBlock(block, n, parameterNames, sourceNames, errors); if (parsed) { if (blockIds.has(parsed.id)) errors.push(`$.blocks[${n}].id: duplicate block id.`); blockIds.add(parsed.id); blocks.push(parsed); } });
+  if (arrayValue(input.blocks, '$.blocks', errors, REPLY_LIMITS.blocks, 1)) input.blocks.forEach((block, n) => { const parsed = validateBlock(block, n, parameterNames, sourceNames, errors); if (parsed) { if (blockIds.has(parsed.id)) errors.push(`$.blocks[${n}].id: duplicate block id.`); blockIds.add(parsed.id); blocks.push(parsed); } });
   const checks: CandidateCheck[] = [];
   const checkIds = new Set<string>();
   if (arrayValue(input.checks, '$.checks', errors, REPLY_LIMITS.checks)) input.checks.forEach((check, n) => { const p = `$.checks[${n}]`; if (!objectValue(check, p, errors)) return; keys(check, ['id', 'criterion', 'model', 'classification', 'inputs'], p, errors); if (idValue(check.id, `${p}.id`, errors)) { if (checkIds.has(check.id)) errors.push(`${p}.id: duplicate check id.`); checkIds.add(check.id); } if (!stringValue(check.criterion, `${p}.criterion`, errors, { max: 64 }) || !criterionName.test(check.criterion)) errors.push(`${p}.criterion: invalid criterion name.`); idValue(check.model, `${p}.model`, errors); idValue(check.classification, `${p}.classification`, errors); validateStringMap(check.inputs, `${p}.inputs`, errors, 16); checks.push(check as CandidateCheck); });
   stringValue(input.staticFallback, '$.staticFallback', errors, { max: 8192, safeText: true });
 
+  // Cross-reference traversal requires structurally valid nested collections.
+  if (errors.length) return { ok: false, errors: [...new Set(errors)] };
   for (const [index, block] of blocks.entries()) {
     const path = `$.blocks[${index}]`;
     const cap = requiredCapability(block);
@@ -513,6 +561,16 @@ function parameterStateErrors(reply: CandidateReply, values: ReplyParameterState
   return errors;
 }
 
+function growthHeadlineRestriction(reply: CandidateReply, model: OdeModelBlock, request: CandidateCheck): string | undefined {
+  if (reply.status !== 'complete') return 'This reply is still provisional.';
+  if (model.events?.length) return 'This criterion does not admit a headline for event-modified models.';
+  const unit = (role: string) => reply.parameters.find(parameter => parameter.name === request.inputs[role])?.unit;
+  if (unit('gamma') !== '1/s' || !['1/s²', '1/s^2'].includes(unit('f') ?? '') || unit('y0') !== '1/s') {
+    return 'This criterion requires damping and start in 1/s, and forcing in 1/s². Other unit interpretations are not verified.';
+  }
+  return undefined;
+}
+
 function computeGrowthCheck(reply: CandidateReply, request: CandidateCheck, values: ReplyParameterState): IndependentCheckResult {
   const model = reply.blocks.find((block) => block.id === request.model);
   const classification = reply.blocks.find((block) => block.id === request.classification);
@@ -540,10 +598,14 @@ function computeGrowthCheck(reply: CandidateReply, request: CandidateCheck, valu
   const inputs: GrowthInputs = { gamma: values[gammaName], f: values[forcingName], y0: values[startName] };
   try {
     const outcome = classifyGrowth(inputs);
+    if (!Number.isFinite(outcome.kind === 'diverges' ? outcome.time : outcome.value)) return independentFailure(request, 'The exact result exceeds the supported numeric range.');
+    const restriction = growthHeadlineRestriction(reply, model, request);
+    // T18 also uses a numerical pass/outcome to bound plots before a pole. Do not
+    // erase that domain information merely because the headline is inadmissible.
     return {
       requestId: request.id, criterion: request.criterion, model: request.model, classification: request.classification,
-      status: 'pass', reason: 'The renderer-owned growth-v1 criterion matched the declared model and current bounded parameters.',
-      outcome, headline: growthSentence(inputs, model.horizon),
+      status: 'pass', reason: restriction ?? 'The renderer-owned growth-v1 criterion matched the declared model and current bounded parameters.',
+      outcome, ...(restriction ? {} : { headline: growthSentence(inputs, model.horizon) }),
     };
   } catch (error) {
     return independentFailure(request, error instanceof Error ? error.message : 'growth-v1 evaluation failed.');
