@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
-import { attachQuote, type ReaderMutation, type Thread, type Note, type QuoteAnchor, type SourceCapture, type SourceVersion, type SourceSection, type AttachmentRecord, type NoteVersionRef, type NoteVersion, type ReplyVersion, type ReplyViewState } from '../contracts/reader.ts';
+import { attachQuote, validateReaderMutation, validateSourceCapture, type JsonValue, type ReaderMutation, type Thread, type Note, type QuoteAnchor, type SourceCapture, type SourceVersion, type SourceSection, type AttachmentRecord, type NoteVersionRef, type NoteVersion, type ReplyVersion, type ReplyViewState } from '../contracts/reader.ts';
 import { canonicalReplyData, validateReply, type CandidateReply, type ReplyCapability } from '../contracts/reply.ts';
 import { digestReply, runHostChecks } from '../contracts/host-checks.ts';
 
@@ -65,13 +65,35 @@ export class ReaderStore {
         this.db.pragma('foreign_keys = ON');
       }
     }
+    // T07-scoped migration number; existing T06/T13 markers remain untouched.
+    if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=7001').get()) {
+      this.db.pragma('foreign_keys = OFF');
+      try {
+        this.db.transaction(() => {
+          this.db.exec(`
+            CREATE TABLE source_versions_metadata(id TEXT PRIMARY KEY, sourceId TEXT NOT NULL REFERENCES sources(id), hash TEXT NOT NULL, text TEXT NOT NULL, capturedAt TEXT NOT NULL, extractionVersion TEXT NOT NULL, title TEXT, pageType TEXT, metadataStatus TEXT NOT NULL DEFAULT 'legacy', sections TEXT NOT NULL DEFAULT '');
+            INSERT INTO source_versions_metadata SELECT id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections FROM source_versions;
+            DROP TABLE source_versions;
+            ALTER TABLE source_versions_metadata RENAME TO source_versions;
+            CREATE UNIQUE INDEX source_versions_material_identity ON source_versions(
+              sourceId,hash,extractionVersion,sections,metadataStatus,
+              title IS NULL,COALESCE(title,''),pageType IS NULL,COALESCE(pageType,''));
+            CREATE TRIGGER source_version_immutable BEFORE UPDATE ON source_versions BEGIN SELECT RAISE(ABORT, 'Source versions are immutable'); END;
+            INSERT INTO migrations(version) VALUES(7001);
+          `);
+          if (this.db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Source migration would leave invalid references.');
+        })();
+      } finally {
+        this.db.pragma('foreign_keys = ON');
+      }
+    }
   }
   close() { this.db.close(); }
   private event(kind: string, value: unknown) {
     this.db.prepare('INSERT INTO events(kind,payload,createdAt) VALUES(?,?,?)').run(kind, JSON.stringify(value), new Date().toISOString());
   }
   apply(mutation: ReaderMutation): { threadId: string; revision: number } {
-    validateMutation(mutation);
+    validateReaderMutation(mutation);
     const fingerprint = digest(canonicalReplyData(JSON.parse(JSON.stringify(mutation))));
     return this.db.transaction(() => {
       const previous = this.db.prepare('SELECT digest,result FROM mutation_receipts WHERE id=?').get(mutation.id) as { digest: string; result: string } | undefined;
@@ -84,7 +106,6 @@ export class ReaderStore {
       if (mutation.kind === 'keep') {
         const { capture, anchor } = mutation;
         if (this.get(mutation.threadId)) throw new ConflictError('This thread already exists. Review the saved version before applying your change.');
-        if (capture.text.slice(anchor.start, anchor.end) !== anchor.exact) throw new Error('The selected passage does not match the captured page.');
         const versionId = this.captureVersion(capture);
         const anchorId = randomUUID();
         this.db.prepare('INSERT INTO anchors VALUES(?,?,?)').run(anchorId, versionId, JSON.stringify(anchor));
@@ -118,12 +139,18 @@ export class ReaderStore {
       ? capture.sections.map(({ title, start, end }) => ({ title, start, end }))
       : [];
     const sections = normalizedSections.length ? JSON.stringify(normalizedSections) : '';
-    const versionId = sections
-      ? digest(canonicalReplyData(['source-version-sections-v1', sourceId, hash, extractionVersion, normalizedSections]))
-      : digest(sourceId + hash + extractionVersion);
+    const title = provided ? capture.title : null, pageType = provided ? capture.pageType : null;
+    const metadataStatus = provided ? 'provided' : 'unavailable';
+    // Reuse old IDs only when their actual immutable metadata also matches. Capture time
+    // alone does not create a new version, and legacy/unavailable facts are never upgraded.
+    const existing = this.db.prepare(`SELECT id FROM source_versions WHERE sourceId=? AND hash=? AND extractionVersion=? AND sections=? AND metadataStatus=? AND title IS ? AND pageType IS ?`)
+      .get(sourceId, hash, extractionVersion, sections, metadataStatus, title, pageType) as { id: string } | undefined;
+    const versionId = existing?.id ?? digest(canonicalReplyData([
+      'source-version-metadata-v1', sourceId, hash, extractionVersion, normalizedSections, metadataStatus, title, pageType,
+    ]));
     if (provided) this.db.prepare('INSERT OR IGNORE INTO sources VALUES(?,?,?,?)').run(sourceId, capture.url, capture.title, capture.pageType);
     this.db.prepare('INSERT OR IGNORE INTO source_versions(id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections) VALUES(?,?,?,?,?,?,?,?,?,?)')
-      .run(versionId, sourceId, hash, capture.text, provided ? capture.capturedAt : '', extractionVersion, provided ? capture.title : null, provided ? capture.pageType : null, provided ? 'provided' : 'unavailable', sections);
+      .run(versionId, sourceId, hash, capture.text, provided ? capture.capturedAt : '', extractionVersion, title, pageType, metadataStatus, sections);
     this.db.prepare('INSERT INTO search(entityId,kind,content) SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM search WHERE entityId=? AND kind=?)').run(versionId, 'source', capture.text, versionId, 'source');
     return versionId;
   }
@@ -160,7 +187,7 @@ export class ReaderStore {
     if (!thread) throw new Error('This thread is unavailable.');
     if (typeof text !== 'string' || text.length > 1000000 || typeof tabCapture !== 'string' || !tabCapture.length || tabCapture.length > 200) throw new Error('Invalid attachment capture.');
     if (capture) {
-      validateCapture(capture);
+      validateSourceCapture(capture);
       if (capture.url !== thread.sourceUrl || capture.text !== text) throw new Error('The target capture does not match this source.');
     }
     return this.db.transaction(() => {
@@ -268,47 +295,46 @@ export class ReaderStore {
   }
   events(after = 0) { return this.db.prepare('SELECT seq,kind,payload,createdAt FROM events WHERE seq>? ORDER BY seq LIMIT 1000').all(after); }
   exportThread(id: string) {
-    const thread = this.get(id);
-    if (!thread) throw new Error('This thread is unavailable.');
-    const source = this.sourceVersion(thread.sourceVersionId);
-    const noteVersions = this.db.prepare('SELECT v.* FROM note_versions v JOIN notes n ON n.id=v.noteId WHERE n.threadId=? ORDER BY v.noteId,v.revision').all(id);
-    const attachments = this.attachments(id);
-    const targetVersions = [...new Set(attachments.map(a => a.targetVersionId))].map(version => this.sourceVersion(version)).filter(version => version !== undefined);
-    const replies = this.replies(id, true);
-    return { schema: 'marginalia.thread.v1', thread, source, noteVersions, attachments, targetVersions, replies, replyViews: replies.map(reply => this.replyView(reply.id)).filter(view => view !== undefined) };
+    return this.db.transaction(() => {
+      const thread = this.get(id);
+      if (!thread) throw new Error('This thread is unavailable.');
+      const source = this.sourceVersion(thread.sourceVersionId);
+      const noteVersions = this.db.prepare('SELECT v.* FROM note_versions v JOIN notes n ON n.id=v.noteId WHERE n.threadId=? ORDER BY v.noteId,v.revision').all(id);
+      const attachments = this.attachments(id);
+      const targetVersions = [...new Set(attachments.map(a => a.targetVersionId))].map(version => this.sourceVersion(version)).filter(version => version !== undefined);
+      const replies = this.replies(id, true);
+      return { schema: 'marginalia.thread.v1', thread, source, noteVersions, attachments, targetVersions, replies,
+        replyViews: replies.map(reply => this.replyView(reply.id)).filter(view => view !== undefined), execution: this.exportExecution(id) };
+    })();
+  }
+  private exportExecution(threadId: string) {
+    // Positive column lists exclude account configuration, raw provider output and workspace
+    // state. These are historical host records, not permission to dispatch or host-check seals.
+    const tables = ['jobs', 'job_attempts', 'consent_attempt_authorizations', 'egress_events'];
+    const present = new Set((this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(row => row.name));
+    const missingTables = tables.filter(table => !present.has(table));
+    const jobs = present.has('jobs') ? this.db.prepare(`SELECT id,threadId,idempotencyKey,packetDigest,requestDigest,preparedPayloadDigest,provider,model,mode,policyKey,grantId,state,cancelRequested,latestAttemptId,replyVersionId,reason,createdAt,updatedAt,context,capabilities FROM jobs WHERE threadId=? ORDER BY createdAt,id`).all(threadId) as HistoryRow[] : [];
+    const associated = (table: string, columns: string, order: string): HistoryRow[] => present.has('jobs') && present.has(table)
+      ? this.db.prepare(`SELECT ${columns} FROM ${table} r JOIN jobs j ON j.id=r.jobId WHERE j.threadId=? ORDER BY ${order}`).all(threadId) as HistoryRow[] : [];
+    const attempts = associated('job_attempts', 'r.id,r.jobId,r.number,r.state,r.revision,r.dispatchClaimed,r.handoffMarked,r.workspacePrepared,r.predecessorAttemptId,r.authorizationFingerprint,r.startedAt,r.deadlineAt,r.endedAt,r.reason,r.providerHandle', 'r.jobId,r.number,r.id').map((row): ExportedAttempt => {
+      const { providerHandle, ...attempt } = row;
+      return { ...attempt, dispatchClaimed: !!row.dispatchClaimed, handoffMarked: !!row.handoffMarked, workspacePrepared: !!row.workspacePrepared,
+        providerObservation: providerHandle === null ? null : historyFields(JSON.parse(String(providerHandle)), ['threadId', 'turnId', 'state', 'revision', 'tombstone']) };
+    });
+    const authorizations = associated('consent_attempt_authorizations', 'r.id,r.jobId,r.attemptId,r.grantId,r.grantRevision,r.sitePermissionEpoch,r.site,r.scope,r.recipient,r.provider,r.policyKey,r.bindingDigest,r.permissionFingerprint,r.egressEventId,r.createdAt,r.dispatchedAt,r.acceptedAt,r.outcome', 'r.createdAt,r.id');
+    const egress = associated('egress_events', 'r.id,r.jobId,r.attemptId,r.grantId,r.grantRevision,r.recipient,r.scope,r.provider,r.policyKey,r.contextHashes,r.permissionFingerprint,r.approvedAt,r.dispatchedAt,r.outcome,r.fetched,r.complete,r.updatedAt', 'r.approvedAt,r.id').map((row): ExportedEgress => {
+      const { fetched, contextHashes, complete, ...event } = row;
+      const hashes: unknown = JSON.parse(String(contextHashes));
+      if (!Array.isArray(hashes) || hashes.some(hash => typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash))) throw new Error('Saved context hashes are invalid.');
+      return { ...event, contextHashes: hashes as string[], fetched: exportFetches(String(fetched)), retrievalComplete: !!complete };
+    });
+    return { authority: 'host-recorded' as const, missingTables, jobs: jobs.map((row): ExportedJob => {
+      const { context, capabilities, ...job } = row;
+      return { ...job, cancelRequested: !!job.cancelRequested, request: exportRequest(String(context)), capabilities: historyStrings(JSON.parse(String(capabilities))) };
+    }), attempts, authorizations, egress };
   }
 }
 
-function validateMutation(m: ReaderMutation) {
-  if (!m || typeof m !== 'object' || typeof m.id !== 'string' || typeof m.threadId !== 'string' || !/^[\w-]{1,100}$/.test(m.id) || !/^[\w-]{1,100}$/.test(m.threadId)) throw new Error('Invalid change identifier.');
-  if (m.kind === 'keep') {
-    const c = m.capture, a = m.anchor;
-    validateCapture(c);
-    if (!a || (a.kind !== undefined && !['quote', 'section', 'whole-page'].includes(a.kind)) || typeof a.exact !== 'string' || a.exact.length > 16000 || typeof a.prefix !== 'string' || typeof a.suffix !== 'string' || a.prefix.length > 256 || a.suffix.length > 256 || !Number.isInteger(a.start) || !Number.isInteger(a.end) || a.start < 0 || a.end < a.start || a.end > c.text.length) throw new Error('Invalid passage attachment.');
-    if (a.kind === 'whole-page' ? (a.exact !== '' || a.prefix !== '' || a.suffix !== '' || a.start !== 0 || a.end !== 0) : (!a.exact.length || a.end - a.start !== a.exact.length)) throw new Error('Invalid passage attachment.');
-    if (m.note !== undefined && (typeof m.note !== 'string' || m.note.length > 20000)) throw new Error('Note is too large.');
-  } else {
-    validateRevision(m.expectedRevision);
-    if (m.kind === 'note') {
-      if (typeof m.text !== 'string' || m.text.length > 20000 || typeof m.noteId !== 'string' || !/^[\w-]{1,100}$/.test(m.noteId)) throw new Error('Invalid note.');
-    } else if (m.kind === 'thread-state') {
-      if (!['open', 'parked', 'done', 'archived'].includes(m.state)) throw new Error('Invalid thread state.');
-    } else if (m.kind === 'remove') { if (typeof m.removed !== 'boolean') throw new Error('Invalid removal.'); }
-    else throw new Error('Unknown reader change.');
-  }
-}
-
-function validateCapture(c: SourceCapture) {
-  if (!c || typeof c.url !== 'string' || c.url.length > 8000 || !/^https?:$/.test(new URL(c.url).protocol) || new URL(c.url).username || new URL(c.url).password || typeof c.text !== 'string' || c.text.length > 1000000 || typeof c.title !== 'string' || c.title.length > 1000 || typeof c.pageType !== 'string' || c.pageType.length > 100 || typeof c.extractionVersion !== 'string' || !c.extractionVersion.length || c.extractionVersion.length > 100 || typeof c.capturedAt !== 'string' || !Number.isFinite(Date.parse(c.capturedAt))) throw new Error('Invalid source capture.');
-  if (c.sections !== undefined) {
-    if (!Array.isArray(c.sections) || c.sections.length > 2000) throw new Error('Invalid source sections.');
-    let previousEnd = 0;
-    for (const section of c.sections) {
-      if (!section || typeof section !== 'object' || typeof section.title !== 'string' || !section.title.length || section.title.length > 1000 || !Number.isSafeInteger(section.start) || !Number.isSafeInteger(section.end) || section.start < previousEnd || section.end <= section.start || section.end > c.text.length) throw new Error('Invalid source sections.');
-      previousEnd = section.end;
-    }
-  }
-}
 function validateId(id: string) { if (typeof id !== 'string' || !/^[\w-]{1,100}$/.test(id)) throw new Error('Invalid change identifier.'); }
 function validateRevision(revision: number) { if (!Number.isSafeInteger(revision) || revision < 0) throw new Error('Invalid revision.'); }
 function validateView(view: ReplyViewState['view']) {
@@ -325,4 +351,66 @@ function validateView(view: ReplyViewState['view']) {
   if (!view || typeof view !== 'object' || Array.isArray(view)) throw new Error('Invalid view state.');
   visit(view, 0);
   if (Buffer.byteLength(JSON.stringify(view)) > 64000) throw new Error('View state is too large.');
+}
+
+type HistoryRow = Record<string, JsonValue>;
+type ExportedJob = HistoryRow & { cancelRequested: boolean; request: HistoryRow; capabilities: string[] };
+type ExportedAttempt = HistoryRow & { providerObservation: HistoryRow | null };
+type ExportedEgress = HistoryRow & { contextHashes: string[]; fetched: HistoryRow[]; retrievalComplete: boolean };
+function historyFields(value: unknown, fields: readonly string[]): HistoryRow {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Saved execution history is invalid.');
+  const record = value as Record<string, unknown>, result: HistoryRow = {};
+  for (const key of fields) {
+    if (!Object.hasOwn(record, key)) continue;
+    const item = record[key];
+    if (item !== null && typeof item !== 'string' && typeof item !== 'boolean' && !(typeof item === 'number' && Number.isFinite(item))) throw new Error('Saved execution history is invalid.');
+    result[key] = item as JsonValue;
+  }
+  return result;
+}
+function exportFetches(serialized: string): HistoryRow[] {
+  const records: unknown = JSON.parse(serialized);
+  if (!Array.isArray(records)) throw new Error('Saved fetched-resource history is invalid.');
+  return records.map(value => {
+    const record = historyFields(value, ['requestedUrl', 'finalUrl', 'status', 'contentType', 'sha256', 'bytes', 'fetchedAt', 'outcome']);
+    if (!Array.isArray(value.redirects)) throw new Error('Saved redirects are invalid.');
+    const redirects = value.redirects.map((hop: unknown) => historyFields(hop, ['url', 'status', 'location']));
+    const redacted: string[] = [];
+    const cleanUrl = (item: HistoryRow, key: string, label: string) => {
+      if (typeof item[key] !== 'string') return;
+      try {
+        const url = new URL(item[key]);
+        if (url.username || url.password) {
+          url.username = ''; url.password = ''; item[key] = url.href; redacted.push(label);
+        }
+      } catch { item[key] = null; redacted.push(label); }
+    };
+    for (const key of ['requestedUrl', 'finalUrl']) cleanUrl(record, key, key);
+    redirects.forEach((hop: HistoryRow, index: number) => {
+      cleanUrl(hop, 'url', `redirects.${index}.url`); cleanUrl(hop, 'location', `redirects.${index}.location`);
+    });
+    return { ...record, redirects, ...(redacted.length ? { redactedUrls: redacted } : {}) };
+  });
+}
+
+function historyStrings(value: unknown): string[] {
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) throw new Error('Saved execution history is invalid.');
+  return value;
+}
+function exportRequest(serialized: string): HistoryRow {
+  const value = JSON.parse(serialized);
+  const request = historyFields(value, ['threadId', 'sourceVersionId', 'sourceUrl', 'sourceTitle', 'sourcePageType', 'sourceCapturedAt', 'sourceHash', 'question', 'intent', 'parentReplyId', 'parentJobId', 'parentAttemptId', 'retryOfJobId', 'preparedPayloadDigest', 'modelSettingsRevision', 'modelCompatibilityKey']);
+  if (value.passage) request.passage = historyFields(value.passage, ['kind', 'exact', 'prefix', 'suffix', 'start', 'end']);
+  if (value.answeredNote) request.answeredNote = historyFields(value.answeredNote, ['noteId', 'revision', 'text', 'createdAt']);
+  if (value.outgoing) {
+    const packet = value.outgoing, outgoing = historyFields(packet, ['schema', 'intent', 'question', 'parentReplyId']);
+    outgoing.source = historyFields(packet.source, ['url', 'title', 'pageType', 'capturedAt', 'sourceHash', 'sourceVersionId']);
+    outgoing.selection = historyFields(packet.selection, ['exact', 'prefix', 'suffix', 'start', 'end', 'originalEnd', 'omittedCharacters']);
+    outgoing.adjacentContext = historyFields(packet.adjacentContext, ['before', 'after', 'basis']);
+    if (packet.answeredNote) outgoing.answeredNote = historyFields(packet.answeredNote, ['noteId', 'revision', 'text', 'originalCharacters', 'omittedCharacters']);
+    outgoing.availableCapabilities = historyStrings(packet.availableCapabilities);
+    outgoing.omissions = historyStrings(packet.omissions);
+    request.outgoing = outgoing;
+  }
+  return request;
 }

@@ -44,3 +44,51 @@ export function attachQuote(anchor: QuoteAnchor, text: string): Attachment {
   if (matches.length !== 1) return { state: 'unsure', candidates };
   return { state: matches[0].start === anchor.start ? 'exact' : 'moved', candidates: matches };
 }
+
+/** A content rejection, not a transport, pairing or storage failure. */
+export class InvalidReaderMutationError extends Error {
+  override name = 'InvalidReaderMutation';
+  readonly code = 'INVALID_READER_MUTATION';
+}
+
+/** Shared browser/daemon bounds. No persistence or provider authority lives here. */
+export function validateReaderMutation(value: unknown): asserts value is ReaderMutation {
+  const m = value as ReaderMutation;
+  if (!m || typeof m !== 'object' || Array.isArray(m) || !readerId(m.id) || !readerId(m.threadId)) invalidReaderMutation('Invalid change identifier.');
+  if (m.kind === 'keep') {
+    const { capture: c, anchor: a } = m;
+    validateSourceCapture(c);
+    if (!a || (a.kind !== undefined && !['quote', 'section', 'whole-page'].includes(a.kind)) || typeof a.exact !== 'string' || a.exact.length > 16000 || typeof a.prefix !== 'string' || typeof a.suffix !== 'string' || a.prefix.length > 256 || a.suffix.length > 256 || !Number.isSafeInteger(a.start) || !Number.isSafeInteger(a.end) || a.start < 0 || a.end < a.start || a.end > c.text.length) invalidReaderMutation('Invalid passage attachment.');
+    if (a.kind === 'whole-page' ? (a.exact !== '' || a.prefix !== '' || a.suffix !== '' || a.start !== 0 || a.end !== 0) : (!a.exact.length || a.end - a.start !== a.exact.length)) invalidReaderMutation('Invalid passage attachment.');
+    if (c.text.slice(a.start, a.end) !== a.exact) invalidReaderMutation('The selected passage does not match the captured page.');
+    if (m.note !== undefined && (typeof m.note !== 'string' || m.note.length > 20000)) invalidReaderMutation('Note is too large.');
+  } else {
+    if (!Number.isSafeInteger(m.expectedRevision) || m.expectedRevision < 0) invalidReaderMutation('Invalid revision.');
+    if (m.kind === 'note') {
+      if (typeof m.text !== 'string' || m.text.length > 20000 || !readerId(m.noteId)) invalidReaderMutation('Invalid note.');
+    } else if (m.kind === 'thread-state') {
+      if (!['open', 'parked', 'done', 'archived'].includes(m.state)) invalidReaderMutation('Invalid thread state.');
+    } else if (m.kind === 'remove') {
+      if (typeof m.removed !== 'boolean') invalidReaderMutation('Invalid removal.');
+    } else invalidReaderMutation('Unknown reader change.');
+  }
+}
+
+export function validateSourceCapture(value: unknown): asserts value is SourceCapture {
+  const c = value as SourceCapture;
+  if (!c || typeof c !== 'object' || Array.isArray(c) || typeof c.url !== 'string' || c.url.length > 8000 || typeof c.text !== 'string' || c.text.length > 1000000 || typeof c.title !== 'string' || c.title.length > 1000 || typeof c.pageType !== 'string' || c.pageType.length > 100 || typeof c.extractionVersion !== 'string' || !c.extractionVersion.length || c.extractionVersion.length > 100 || typeof c.capturedAt !== 'string' || !Number.isFinite(Date.parse(c.capturedAt))) invalidReaderMutation('Invalid source capture.');
+  let url: URL;
+  try { url = new URL(c.url); } catch { invalidReaderMutation('Invalid source capture.'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) invalidReaderMutation('Invalid source capture.');
+  if (c.sections !== undefined) {
+    if (!Array.isArray(c.sections) || c.sections.length > 2000) invalidReaderMutation('Invalid source sections.');
+    let previousEnd = 0;
+    for (const section of c.sections) {
+      if (!section || typeof section !== 'object' || typeof section.title !== 'string' || !section.title.length || section.title.length > 1000 || !Number.isSafeInteger(section.start) || !Number.isSafeInteger(section.end) || section.start < previousEnd || section.end <= section.start || section.end > c.text.length) invalidReaderMutation('Invalid source sections.');
+      previousEnd = section.end;
+    }
+  }
+}
+
+function readerId(id: unknown): id is string { return typeof id === 'string' && /^[\w-]{1,100}$/.test(id); }
+function invalidReaderMutation(message: string): never { throw new InvalidReaderMutationError(message); }

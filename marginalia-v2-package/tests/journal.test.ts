@@ -4,7 +4,6 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ReaderJournal, type JournalState, type Persistence } from '../ui/journal.ts';
-import { ReaderStore } from '../daemon/store.ts';
 import type { ReaderMutation } from '../contracts/reader.ts';
 
 const capturedAt = '2026-09-17T08:00:00.000Z';
@@ -50,6 +49,7 @@ function jsonPersistence(filename: string): Persistence {
 }
 
 test('disk journal and SQLite store survive reconstruction and daemon restart', async () => {
+  const { ReaderStore } = await import('../daemon/store.ts');
   const directory = await mkdtemp(join(tmpdir(), 'marginalia-journal-'));
   const journalFile = join(directory, 'journal.json');
   const databaseFile = join(directory, 'reader.sqlite');
@@ -179,6 +179,7 @@ test('a failed acknowledgement save is retried explicitly without resending the 
 });
 
 test('lost acknowledgements replay safely after journal reconstruction', async () => {
+  const { ReaderStore } = await import('../daemon/store.ts');
   const directory = await mkdtemp(join(tmpdir(), 'marginalia-lost-ack-'));
   const journalFile = join(directory, 'journal.json');
   const databaseFile = join(directory, 'reader.sqlite');
@@ -267,7 +268,7 @@ test('whole-page notes are not highlighted and deleted threads refuse local note
   await journal.change(wholePage);
   assert.equal(journal.state.threads[0].highlighted, false);
   await journal.change({ id: 'remove-whole', kind: 'remove', threadId: 'whole-thread', expectedRevision: 1, removed: true });
-  await assert.rejects(journal.change({ id: 'edit-removed', kind: 'note', threadId: 'whole-thread', noteId: 'whole-page-note', expectedRevision: 1, text: 'Should stay blocked' }), /Restore the thread/);
+  await assert.rejects(journal.change({ id: 'edit-removed', kind: 'note', threadId: 'whole-thread', noteId: 'whole-page-note', expectedRevision: 1, text: 'Should stay blocked' }), /removed/);
 });
 
 test('legacy duplicate conflict rows and their pending copy normalize to one resolvable draft', async () => {
@@ -296,6 +297,7 @@ test('legacy duplicate conflict rows and their pending copy normalize to one res
 });
 
 test('conflicts preserve drafts, block only their thread, reconstruct once, and resolve explicitly', async () => {
+  const { ReaderStore } = await import('../daemon/store.ts');
   const memory = memoryPersistence();
   let journal = new ReaderJournal(memory.persistence);
   const store = new ReaderStore(':memory:');
@@ -352,4 +354,176 @@ test('conflicts preserve drafts, block only their thread, reconstruct once, and 
     assert.deepEqual(journal.state.resolutions?.map(item => item.change.id), ['local-a', 'dependent-a']);
     assert.equal(journal.state.resolutions?.[0].change.kind, 'note', 'resolution history retains the original draft');
   } finally { store.close(); }
+});
+
+function sharedJournal() {
+  let saved: JournalState | undefined;
+  let failNext = false;
+  const persistence: Persistence = {
+    load: async () => structuredClone(saved),
+    save: async state => {
+      if (failNext) { failNext = false; throw new Error('Storage full'); }
+      saved = structuredClone(state);
+    },
+  };
+  return { persistence, fail: () => { failNext = true; }, read: () => structuredClone(saved), write: (state: JournalState) => { saved = structuredClone(state); } };
+}
+
+test('T07 F1 reconciliation preserves matching durable pending work through conflict acceptance and reload', async () => {
+  const shared = sharedJournal(), a = new ReaderJournal(shared.persistence);
+  await a.change(keep('durable', 'durable-thread'));
+  shared.fail();
+  const unsaved = keep('unsaved', 'unsaved-thread');
+  await assert.rejects(a.change(unsaved), /Storage full/);
+  const b = new ReaderJournal(shared.persistence);
+  await b.change(keep('other-tab', 'other-thread'));
+  await a.reconcilePersistence();
+  assert.deepEqual(a.state.pending.map(change => change.id), ['durable', 'other-tab']);
+  assert.deepEqual(a.state.conflicts.map(item => item.change), [unsaved]);
+  await a.acceptCurrentConflict(unsaved.id);
+  const reopened = new ReaderJournal(shared.persistence);
+  await reopened.load();
+  const sent: string[] = [];
+  await reopened.sync(async change => { sent.push(change.id); }, async () => reopened.state.threads);
+  assert.deepEqual(sent, ['durable', 'other-tab']);
+  assert.deepEqual(reopened.state.resolutions?.[0].change, unsaved);
+  assert.equal(reopened.state.pending.length, 0);
+});
+
+test('T07 F1 failed-ack overlap stays a conflict without blocking unrelated durable intent', async () => {
+  const shared = sharedJournal(), a = new ReaderJournal(shared.persistence);
+  await a.change(keep('accepted', 'accepted-thread'));
+  await a.change(keep('pending', 'pending-thread'));
+  shared.fail();
+  await assert.rejects(a.sync(async () => {}, async () => a.state.threads), /Storage full/);
+  const b = new ReaderJournal(shared.persistence);
+  await b.change(keep('other', 'other-thread'));
+  await a.reconcilePersistence();
+  assert.deepEqual(a.state.conflicts.map(item => item.change.id), ['accepted']);
+  assert.deepEqual(a.state.pending.map(change => change.id), ['pending', 'other']);
+  const sent: string[] = [];
+  await a.sync(async change => { sent.push(change.id); }, async () => a.state.threads);
+  assert.deepEqual(sent, ['pending', 'other']);
+  assert.equal(shared.read()?.conflicts[0].change.id, 'accepted');
+});
+
+test('T07 F1 reconciliation does not resurrect acknowledged or resolved identities', async () => {
+  for (const disposition of ['acknowledged', 'resolved']) {
+    const shared = sharedJournal(), a = new ReaderJournal(shared.persistence);
+    await a.change(keep('known', 'known-thread'));
+    shared.fail();
+    await assert.rejects(a.change(keep('new', 'new-thread')), /Storage full/);
+    const b = new ReaderJournal(shared.persistence);
+    await b.sync(async () => {
+      if (disposition === 'resolved') throw Object.assign(new Error('Changed elsewhere'), { name: 'Conflict' });
+    }, async () => b.state.threads);
+    if (disposition === 'resolved') await b.resolveConflict('known', []);
+    await a.reconcilePersistence();
+    assert.deepEqual(a.state.conflicts.map(item => item.change.id), ['new']);
+    assert.equal(a.state.pending.length, 0);
+  }
+});
+
+test('T07 F1 different content under the same durable ID fails without overwriting either side', async () => {
+  const shared = sharedJournal(), a = new ReaderJournal(shared.persistence);
+  await a.change(keep('known', 'known-thread'));
+  shared.fail();
+  await assert.rejects(a.change(keep('new', 'new-thread')), /Storage full/);
+  const changed = shared.read()!;
+  changed.pending[0] = keep('known', 'known-thread', 'Different content');
+  shared.write(changed);
+  const local = structuredClone(a.state);
+  await assert.rejects(a.reconcilePersistence(), /identifier was already used/);
+  assert.deepEqual(a.state, local);
+  assert.deepEqual(shared.read(), changed);
+  assert.equal(a.unsaved, true);
+});
+
+test('T07 F7 new invalid edits and invalid conflict replacements never enter optimistic state', async () => {
+  const shared = sharedJournal(), journal = new ReaderJournal(shared.persistence);
+  await journal.change(keep('base', 'thread'));
+  const before = structuredClone(journal.state);
+  const invalid: ReaderMutation = { id: 'bad', threadId: 'thread', kind: 'note', noteId: 'base-note', expectedRevision: 1, text: 'x'.repeat(20001) };
+  await assert.rejects(journal.change(invalid), { name: 'InvalidReaderMutation' });
+  assert.deepEqual(journal.state, before);
+  const stale: ReaderMutation = { ...invalid, id: 'stale', text: 'Retain this', expectedRevision: 0 };
+  await assert.rejects(journal.change(stale), /draft was kept/);
+  const conflicted = structuredClone(journal.state);
+  await assert.rejects(journal.resolveConflict('stale', before.threads, invalid), { name: 'InvalidReaderMutation' });
+  assert.deepEqual(journal.state, conflicted);
+  assert.equal(journal.state.conflicts[0].disposition, undefined, 'a stale revision is not invalid content');
+});
+
+async function legacyInvalidJournal() {
+  const shared = sharedJournal(), seed = new ReaderJournal(shared.persistence);
+  await seed.change(keep('bad-base', 'bad-thread'));
+  await seed.change(keep('good-base', 'good-thread'));
+  await seed.sync(async () => {}, async () => seed.state.threads);
+  const remote = structuredClone(seed.state.threads);
+  const invalid: ReaderMutation = { id: 'bad-edit', threadId: 'bad-thread', kind: 'note', noteId: 'bad-base-note', expectedRevision: 1, text: 'x'.repeat(20001) };
+  const saved = shared.read()!;
+  saved.threads[0].notes[0].text = invalid.text;
+  saved.pending = [invalid,
+    { id: 'dependent', threadId: 'bad-thread', kind: 'thread-state', expectedRevision: 2, state: 'parked' },
+    { id: 'good-edit', threadId: 'good-thread', kind: 'note', noteId: 'good-base-note', expectedRevision: 1, text: 'Valid edit' }];
+  shared.write(saved);
+  return { shared, remote, invalid, journal: new ReaderJournal(shared.persistence) };
+}
+
+test('T07 F7 legacy invalid mutations remain visible, block only their thread, and support explicit correction', async () => {
+  const { shared, remote, invalid, journal } = await legacyInvalidJournal();
+  const sent: string[] = [];
+  await journal.sync(async change => { sent.push(change.id); }, async () => remote);
+  assert.deepEqual(sent, ['good-edit']);
+  assert.deepEqual(journal.state.pending.map(change => change.id), ['dependent']);
+  const reopened = new ReaderJournal(shared.persistence);
+  await reopened.load();
+  assert.deepEqual(reopened.state.conflicts[0].change, invalid);
+  assert.equal(reopened.state.conflicts[0].disposition, 'invalid-change');
+  assert.match(reopened.state.conflicts[0].message, /cannot be uploaded.*draft is kept/);
+  await reopened.resolveConflict(invalid.id, remote, { ...invalid, id: 'corrected', text: 'A corrected question' });
+  await reopened.sync(async change => { sent.push(change.id); }, async () => remote);
+  assert.deepEqual(sent, ['good-edit', 'corrected']);
+  assert.deepEqual(reopened.state.resolutions?.at(-1)?.change, invalid);
+  assert.equal(reopened.state.resolutions?.at(-1)?.disposition, 'invalid-change');
+  assert.deepEqual(reopened.state.conflicts.map(item => item.change.id), ['dependent']);
+});
+
+test('T07 F7 a failed rejection save blocks sending and reconciliation retains the invalid draft', async () => {
+  const { shared, remote, invalid, journal } = await legacyInvalidJournal();
+  shared.fail();
+  const sent: string[] = [];
+  await assert.rejects(journal.sync(async change => { sent.push(change.id); }, async () => remote), /Storage full/);
+  assert.deepEqual(sent, []);
+  assert.equal(journal.unsaved, true);
+  assert.deepEqual(journal.state.conflicts[0].change, invalid);
+  const other = new ReaderJournal(shared.persistence);
+  await other.change(keep('other-tab', 'other-thread'));
+  await journal.reconcilePersistence();
+  assert.equal(journal.state.conflicts[0].disposition, 'invalid-change');
+  await journal.sync(async change => { sent.push(change.id); }, async () => remote);
+  assert.deepEqual(sent, ['good-edit', 'other-tab']);
+  assert.deepEqual(shared.read()?.conflicts[0].change, invalid);
+});
+
+test('T07 F7 only explicit permanent rejections are retained; ambiguous HTTP and transport failures stay pending', async () => {
+  const { InvalidReaderMutationError } = await import('../contracts/reader.ts');
+  const permanent = new ReaderJournal(memoryPersistence().persistence);
+  await permanent.change(keep('reject', 'reject-thread'));
+  await permanent.change(keep('next', 'next-thread'));
+  const sent: string[] = [];
+  await permanent.sync(async change => {
+    if (change.id === 'reject') throw new InvalidReaderMutationError('Invalid note.');
+    sent.push(change.id);
+  }, async () => permanent.state.threads);
+  assert.deepEqual(sent, ['next']);
+  assert.equal(permanent.state.conflicts[0].disposition, 'invalid-change');
+  for (const error of [new Error('400: The request could not be saved'), new TypeError('Failed to fetch'), Object.assign(new Error('Socket closed'), { code: 'ECONNRESET' })]) {
+    const journal = new ReaderJournal(memoryPersistence().persistence);
+    await journal.change(keep('first', 'first-thread'));
+    await journal.change(keep('second', 'second-thread'));
+    await assert.rejects(journal.sync(async () => { throw error; }, async () => []), value => value === error);
+    assert.deepEqual(journal.state.pending.map(change => change.id), ['first', 'second']);
+    assert.equal(journal.state.conflicts.length, 0);
+  }
 });
