@@ -37,23 +37,25 @@ Result `ExploreAssessment`:
 - `droppedCount` / `issues`: padded, duplicate, or non-public items removed with reasons.
 - `parked: true`: the whole shelf. Building it performs no retrieval, navigation, or inference.
 
-`prepareOpen(assessment, itemId, currentReturnTo)` returns the explicit open request for one item:
+`prepareOpen(assessment, itemId, currentReturnTo?)` returns the explicit open request for one item:
 
 ```
 { ok: true, open: { url, timecodeSeconds, returnTo } } | { ok: false, error }
 ```
 
-The host must retain the original assessment in this process, supply the live source version and
-anchor as `currentReturnTo`, and call this only for a reader click. Serialized or reconstructed
-assessments and stale contexts fail. It re-validates the URL policy and performs no fetch. The
-returned URL is not an authorization capability or a claim that the resource was retrieved. The
-host executes the navigation in the reader's browser and restores the reading position from
-`returnTo`. Ordinary section fragments and public IPv6 destinations remain valid.
+The host must call this only for an explicit reader click. Saved, serialized assessments remain
+usable after reload. The builder validates the parked Explore shape, selected item, URL policy and
+saved source/anchor, then returns that original `returnTo`; current reading may be elsewhere. The
+optional `currentReturnTo` argument is accepted only for compatibility and does not grant or deny
+anything. `prepareOpen` performs no fetch or navigation. Its result is not an authorization
+capability or a claim that the resource was retrieved. The host executes the navigation in the
+reader's browser and restores the reading position from `returnTo`. Ordinary section fragments and
+public IPv6 destinations remain valid.
 
 ## Consumption by existing jobs (integration, not yet wired)
 
 The host supplies `context.returnTo` from the thread's `sourceVersionId` and anchor
 (`contracts/reader.ts`). The renderer already parks a shelf and opens items as links
 (`renderer/index.ts` `case 'shelf'`); wiring `prepareOpen` gives that open action its validated
-request and return context. The integration owner must route the click through the host-held
-assessment and check the live reading context. See the T15 receipt for the wiring request.
+request and return context. The integration owner must route the explicit click through the saved
+assessment. See the T15 receipt for the wiring request.

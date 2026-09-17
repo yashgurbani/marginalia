@@ -137,24 +137,46 @@ test('private IPv6 and mapped private IPv4 are dropped', () => {
   assert.equal(result.itemCount, 0);
 });
 
-test('caller-constructed, unparked and stale-context assessments cannot prepare an open', () => {
-  const result = assessShelf(reply([item({ id: 'i1' })]), CONTEXT);
-  assert.equal(prepareOpen({ ...result }, 'i1', CONTEXT.returnTo).ok, false);
-  assert.equal(prepareOpen(result, 'i1', { ...CONTEXT.returnTo, sourceVersionId: 'new-source' }).ok, false);
-  Object.assign(result, { parked: false });
-  assert.equal(prepareOpen(result, 'i1', CONTEXT.returnTo).ok, false);
-});
-
-test('assessment field mutation cannot change the issued open request', () => {
-  const result = assessShelf(reply([item({ id: 'i1' })]), CONTEXT);
-  result.items[0]!.url = 'https://example.org/replaced';
-  result.returnTo.sourceVersionId = 'replacement';
-  const open = prepareOpen(result, 'i1', CONTEXT.returnTo);
+test('a serialized thin shelf can be reopened and opened', () => {
+  const assessed = assessShelf(reply([
+    item({ id: 'i1', url: 'https://example.org/a#details' }),
+    item({ id: 'i2', url: 'https://example.org/b' }),
+  ]), CONTEXT);
+  const reopened = JSON.parse(JSON.stringify(assessed)) as typeof assessed;
+  const open = prepareOpen(reopened, 'i1');
   assert.equal(open.ok, true);
   if (open.ok) {
-    assert.equal(open.open.url, 'https://example.org/a');
+    assert.equal(open.open.url, 'https://example.org/a#details');
     assert.deepEqual(open.open.returnTo, CONTEXT.returnTo);
   }
+});
+
+test('opening an older saved shelf preserves its original return context while reading elsewhere', () => {
+  const saved = JSON.parse(JSON.stringify(
+    assessShelf(reply([item({ id: 'i1' })]), CONTEXT),
+  )) as ReturnType<typeof assessShelf>;
+  const currentReading = {
+    sourceVersionId: 'sv-current',
+    anchor: { exact: 'current passage', prefix: '', suffix: '' },
+  };
+  const open = prepareOpen(saved, 'i1', currentReading);
+  assert.equal(open.ok, true);
+  if (open.ok) assert.deepEqual(open.open.returnTo, CONTEXT.returnTo);
+});
+
+test('a reopened shelf still needs valid parked item, URL and return data', () => {
+  const serialized = JSON.stringify(assessShelf(reply([item({ id: 'i1' })]), CONTEXT));
+  const invalidItem = JSON.parse(serialized) as ReturnType<typeof assessShelf>;
+  Object.assign(invalidItem.items[0]!, { parked: false });
+  const invalidUrl = JSON.parse(serialized) as ReturnType<typeof assessShelf>;
+  invalidUrl.items[0]!.url = 'https://127.0.0.1/private';
+  const invalidReturn = JSON.parse(serialized) as ReturnType<typeof assessShelf>;
+  invalidReturn.returnTo.sourceVersionId = '';
+  assert.deepEqual([
+    prepareOpen(invalidItem, 'i1').ok,
+    prepareOpen(invalidUrl, 'i1').ok,
+    prepareOpen(invalidReturn, 'i1').ok,
+  ], [false, false, false]);
 });
 
 test('a shelf built in a closed session is still valid because it never fetches', () => {

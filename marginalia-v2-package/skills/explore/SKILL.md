@@ -44,6 +44,8 @@ One `shelf` block inside a valid `marginalia.reply.v1` reply. Each item is:
   dropped and flagged.
 - Three to five surviving items → the shelf is `ready`. One or two → `insufficient`, still parked
   and openable. Zero → `insufficient`, nothing invented.
-- On the reader's explicit open action, the host checks its held assessment against the current
-  source and anchor, then calls `prepareOpen`. The returned URL is a navigation request, not a
-  permission or proof that the resource exists. It performs no fetch.
+- On the reader's explicit open action, the host calls `prepareOpen` with the saved assessment.
+  The builder validates the shelf, selected item, URL and original return context. It does not
+  require the reader to still be at that source: an older shelf returns to the source and anchor
+  where it was created. The returned URL is a navigation request, not permission or proof that
+  the resource exists. It performs no fetch.

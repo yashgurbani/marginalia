@@ -10,9 +10,8 @@ import type { ConsentScope } from '../../../contracts/consent.ts';
  *
  * It performs no IO. Building or rendering a shelf must not fetch, navigate, download or start
  * an inference turn; keeping this module pure guarantees that structurally. Opening an item is a
- * separate, explicit host callback (`prepareOpen`) that yields a browser navigation request
- * after the host checks the current reading context. It never pads missing links and reports thin shelves
- * honestly.
+ * separate, explicit host callback (`prepareOpen`) that yields a browser navigation request from
+ * a validated saved shelf. It never pads missing links and reports thin shelves honestly.
  */
 
 export const EXPLORE_TRANSFORM = 'marginalia.transform.explore.v1' as const;
@@ -69,10 +68,6 @@ export type OpenShelfItemResult =
   | { ok: true; open: OpenShelfItemRequest }
   | { ok: false; error: string };
 
-// Assessments are ephemeral host-held values. A serialized or caller-constructed copy cannot
-// authorize an open. The snapshot also prevents later mutation of public assessment fields.
-const issued = new WeakMap<ExploreAssessment, { items: readonly ExploreItemAssessment[]; returnTo: ReturnContext }>();
-
 function privateIpv4(parts: readonly number[]): boolean {
   const [a, b] = parts;
   return a === 0 || a === 10 || a === 127 || a === 192 && b === 168 ||
@@ -123,6 +118,27 @@ function shelfItems(reply: CandidateReply): ShelfBlock['items'] {
   return items;
 }
 
+function validReturnContext(value: unknown): value is ReturnContext {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<ReturnContext>;
+  if (typeof candidate.sourceVersionId !== 'string' || candidate.sourceVersionId.trim().length === 0) return false;
+  const anchor = candidate.anchor;
+  return typeof anchor === 'object' && anchor !== null &&
+    typeof anchor.exact === 'string' && typeof anchor.prefix === 'string' && typeof anchor.suffix === 'string';
+}
+
+function validOpenItem(value: unknown, itemId: string): value is ExploreItemAssessment {
+  if (typeof value !== 'object' || value === null) return false;
+  const item = value as Partial<ExploreItemAssessment>;
+  return item.id === itemId && item.parked === true && item.provenance === 'model-suggested' &&
+    typeof item.title === 'string' && item.title.trim().length > 0 &&
+    typeof item.reason === 'string' && item.reason.trim().length > 0 &&
+    typeof item.url === 'string' &&
+    (item.timecodeSeconds === null ||
+      typeof item.timecodeSeconds === 'number' && Number.isFinite(item.timecodeSeconds) &&
+      item.timecodeSeconds >= 0 && item.timecodeSeconds <= 100_000_000);
+}
+
 /**
  * Assess an explore shelf. Pure and deterministic for a given input. Drops unusable items (missing
  * reason, missing title, non-public URL, duplicate destination) and reports the count honestly.
@@ -165,7 +181,7 @@ export function assessShelf(reply: CandidateReply, context: ExploreContext): Exp
       ? 'No suggested links to park; nothing was invented to fill the shelf.'
       : `Only ${kept.length} suggested link(s) were available, fewer than the ${EXPLORE_MIN_ITEMS} a full shelf shows.`;
 
-  const assessment: ExploreAssessment = {
+  return {
     transform: EXPLORE_TRANSFORM,
     verdict,
     reason,
@@ -177,8 +193,6 @@ export function assessShelf(reply: CandidateReply, context: ExploreContext): Exp
     returnTo: structuredClone(context.returnTo),
     issues,
   };
-  issued.set(assessment, { items: structuredClone(kept), returnTo: structuredClone(context.returnTo) });
-  return assessment;
 }
 
 /**
@@ -186,20 +200,19 @@ export function assessShelf(reply: CandidateReply, context: ExploreContext): Exp
  * intentional reader action. It performs no fetch: it returns the validated navigation the host
  * browser executes, with the return-to-reading context preserved.
  */
-export function prepareOpen(assessment: ExploreAssessment, itemId: string, currentReturnTo: ReturnContext): OpenShelfItemResult {
-  const snapshot = issued.get(assessment);
-  if (!snapshot || assessment.parked !== true) return { ok: false, error: 'Shelf is not a host-held parked assessment.' };
-  const expected = snapshot.returnTo;
-  if (expected.sourceVersionId !== currentReturnTo.sourceVersionId ||
-      expected.anchor.exact !== currentReturnTo.anchor.exact ||
-      expected.anchor.prefix !== currentReturnTo.anchor.prefix ||
-      expected.anchor.suffix !== currentReturnTo.anchor.suffix)
-    return { ok: false, error: 'Reading context changed; reopen the shelf from its source.' };
-  const item = snapshot.items.find((candidate) => candidate.id === itemId);
+export function prepareOpen(
+  assessment: ExploreAssessment,
+  itemId: string,
+  _currentReturnTo?: ReturnContext,
+): OpenShelfItemResult {
+  if (assessment.transform !== EXPLORE_TRANSFORM || assessment.parked !== true ||
+      !Array.isArray(assessment.items) || !validReturnContext(assessment.returnTo))
+    return { ok: false, error: 'Shelf data is not a valid parked Explore assessment.' };
+  const item = assessment.items.find((candidate) => validOpenItem(candidate, itemId));
   if (item === undefined) return { ok: false, error: `No parked item has id ${itemId}.` };
   if (!isPublicHttpsUrl(item.url)) return { ok: false, error: `Item ${itemId} URL failed the open policy.` };
   return {
     ok: true,
-    open: { url: item.url, timecodeSeconds: item.timecodeSeconds, returnTo: structuredClone(snapshot.returnTo) },
+    open: { url: item.url, timecodeSeconds: item.timecodeSeconds, returnTo: structuredClone(assessment.returnTo) },
   };
 }
