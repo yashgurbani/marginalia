@@ -61,7 +61,13 @@ const jobDefaults = runtimeIdentity && !runtimeModule ? {
   },
 } : undefined;
 const server = await startServer({ database: join(canonicalDataDir, 'marginalia.sqlite'), port, webRoot: fileURLToPath(new URL('../webapp/dist', import.meta.url)), diagnostics,
-  jobWorkspaceRoot: join(canonicalDataDir, 'jobs'), runtimeFactoryBuilder, jobDefaults });
+  jobWorkspaceRoot: join(canonicalDataDir, 'jobs'), runtimeFactoryBuilder, jobDefaults }).catch((error: unknown) => {
+  if (error && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE') {
+    console.error(`Another program is using port ${port}. Close it, or start Marginalia on another port. Set MARGINALIA_PORT and use the same port in the browser's helper address.`);
+    process.exit(1);
+  }
+  throw error;
+});
 console.log(`Marginalia local helper: ${server.origin}`);
 console.log(`Pairing code: ${server.challenge} (valid for five minutes, one use)`);
 console.log(server.jobs.available ? 'Reading and notes are ready. Codex execution is configured but remains subject to current consent and runtime checks.'

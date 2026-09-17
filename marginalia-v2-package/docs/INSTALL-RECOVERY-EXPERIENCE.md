@@ -73,7 +73,7 @@ Each row names the reader action, the state the reader observes, and the copy. C
 - Observed state: the helper prints its address and a six-digit code valid five minutes, single use.
 - Copy (Exists, `daemon/main.ts:36-41`): "Pairing code: {code} (valid for five minutes, one use)" and "Enter pair here to renew the pairing code."
 - **Change:** an installed helper has no visible console. The code must also appear in the helper page's "This computer" section, behind a "Show pairing code" button. That endpoint accepts only the helper's own origin, never an extension origin (section 7, C4).
-- **Change:** port already in use today throws a raw error. Copy: "Another program is using port {port}. Close it, or start Marginalia on another port." The extension must then learn that port (C5).
+- **Implemented, verified on Windows:** an occupied configured port exits with code 1 and says "Another program is using port {port}. Close it, or start Marginalia on another port." It also explains MARGINALIA_PORT and matching the browser helper address. The existing service is left running; no pairing code or readiness claim is printed. The extension supports a configured loopback helper address. Platform installers and Mac/Linux launch checks remain open (C5).
 
 ### S3. Pairing
 
