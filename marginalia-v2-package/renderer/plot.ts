@@ -2,6 +2,7 @@ import type { PlotBlock } from '../contracts/reply.ts';
 import type { Trajectory } from '../kernel/integrate.ts';
 import { button, el, pagedTable, table } from './dom.ts';
 import { formatNumber } from './state.ts';
+import { plotCoordinate, plotTick } from './plot-coordinates.ts';
 
 const NS = 'http://www.w3.org/2000/svg';
 export type PlotData = Omit<Trajectory, 'rows'> & { rows: (number | null)[][]; origin?: 'model' | 'table' | 'samples' };
@@ -40,8 +41,19 @@ export function renderPlot(doc: Document, block: PlotBlock, trajectory: PlotData
   };
   const xr = block.xRange ?? range(xMin, xMax);
   const yr = block.yRange ?? range(yMin, yMax);
-  const x = (n: number) => 62 + (n - xr[0]) / (xr[1] - xr[0]) * 478;
-  const y = (n: number) => 230 - (n - yr[0]) / (yr[1] - yr[0]) * 205;
+  const x = (n: number) => plotCoordinate(n, xr, 62, 478) ?? NaN;
+  const y = (n: number) => plotCoordinate(n, yr, 230, -205) ?? NaN;
+  const validRange = (bounds: [number, number]) => bounds.every(Number.isFinite) && bounds[0] < bounds[1];
+  const representable = validRange(xr) && validRange(yr)
+    && [0, 1, 2, 3, 4].every(i => Number.isFinite(x(plotTick(xr, i))) && Number.isFinite(y(plotTick(yr, i))))
+    && rows.every(row => yIndices.every(index => !finitePair(row, index) || Number.isFinite(x(row[xIndex])) && Number.isFinite(y(row[index]))));
+  if (!representable) {
+    section.append(el(doc, 'p', 'The graphic cannot be drawn safely at this numeric range. All supplied values remain in the data table.'),
+      pagedTable(doc, [block.x, ...block.y].map(name => ({ key: name, label: block.labels[name] ?? name })),
+        rows.map(row => Object.fromEntries([block.x, ...block.y].map(name => { const value = row[trajectory.columns.indexOf(name)]; return [name, typeof value === 'number' && Number.isFinite(value) ? formatNumber(value) : 'missing']; }))),
+        'Supplied values; graphic unavailable at this numeric range'));
+    return section;
+  }
   const labelX = block.labels[block.x] ?? (block.x === 't' ? 'time (model units)' : block.x === 'n' ? 'iteration' : block.x);
   const labelY = block.y.map(name => block.labels[name] ?? name).join(', ');
   const maxPerSeries = Math.max(0, Math.floor((view?.maxVertices ?? 3000) / yIndices.length));
@@ -53,7 +65,7 @@ export function renderPlot(doc: Document, block: PlotBlock, trajectory: PlotData
   svg.append(svgNode(doc, 'title', { id: `${id}-title` }, `${labelY} against ${labelX}`), svgNode(doc, 'desc', { id: `${id}-desc` }, description));
   const defs = svgNode(doc, 'defs'); const clip = svgNode(doc, 'clipPath', { id: `${id}-clip` }); clip.append(svgNode(doc, 'rect', { x: '62', y: '25', width: '478', height: '205' })); defs.append(clip); svg.append(defs);
   for (let i = 0; i <= 4; i++) {
-    const xv = xr[0] + i / 4 * (xr[1] - xr[0]); const yv = yr[0] + i / 4 * (yr[1] - yr[0]);
+    const xv = plotTick(xr, i); const yv = plotTick(yr, i);
     svg.append(svgNode(doc, 'line', { x1: '62', x2: '540', y1: String(y(yv)), y2: String(y(yv)), class: 'mr-gridline' }));
     svg.append(svgNode(doc, 'text', { x: String(x(xv)), y: '250', 'text-anchor': 'middle' }, formatNumber(xv)));
     svg.append(svgNode(doc, 'text', { x: '54', y: String(y(yv) + 4), 'text-anchor': 'end' }, formatNumber(yv)));

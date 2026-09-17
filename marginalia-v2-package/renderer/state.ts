@@ -62,7 +62,7 @@ export function calculateReply(reply: CandidateReply, parameters: Record<string,
       }
       if (block.type === 'samples') {
         if (!reply.blocks.some(model => model.id === block.model && model.type === 'model')) throw new Error('These samples do not reference a declared model. Their recorded grid remains available, but no current result is inferred.');
-        samples.set(block.id, { ok: false, reason: 'The sample generation binding is being checked. The recorded grid remains available below.' });
+        samples.set(block.id, { ok: false, reason: 'Checking whether these saved values apply to the current inputs. The original grid is available below.' });
       }
     } catch (error) {
       const failure = { ok: false as const, reason: error instanceof Error ? error.message : 'The calculation could not finish.' };

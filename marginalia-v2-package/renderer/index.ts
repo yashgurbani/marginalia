@@ -9,6 +9,7 @@ import { classificationsFromHost } from './host-authority.ts';
 import type { ClassificationView, HostCheckReport } from '../contracts/host-checks.ts';
 import { validateSamplesInterpolationReadiness, type SampleGenerationRecord } from '../contracts/sample-provenance.ts';
 import { interpolateSamples } from '../kernel/samples.ts';
+import { sampleReadinessMessage } from './sample-copy.ts';
 
 export type { RendererState } from './state.ts';
 export type RecomputeRequest = RendererState & { blockId: string; solverId: string; reason: string; requestId: string; stateKey: string };
@@ -58,6 +59,7 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   const rejectedSavedInputs = options.initialState?.parameters && Object.entries(options.initialState.parameters).some(([name, value]) => !reply.parameters.some(p => p.name === name && typeof value === 'number' && Number.isFinite(value) && value >= p.min && value <= p.max));
   let calculation = calculateReply(reply, state.parameters);
   const updates: (() => void)[] = [];
+  const sampleUpdates = new Map<string, (() => void)[]>();
   const authorityUpdates: (() => void)[] = [];
   let hostViews: ClassificationView[] = [];
   let authorityGeneration = 0;
@@ -149,26 +151,27 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
     const stateKey = canonicalReplyData({ reply, parameters });
     const blocks = reply.blocks.filter(block => block.type === 'samples');
     const current = () => !destroyed && invalidInputs.size === 0 && generation === samplesGeneration && canonicalReplyData({ reply, parameters: state.parameters }) === stateKey;
-    const results = await Promise.all(blocks.map(async block => {
+    await Promise.all(blocks.map(async block => {
+      let result: ReturnType<typeof interpolateSamples>;
       try {
         const readiness = await validateSamplesInterpolationReadiness(reply, block, parameters, sampleGenerationRecords[block.id]);
-        if (!readiness.ok) return [block.id, { ok: false as const, reason: readiness.reason }] as const;
-        return [block.id, interpolateSamples(readiness.block, readiness.parameters)] as const;
+        result = readiness.ok ? interpolateSamples(readiness.block, readiness.parameters) : {
+          ok: false, reason: sampleReadinessMessage(readiness.state),
+        };
       } catch {
-        return [block.id, { ok: false as const, reason: 'The sample generation binding could not be checked. The recorded grid remains historical.' }] as const;
+        result = { ok: false, reason: sampleReadinessMessage('invalid') };
       }
+      if (!current()) return;
+      calculation.samples.set(block.id, result);
+      // Readiness changes this grid and its plots, not unrelated interactive DOM.
+      for (const update of sampleUpdates.get(block.id) ?? []) update();
     }));
-    if (!current()) return;
-    for (const [blockId, result] of results) calculation.samples.set(blockId, result);
-    remainingPlotVertices = 24_000;
-    for (const update of updates) update();
   };
   const refresh = () => {
     if (destroyed) return;
     ++samplesGeneration;
     ++authorityGeneration; hostViews = [];
     calculation = calculateReply(reply, state.parameters);
-    remainingPlotVertices = 24_000;
     for (const update of updates) update();
     persist(); announce(invalidInputs.size ? 'Correct the invalid input. The plot uses the last accepted values; the headline stays withheld.' : 'Updated locally. No model request was sent.');
     if (!destroyed) void requestSamples();
@@ -231,11 +234,14 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
     if (recompute.disabled) container.append(el(doc, 'p', 'Saved-solver recomputation is not available in this view.', 'mr-meta'));
     const ask = button(doc, 'Ask again with this change', () => onFollowup(`Please revise ${blockId} for my current inputs. ${reason}`)); ask.disabled = !options.onFollowup; container.append(ask);
   };
-  const title = el(doc, 'h3', reply.title); title.id = `${prefix}-title`; article.setAttribute('aria-labelledby', title.id); article.append(title);
+  // v1 does not distinguish descriptive titles from unchecked result claims.
+  // Preserve authored copy for inspection, never as a competing current result.
+  const hasClassification = reply.blocks.some(block => block.type === 'classification');
+  const title = el(doc, 'h3', hasClassification ? 'Interactive explanation' : reply.title); title.id = `${prefix}-title`; article.setAttribute('aria-labelledby', title.id); article.append(title);
   if (rejectedSavedInputs) article.append(el(doc, 'p', 'Some saved inputs were invalid and were replaced with the authored defaults. Review the inputs below.', 'mr-meta'));
   if (reply.illustration?.value) article.append(el(doc, 'p', reply.illustration.statement, 'mr-illustration'));
   if (reply.status === 'partial') article.append(el(doc, 'p', 'Provisional reply. Checks and content may change.', 'mr-meta'));
-  article.append(el(doc, 'p', reply.summary));
+  if (!hasClassification) article.append(el(doc, 'p', reply.summary));
   const actions = el(doc, 'div', undefined, 'mr-actions');
   const sources = el(doc, 'details'); sources.id = `${prefix}-sources`; sources.append(el(doc, 'summary', 'Source passage'));
   for (const binding of reply.sourceBindings) {
@@ -244,6 +250,11 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   }
   if (!reply.sourceBindings.length) sources.append(el(doc, 'p', 'No individual source bindings were supplied.'));
   const made = el(doc, 'details'); made.append(el(doc, 'summary', 'How this was made'));
+  if (hasClassification) {
+    const authored = el(doc, 'details'); authored.append(el(doc, 'summary', 'Original authored description (not a checked result)'));
+    authored.append(el(doc, 'p', 'This title and summary were supplied with the reply. They are not checked conclusions for the current inputs.', 'mr-meta'), el(doc, 'p', reply.title), el(doc, 'p', reply.summary));
+    made.append(authored);
+  }
   rememberDetails(sources, 'details:sources'); rememberDetails(made, 'details:made');
   made.append(el(doc, 'p', 'The author supplied structured content and mathematical expressions. The packaged renderer runs bounded local calculations. An independent local criterion supports only the conclusions it explicitly checks.'));
   const hostStatus = el(doc, 'p', 'No current host verification is displayed here.', 'mr-meta'); made.append(hostStatus, el(doc, 'p', 'Recorded citation and error-evidence statements remain author-supplied.', 'mr-meta'));
@@ -278,7 +289,7 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
           error.textContent = `Enter a number from ${parameter.min} to ${parameter.max}${parameter.unit ? ` ${parameter.unit}` : ''}.`; target.setAttribute('aria-invalid', 'true');
           invalidInputs.add(parameter.name); ++authorityGeneration; ++samplesGeneration; hostViews = []; for (const update of authorityUpdates) update();
           for (const block of reply.blocks) if (block.type === 'samples') calculation.samples.set(block.id, { ok: false, reason: 'Correct the invalid input before applying the recorded sample grid.' });
-          remainingPlotVertices = 24_000; for (const update of updates) update();
+          for (const update of updates) update();
           announce('Correct the invalid input. The plot uses the last accepted values; the headline stays withheld.'); return;
         }
         const wasInvalid = invalidInputs.delete(parameter.name);
@@ -302,7 +313,13 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       return { page: Number(state.view[`${key}:row`]) || 0, columnPage: Number(state.view[`${key}:col`]) || 0, onChange(page: number, columnPage: number) { state.view[`${key}:row`] = page; state.view[`${key}:col`] = columnPage; persist(); } };
     };
     if (ancestors.includes(block.id) || ancestors.length > 4 || occurrences > 160) { section.append(el(doc, 'p', 'This comparison cannot be expanded further.')); return section; }
-    const dynamic = (update: () => void) => { updates.push(update); };
+    const dynamic = (update: () => void, sampleId?: string) => {
+      updates.push(update);
+      if (sampleId) {
+        const dependents = sampleUpdates.get(sampleId) ?? [];
+        dependents.push(update); sampleUpdates.set(sampleId, dependents);
+      }
+    };
     switch (block.type) {
       case 'text': section.append(formattedText(doc, block.md)); break;
       case 'equation': section.append(equation(doc, block.tex)); break;
@@ -326,20 +343,24 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
           if (details.open) draw(); details.append(holder, previous, next); section.append(details);
         }
       }); break;
-      case 'plot': dynamic(() => {
-        const model = calculation.models.get(block.from); const sampled = calculation.samples.get(block.from);
-        const source = reply.blocks.find(b => b.id === block.from);
-        const requestedColumns = [block.x, ...block.y];
-        const tabular = source?.type === 'table' && requestedColumns.every(name => source.columns.some(c => c.key === name)) ? { columns: requestedColumns, rows: source.rows.map(row => requestedColumns.map(name => typeof row[name] === 'number' && Number.isFinite(row[name]) ? row[name] as number : null)), end: 'complete' as const, steps: 0, origin: 'table' as const } : undefined;
-        const trajectory = model?.ok ? model.value : sampled?.ok && capability('samples') ? { columns: Object.keys(sampled.values), rows: [Object.values(sampled.values)], end: 'complete' as const, steps: 0, origin: 'samples' as const } : tabular;
-        const key = `plot:${block.id}:${occurrence}`;
-        const plotBlock = block.x === 't' && !block.labels.t && calculation.checks.some(c => c.model === block.from && c.status === 'pass' && c.criterion === 'growth-v1') ? { ...block, labels: { ...block.labels, t: 'time (s)' } } : block;
+      case 'plot': {
+        // Reserve once per occurrence; asynchronous redraws cannot refill the budget.
         const maxVertices = Math.min(3000, remainingPlotVertices); remainingPlotVertices -= maxVertices;
-        section.replaceChildren(trajectory ? renderPlot(doc, plotBlock, trajectory, id, {
-          open: state.view[`${key}:open`] === true, page: Number(state.view[`${key}:page`]) || 0, maxVertices,
-          onChange(open, page) { state.view[`${key}:open`] = open; state.view[`${key}:page`] = page; persist(); },
-        }) : el(doc, 'p', 'Plot data is unavailable for these inputs.'));
-      }); break;
+        const sampleId = reply.blocks.some(source => source.id === block.from && source.type === 'samples') ? block.from : undefined;
+        dynamic(() => {
+          const model = calculation.models.get(block.from); const sampled = calculation.samples.get(block.from);
+          const source = reply.blocks.find(b => b.id === block.from);
+          const requestedColumns = [block.x, ...block.y];
+          const tabular = source?.type === 'table' && requestedColumns.every(name => source.columns.some(c => c.key === name)) ? { columns: requestedColumns, rows: source.rows.map(row => requestedColumns.map(name => typeof row[name] === 'number' && Number.isFinite(row[name]) ? row[name] as number : null)), end: 'complete' as const, steps: 0, origin: 'table' as const } : undefined;
+          const trajectory = model?.ok ? model.value : sampled?.ok && capability('samples') ? { columns: Object.keys(sampled.values), rows: [Object.values(sampled.values)], end: 'complete' as const, steps: 0, origin: 'samples' as const } : tabular;
+          const key = `plot:${block.id}:${occurrence}`;
+          const plotBlock = block.x === 't' && !block.labels.t && calculation.checks.some(c => c.model === block.from && c.status === 'pass' && c.criterion === 'growth-v1') ? { ...block, labels: { ...block.labels, t: 'time (s)' } } : block;
+          section.replaceChildren(trajectory ? renderPlot(doc, plotBlock, trajectory, id, {
+            open: state.view[`${key}:open`] === true, page: Number(state.view[`${key}:page`]) || 0, maxVertices,
+            onChange(open, page) { state.view[`${key}:open`] = open; state.view[`${key}:page`] = page; persist(); },
+          }) : el(doc, 'p', 'Plot data is unavailable for these inputs.'));
+        }, sampleId); break;
+      }
       case 'derived': dynamic(() => {
         const result = calculation.derived.get(block.id);
         section.replaceChildren(el(doc, 'p', `${block.label}: ${result?.ok ? `${formatNumber(result.value)}${block.unit ? ` ${block.unit}` : ''}` : result && !result.ok ? result.reason : 'Unavailable'}`), el(doc, 'p', `Calculated from the authored expression ${block.expression}; this alone does not verify a scientific claim.`, 'mr-meta'));
@@ -419,7 +440,7 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
           if (!capability('samples')) current.append(el(doc, 'p', 'Precomputed sample interpolation is not available in this view.'));
           else if (result?.ok) current.append(pagedTable(doc, [{ key: 'name', label: 'Quantity' }, { key: 'value', label: 'Interpolated value' }], Object.entries(result.values).map(([name, value]) => ({ name, value: formatNumber(value) })), 'Current sampled values', tableView('current')), el(doc, 'p', sampleGenerationRecords[block.id]?.origin === 'imported' ? 'A matching host-owned import record binds this data to the reply. It does not claim that a solver executed.' : 'A matching host-owned execution record binds this grid to the reply and current generation inputs.', 'mr-meta'), el(doc, 'p', 'Output units are not declared by this sample block.', 'mr-meta'));
           else { const reason = result && !result.ok ? result.reason : 'No sample result is available.'; current.append(el(doc, 'p', reason)); offerRecompute(current, block.id, reason); }
-        });
+        }, block.id);
         const grid = el(doc, 'details'); grid.append(el(doc, 'summary', 'Recorded sample grid')); rememberDetails(grid, `grid:${block.id}:${occurrence}`);
         const holder = el(doc, 'div'); grid.append(holder);
         const drawGrid = () => {
@@ -473,5 +494,5 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   for (const update of updates) update();
   void requestSamples();
   void requestAuthority();
-  return { getState, destroy() { if (destroyed) return; destroyed = true; ++authorityGeneration; ++samplesGeneration; clearHighlight(); if (dialog.open) dialog.close(); article.remove(); dialog.remove(); updates.length = 0; authorityUpdates.length = 0; } };
+  return { getState, destroy() { if (destroyed) return; destroyed = true; ++authorityGeneration; ++samplesGeneration; clearHighlight(); if (dialog.open) dialog.close(); article.remove(); dialog.remove(); updates.length = 0; sampleUpdates.clear(); authorityUpdates.length = 0; } };
 }
