@@ -1,6 +1,7 @@
 import type { ProviderHandle, ProviderKind } from './job-runner.ts';
 import type { CandidateReply, Intent, ReplyCapability } from './reply.ts';
 import type { NoteVersionRef } from './reader.ts';
+import type { ConsentAuthorization } from './consent.ts';
 
 export type JobState = 'queued' | 'preparing' | 'sending' | 'running' | 'validating' | 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'outcome_unknown' | 'cancel_requested';
 
@@ -120,13 +121,14 @@ export type JobSnapshot = {
 };
 
 export type JobConsentStage = 'dispatch' | 'commit';
-export type JobConsentDecision = { grantId: string; policyKey: string; auditScope?: string };
+export type JobConsentDecision = { grantId: string; policyKey: string; auditScope?: string; eligibilityFingerprint?: string };
 
 /** T13 implements this from current consent and independently observed policy evidence. */
 export interface JobConsentAuthority {
   revalidate(job: Readonly<JobSnapshot>, stage: JobConsentStage): Promise<JobConsentDecision>;
-  /** Synchronous durable handoff marker; call immediately before runner.start/resume. */
-  markDispatched(job: Readonly<JobSnapshot>, attemptId: string): unknown;
+  assertSharedDatabase(database: unknown): void;
+  /** Synchronous final consent fence, called within the JobStore handoff transaction. */
+  finalizeDispatch(job: Readonly<JobSnapshot>, attemptId: string, expectedEligibilityFingerprint: string): ConsentAuthorization;
   /** Runs the acceptance callback inside the same SQLite transaction as the final consent fence. */
   withResultAcceptance<T>(job: Readonly<JobSnapshot>, attemptId: string, commit: () => T): T;
   recordOutcome(attemptId: string, outcome: string): void;

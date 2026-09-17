@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { ProviderHandle } from '../../contracts/job-runner.ts';
 import { canonicalReplyData, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
-import type { FrozenJobContext, JobAttempt, JobSnapshot, JobState, StartJobInput } from '../../contracts/jobs.ts';
+import type { FrozenJobContext, JobAttempt, JobConsentAuthority, JobSnapshot, JobState, StartJobInput } from '../../contracts/jobs.ts';
 import type { ReaderStore } from '../store.ts';
 
 type JobRow = {
@@ -368,17 +368,35 @@ export class JobStore {
       return compatible;
     })();
   }
-  withDispatchHandoff<T>(jobId: string, attemptId: string, markConsent: () => T): T {
+  /** expected is captured before asynchronous workspace and runtime preparation. */
+  withDispatchHandoff<T>(expected: Readonly<JobSnapshot>, attemptId: string, authority: Pick<JobConsentAuthority, 'assertSharedDatabase'>, finalize: (current: Readonly<JobSnapshot>) => T): T {
+    authority.assertSharedDatabase(this.db);
     return this.db.transaction(() => {
-      const job = this.get(jobId), attempt = job?.attempts.find(value => value.id === attemptId);
-      if (!job || !attempt || job.latestAttemptId !== attemptId || job.cancelRequested || terminal.has(job.state) || attempt.handoffMarked) {
-        throw new JobConflictError('This attempt cannot be handed to a provider.');
-      }
-      const result = markConsent();
-      this.db.prepare('UPDATE job_attempts SET handoffMarked=1 WHERE id=? AND handoffMarked=0').run(attemptId);
-      this.event('job-provider-handoff', { jobId, attemptId });
+      const current = this.get(expected.id);
+      this.assertDispatchFence(expected, current, attemptId);
+      const result = finalize(current!);
+      if (result && typeof (result as { then?: unknown }).then === 'function') throw new JobConflictError('Dispatch finalization must be synchronous.');
+      this.assertDispatchFence(expected, this.get(expected.id), attemptId);
+      const update = this.db.prepare('UPDATE job_attempts SET handoffMarked=1 WHERE id=? AND jobId=? AND revision=? AND state=? AND handoffMarked=0 AND dispatchClaimed=0')
+        .run(attemptId, expected.id, expected.attempts.find(a => a.id === attemptId)!.revision, expected.attempts.find(a => a.id === attemptId)!.state);
+      if (update.changes !== 1) throw new JobConflictError('The provider handoff changed during finalization.');
+      this.event('job-provider-handoff', { jobId: expected.id, attemptId });
       return result;
     })();
+  }
+  private assertDispatchFence(expected: Readonly<JobSnapshot>, current: JobSnapshot | undefined, attemptId: string) {
+    const before = expected.attempts.find(a => a.id === attemptId), now = current?.attempts.find(a => a.id === attemptId);
+    if (!current || !before || !now || current.latestAttemptId !== attemptId || expected.latestAttemptId !== attemptId ||
+      current.cancelRequested || current.state !== expected.state || !['queued', 'preparing'].includes(current.state) ||
+      now.state !== before.state || !['queued', 'preparing'].includes(now.state) ||
+      now.revision !== before.revision || now.handoffMarked || now.dispatchClaimed || !now.workspacePrepared || !before.workspacePrepared ||
+      !now.deadlineAt || now.deadlineAt !== before.deadlineAt || Date.parse(now.deadlineAt) <= Date.now() ||
+      current.packetDigest !== expected.packetDigest || current.preparedPayloadDigest !== expected.preparedPayloadDigest ||
+      current.policyKey !== expected.policyKey || current.grantId !== expected.grantId || current.provider !== expected.provider ||
+      current.model !== expected.model || current.mode !== expected.mode || packetDigest(current.context) !== packetDigest(expected.context) ||
+      now.authorizationFingerprint !== before.authorizationFingerprint || now.predecessorAttemptId !== before.predecessorAttemptId) {
+      throw new JobConflictError('This attempt or its prepared content changed before provider handoff.');
+    }
   }
   setDeadline(jobId: string, attemptId: string, deadlineAt: string) {
     this.db.transaction(() => {

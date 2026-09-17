@@ -296,6 +296,7 @@ export class JobService {
     const decision = await factory.consent.revalidate(job, 'dispatch');
     if (decision.grantId !== job.grantId || decision.policyKey !== job.policyKey) throw new Error('Current consent no longer matches the persisted request.');
     if (!decision.auditScope) throw new Error('Consent authorization identity is unavailable.');
+    if (!decision.eligibilityFingerprint || !/^[a-f0-9]{64}$/.test(decision.eligibilityFingerprint)) throw new Error('Current consent eligibility token is unavailable.');
     if (!this.active(jobId, attemptId)) { this.store.releaseUndispatchedContinuation(attemptId); return; }
     const compatible = this.store.bindAuthorization(attemptId, this.library.continuationIdentity({ model: job.model,
       settingsRevision: job.context.modelSettingsRevision, compatibilityKey: job.context.modelCompatibilityKey }, decision.auditScope));
@@ -311,6 +312,8 @@ export class JobService {
     if (predecessor) await verifyContinuationWorkspace(predecessor.workspace, schema);
     if (!this.active(jobId, attemptId)) { this.store.releaseUndispatchedContinuation(attemptId); return; }
     this.store.markWorkspacePrepared(jobId, attemptId);
+    // Capture the prepared state before the filesystem and provider startup awaits.
+    const expectedHandoff = this.store.get(jobId)!;
     const workspace = predecessor
       ? await prepareContinuationWorkspace(predecessor.workspace, predecessor.jobId, job.context.outgoing, schema)
       : await prepareWorkspace(this.workspaceRoot, job.id, job.context.outgoing, schema);
@@ -331,7 +334,8 @@ export class JobService {
     job = this.store.get(jobId)!;
     if (job.cancelRequested) return;
     const request = this.providerRequest(job, attemptId, workspace, JSON.parse(schema));
-    this.store.withDispatchHandoff(jobId, attemptId, () => factory.consent.markDispatched(job, attemptId));
+    this.store.withDispatchHandoff(expectedHandoff, attemptId, factory.consent,
+      current => factory.consent.finalizeDispatch(current, attemptId, decision.eligibilityFingerprint!));
     this.markedDispatch.add(attemptId);
     const operation = predecessor ? runtime.runner.resume(predecessor, request) : runtime.runner.start(request);
     const observed = await operation;

@@ -25,7 +25,10 @@ function fixture(sourceText = 'Start with this passage.') {
 const library = { modelFor: () => ({ model: 'test-model', settingsRevision: 1, compatibilityKey: 'test' }),
   continuationIdentity: () => 'b'.repeat(64) };
 function factory(revalidate: AuthorizedRuntimeFactory['consent']['revalidate']): AuthorizedRuntimeFactory {
-  return { dispatchReady: true, consent: { revalidate, markDispatched: () => undefined,
+  return { dispatchReady: true, consent: { revalidate: async (job, stage) => ({ ...await revalidate(job, stage), ...(stage === 'dispatch' ? { eligibilityFingerprint: 'e'.repeat(64) } : {}) }),
+    assertSharedDatabase: () => undefined, finalizeDispatch: (job, attemptId) => ({ id: 'authorization', jobId: job.id, attemptId,
+      grantId: job.grantId, grantRevision: 1, sitePermissionEpoch: 0, site: 'https://example.org', scope: 'open-session', recipient: 'test',
+      provider: job.provider, policyKey: job.policyKey, bindingDigest: job.preparedPayloadDigest, permissionFingerprint: 'f'.repeat(64), egressEventId: 'egress' }),
     withResultAcceptance: (_job, _attempt, commit) => commit(), recordOutcome: () => undefined },
     create: async () => { throw new Error('Provider must not start in this test.'); } };
 }
@@ -108,6 +111,55 @@ test('only a matching current provider-not-sent error classifies a handed-off at
   }
 });
 
+test('runtime preparation failure leaves the handoff and once-grant untouched', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-jobs-'));
+  const reader = fixture();
+  let finalized = 0;
+  const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
+  const runtimeFactory: AuthorizedRuntimeFactory = { ...base,
+    consent: { ...base.consent, finalizeDispatch: (...args) => { finalized++; return base.consent.finalizeDispatch(...args); } },
+    create: async () => { throw new Error('native runtime preparation failed'); } };
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: [] }, runtimeFactory });
+  try {
+    const prepared = await jobs.prepare({ id: 'prep-failure', idempotencyKey: 'prep-failure-key',
+      threadId: 'thread-job-test', intent: 'explore', question: 'Explain.' });
+    await jobs.create({ ...prepared.job, grantId: 'grant' });
+    for (let i = 0; i < 20 && jobs.get('prep-failure')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(jobs.get('prep-failure')?.state, 'failed');
+    assert.equal(jobs.get('prep-failure')?.attempts[0].handoffMarked, false);
+    assert.equal(finalized, 0);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('runner uncertainty after handoff stays unknown with one finalization', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-jobs-'));
+  const reader = fixture();
+  let finalized = 0, starts = 0;
+  const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
+  const runtimeFactory: AuthorizedRuntimeFactory = { ...base,
+    consent: { ...base.consent, finalizeDispatch: (...args) => { finalized++; return base.consent.finalizeDispatch(...args); } },
+    create: async () => ({ close: () => undefined, runner: {
+      capabilities: { interrupt: 'turn-interrupt', recovery: 'thread-state', structuredFinal: true, schemaEnforced: true, liveEvents: true },
+      start: async () => { starts++; throw new Error('send outcome unconfirmed'); },
+      resume: async () => { throw new Error('Unexpected resume.'); },
+      inspect: async () => { throw new Error('Unexpected inspect.'); },
+      cancel: async () => { throw new Error('Unexpected cancel.'); },
+    } }) };
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: [] }, runtimeFactory });
+  try {
+    const prepared = await jobs.prepare({ id: 'uncertain-job', idempotencyKey: 'uncertain-key',
+      threadId: 'thread-job-test', intent: 'explore', question: 'Explain.' });
+    await jobs.create({ ...prepared.job, grantId: 'grant' });
+    for (let i = 0; i < 20 && jobs.get('uncertain-job')?.state !== 'outcome_unknown'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(jobs.get('uncertain-job')?.state, 'outcome_unknown');
+    assert.equal(jobs.get('uncertain-job')?.attempts[0].handoffMarked, true);
+    assert.equal(finalized, 1);
+    assert.equal(starts, 1);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('retry keeps frozen source lineage while declaring current host capabilities', async () => {
   const root = await mkdtemp(join(tmpdir(), 'marginalia-jobs-'));
   const reader = fixture();
@@ -182,7 +234,13 @@ test('restart validates and commits the persisted completed workspace without st
       summary: 'A short explanation.', sourceBindings: [], parameters: [], assumptions: [], limitations: [],
       blocks: [{ id: 'text', type: 'text', md: 'Start with this passage.' }], checks: [], staticFallback: 'A short explanation.' };
     await writeFile(join(workspace, 'reply.json'), JSON.stringify(reply));
-    store.withDispatchHandoff(input.id, attempt.id, () => undefined);
+    const handoff = (jobId: string, id: string) => {
+      store.setDeadline(jobId, id, new Date(Date.now() + 60_000).toISOString());
+      store.markPreparing(jobId, id);
+      store.markWorkspacePrepared(jobId, id);
+      store.withDispatchHandoff(store.get(jobId)!, id, { assertSharedDatabase: () => undefined }, () => undefined);
+    };
+    handoff(input.id, attempt.id);
     store.checkpoint(attempt.id, { jobId: attempt.id, provider: input.provider, workspace, policyKey, model: input.model,
       mode: input.mode, state: 'completed', tombstone: false, providerInstanceId: 'provider-1' });
     store.saveProvisional(input.id, attempt.id, { ...reply, status: 'partial' } as CandidateReply);
@@ -190,7 +248,7 @@ test('restart validates and commits the persisted completed workspace without st
     const timedInput = { ...input, id: 'timed-job', idempotencyKey: 'timed-key' };
     store.create(timedInput, context, 'packet-digest-2', 'request-digest-2');
     const timedAttempt = store.createAttempt(timedInput.id);
-    store.withDispatchHandoff(timedInput.id, timedAttempt.id, () => undefined);
+    handoff(timedInput.id, timedAttempt.id);
     const running = store.checkpoint(timedAttempt.id, { jobId: timedAttempt.id, provider: input.provider, workspace,
       policyKey, model: input.model, mode: input.mode, state: 'running', tombstone: false, providerInstanceId: 'provider-2' });
     store.markTimedOut(timedInput.id, timedAttempt.id);
@@ -199,7 +257,7 @@ test('restart validates and commits the persisted completed workspace without st
     const sendingInput = { ...input, id: 'sending-job', idempotencyKey: 'sending-key' };
     store.create(sendingInput, context, 'packet-digest-3', 'request-digest-3');
     const sendingAttempt = store.createAttempt(sendingInput.id);
-    store.withDispatchHandoff(sendingInput.id, sendingAttempt.id, () => undefined);
+    handoff(sendingInput.id, sendingAttempt.id);
     const starting = store.checkpoint(sendingAttempt.id, { jobId: sendingAttempt.id, provider: input.provider, workspace,
       policyKey, model: input.model, mode: input.mode, state: 'starting', tombstone: false, providerInstanceId: 'provider-3' });
     assert.equal(store.get(sendingInput.id)?.state, 'sending');
