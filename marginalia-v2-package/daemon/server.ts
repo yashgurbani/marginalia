@@ -8,7 +8,7 @@ import { handleHelperManagement } from './helper-management.ts';
 import type { ReaderMutation } from '../contracts/reader.ts';
 import { createDiagnostics } from './diagnostics.ts';
 import { JobConflictError } from './jobs/store.ts';
-import { JobService, JobUnavailableError, type JobServiceOptions } from './jobs/service.ts';
+import { JobService, JobUnavailableError, JobAdmissionError, type JobServiceOptions } from './jobs/service.ts';
 import type { AuthorizedRuntimeFactory } from './jobs/runtime.ts';
 import type { FollowupJobInput, PrepareFollowupJobInput, PrepareJobInput, PrepareRetryJobInput, RetryJobInput, StartJobInput } from '../contracts/jobs.ts';
 import { runHostChecks } from '../contracts/host-checks.ts';
@@ -29,7 +29,7 @@ export async function startServer(options: { database: string; port?: number; we
     catch (error) { runtimeInitializationError = error instanceof Error ? error.message.slice(0, 300) : 'authorized-runtime-initialization-failed'; }
   }
   const jobs = new JobService({ reader: store, workspaceRoot: options.jobWorkspaceRoot ?? resolve(dirname(options.database), 'jobs'),
-    runtimeFactory, defaults: options.jobDefaults, timeoutMs: options.jobTimeoutMs, library });
+    runtimeFactory, defaults: options.jobDefaults ?? runtimeFactory?.jobDefaults, timeoutMs: options.jobTimeoutMs, library });
   void jobs.recover().catch(() => { /* Per-job recovery records its own honest outcome. */ });
   const pairing = new Pairing(store);
   const challenge = pairing.issue();
@@ -220,7 +220,9 @@ export async function startServer(options: { database: string; port?: number; we
         if (url.pathname === '/api/jobs/prepare' && request.method === 'POST') {
           const input = await body(request) as PrepareJobInput;
           if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to review outgoing content.' });
-          const prepared = await jobs.prepare(input, requireCurrentPairing), result = prepareConsentForTrustedHost(consent, prepared.consent);
+          const prepared = await jobs.prepare(input, requireCurrentPairing);
+          if (!requireCurrentPairing()) return send(response, 401, { error: 'Pairing changed before consent preparation. Pair again.' });
+          const result = prepareConsentForTrustedHost(consent, prepared.consent);
           return send(response, result.status, { ...(result.body as Record<string, unknown>), job: prepared.job });
         }
         if (url.pathname === '/api/jobs' && request.method === 'POST') {
@@ -248,7 +250,9 @@ export async function startServer(options: { database: string; port?: number; we
           if (request.method === 'POST' && action === 'prepare-retry') {
             const input = await body(request) as PrepareRetryJobInput;
             if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to review this retry.' });
-            const prepared = await jobs.prepareRetry(jobId, input, requireCurrentPairing), result = prepareConsentForTrustedHost(consent, prepared.consent);
+            const prepared = await jobs.prepareRetry(jobId, input, requireCurrentPairing);
+            if (!requireCurrentPairing()) return send(response, 401, { error: 'Pairing changed before consent preparation. Pair again.' });
+            const result = prepareConsentForTrustedHost(consent, prepared.consent);
             return send(response, result.status, { ...(result.body as Record<string, unknown>), job: prepared.job });
           }
           if (request.method === 'POST' && action === 'followups') {
@@ -259,7 +263,9 @@ export async function startServer(options: { database: string; port?: number; we
           if (request.method === 'POST' && action === 'prepare-followup') {
             const input = await body(request) as PrepareFollowupJobInput;
             if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to review this follow-up.' });
-            const prepared = await jobs.prepareFollowup(jobId, input, requireCurrentPairing), result = prepareConsentForTrustedHost(consent, prepared.consent);
+            const prepared = await jobs.prepareFollowup(jobId, input, requireCurrentPairing);
+            if (!requireCurrentPairing()) return send(response, 401, { error: 'Pairing changed before consent preparation. Pair again.' });
+            const result = prepareConsentForTrustedHost(consent, prepared.consent);
             return send(response, result.status, { ...(result.body as Record<string, unknown>), job: prepared.job });
           }
         }
@@ -277,6 +283,7 @@ export async function startServer(options: { database: string; port?: number; we
       }
       send(response, 404, { error: 'This page is unavailable.' });
     } catch (error) {
+      if (error instanceof JobAdmissionError) return send(response, 401, { error: error.message });
       if (error instanceof JobUnavailableError) return send(response, 503, { error: error.message });
       const conflict = error instanceof ConflictError || error instanceof JobConflictError;
       send(response, conflict ? 409 : 400, { error: conflict ? error.message : 'The request could not be saved. Check its content and try again.' });

@@ -2,17 +2,22 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ProviderNotSentError, type ProviderHandle, type ProviderRequest } from '../../contracts/job-runner.ts';
 import { canonicalReplyData, parseAndValidateReply, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
-import type { FollowupJobInput, FrozenJobContext, JobSnapshot, PreparedJobResult, PrepareFollowupJobInput, PrepareJobInput, PrepareRetryJobInput, ProviderJobPacket, RetryJobInput, StartJobInput } from '../../contracts/jobs.ts';
+import type { FollowupJobInput, FrozenJobContext, JobSnapshot, PreparedJobResult, PrepareFollowupJobInput, PrepareJobInput, PrepareRetryJobInput, RetryJobInput, StartJobInput } from '../../contracts/jobs.ts';
 import type { OutgoingPart, PrepareConsentInput } from '../../contracts/consent.ts';
 import type { ReaderStore } from '../store.ts';
-import type { QuoteAnchor, SourceVersion } from '../../contracts/reader.ts';
 import type { AuthorizedRuntimeFactory, RunningProvider } from './runtime.ts';
 import { JobConflictError, JobStore, packetDigest } from './store.ts';
 import { prepareContinuationWorkspace, prepareWorkspace, provisionalForDisplay, readReplyFile, restoreCompletedWorkspace, verifyContinuationWorkspace } from './workspace.ts';
 import { buildProviderPrompt, prepareEnvelope } from './envelope.ts';
 import type { LibrarySettingsService } from '../library.ts';
+import { prepareSendCheckpoint } from './send-checkpoint.ts';
+import { fitOutgoingPacket, utf8Prefix } from './outgoing-budget.ts';
+import { frozenFollowup } from './followup-context.ts';
+import { buildProviderPacket } from './packet.ts';
+import { loadHostInstructions } from './host-instructions.ts';
 
 const ID = /^[\w-]{1,100}$/;
+const CAPABILITIES = new Set<ReplyCapability>(['samples', 'solver', 'media.audio', 'media.image', 'media.video', 'network.citations', 'network.shelf']);
 const PROVIDER_TERMINAL = new Set(['completed', 'failed', 'cancelled', 'outcome_unknown']);
 
 export type JobServiceOptions = {
@@ -22,15 +27,20 @@ export type JobServiceOptions = {
   timeoutMs?: number;
   library: Pick<LibrarySettingsService, 'modelFor' | 'continuationIdentity'>;
   defaults?: { provider: StartJobInput['provider']; mode: StartJobInput['mode']; policyKey?: string;
+    modeFor?: (intent: StartJobInput['intent']) => StartJobInput['mode'];
     policyFor?: (workspace: string, mode: StartJobInput['mode'], model: string, provider: StartJobInput['provider']) => string;
     capabilities: ReplyCapability[] };
 };
 
 export class JobService {
   readonly store: JobStore;
-  readonly available: boolean;
   readonly configured: boolean;
-  readonly unavailableReason?: string;
+  get available(): boolean { return this.configured && this.factory?.dispatchReady === true && !this.closing; }
+  get unavailableReason(): string | undefined {
+    return !this.defaults || !this.configured && !!this.factory ? 'No host-owned execution policy is configured.'
+      : this.factory?.unavailableReason ?? (!this.factory ? 'No authorized provider runtime is configured.'
+        : !this.available ? 'Dedicated sign-in and runtime policy evidence are not ready.' : undefined);
+  }
   private reader: ReaderStore;
   private workspaceRoot: string;
   private factory?: AuthorizedRuntimeFactory;
@@ -43,7 +53,9 @@ export class JobService {
   private retentionTimers = new Map<string, NodeJS.Timeout>();
   private settling = new Set<string>();
   private markedDispatch = new Set<string>();
+  private sends = new Map<string, ReturnType<typeof prepareSendCheckpoint>>();
   private pending = new Set<Promise<void>>();
+  private recovery?: Promise<void>;
   private closing = false;
   private library: JobServiceOptions['library'];
   private defaults?: JobServiceOptions['defaults'];
@@ -53,18 +65,31 @@ export class JobService {
     this.workspaceRoot = resolve(options.workspaceRoot);
     this.factory = options.runtimeFactory;
     this.library = options.library;
-    this.defaults = options.defaults && { ...options.defaults, capabilities: [...options.defaults.capabilities] };
+    const defaults = options.defaults;
+    this.defaults = defaults && ['app-server', 'mcp-server'].includes(defaults.provider) &&
+      ['structured-final', 'workspace-files'].includes(defaults.mode) && Array.isArray(defaults.capabilities) &&
+      defaults.capabilities.length <= CAPABILITIES.size && defaults.capabilities.every(value => CAPABILITIES.has(value)) &&
+      (defaults.modeFor === undefined || typeof defaults.modeFor === 'function') &&
+      (defaults.policyFor === undefined || typeof defaults.policyFor === 'function')
+      ? { ...defaults, capabilities: [...new Set(defaults.capabilities)] } : undefined;
     this.configured = !!options.runtimeFactory && !!this.defaults &&
       (typeof this.defaults.policyFor === 'function' || !!this.defaults.policyKey && /^[a-f0-9]{64}$/.test(this.defaults.policyKey));
-    this.available = this.configured && options.runtimeFactory!.dispatchReady;
-    this.unavailableReason = !this.defaults || !this.configured && !!options.runtimeFactory ? 'No host-owned execution policy is configured.'
-      : options.runtimeFactory?.unavailableReason ?? (!options.runtimeFactory ? 'No authorized provider runtime is configured.'
-        : !options.runtimeFactory.dispatchReady ? 'Dedicated sign-in and runtime policy evidence are not ready.' : undefined);
     this.timeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1_000 || this.timeoutMs > 60 * 60 * 1000) throw new Error('Invalid job timeout.');
   }
-  async recover() {
+  recover(): Promise<void> {
+    if (this.closing) return Promise.resolve();
+    if (this.recovery) return this.recovery;
+    const task = this.recoverRecorded().finally(() => {
+      this.pending.delete(task);
+      if (this.recovery === task) this.recovery = undefined;
+    });
+    this.recovery = task; this.pending.add(task);
+    return task;
+  }
+  private async recoverRecorded() {
     for (const job of this.store.list()) {
+      if (this.closing) return;
       if (job.state === 'queued' && !job.latestAttemptId) { this.store.failQueuedWithoutAttempt(job.id); continue; }
       if (!job.latestAttemptId || !['queued', 'preparing', 'sending', 'running', 'validating', 'cancel_requested'].includes(job.state)) continue;
       const attempt = job.attempts.find(a => a.id === job.latestAttemptId);
@@ -95,28 +120,33 @@ export class JobService {
       const deadline = attempt.deadlineAt ? Date.parse(attempt.deadlineAt) : Date.now() + this.timeoutMs;
       if (deadline <= Date.now()) { this.store.markTimedOut(job.id, attempt.id); continue; }
       try {
-        const runtime = await this.factory.create(job, attempt.id, attempt.providerHandle.workspace, this.hostHooks());
+        const workspace = await restoreCompletedWorkspace(this.workspaceRoot, attempt.providerHandle.workspace, job.context.outgoing);
+        if (this.closing) return;
+        const runtime = await this.factory.create(job, attempt.id, workspace, this.hostHooks());
         this.runtimes.set(attempt.id, runtime);
-        this.workspaces.set(attempt.id, attempt.providerHandle.workspace);
+        if (this.closing) { await this.releaseRuntime(attempt.id); return; }
+        this.workspaces.set(attempt.id, workspace);
         this.armTimeout(job.id, attempt.id, deadline);
-        if (job.mode === 'workspace-files') this.watchWorkspace(job.id, attempt.id, attempt.providerHandle.workspace, this.store.capabilities(job.id));
+        if (job.mode === 'workspace-files') this.watchWorkspace(job.id, attempt.id, workspace, this.store.capabilities(job.id));
         const observed = job.cancelRequested ? await runtime.runner.cancel(attempt.providerHandle) : await runtime.runner.inspect(attempt.providerHandle);
         if (PROVIDER_TERMINAL.has(observed.state)) await this.settleFromDurable(job.id, attempt.id);
       } catch (error) {
         this.store.setState(job.id, attempt.id, 'outcome_unknown', `recovery-unavailable:${safeReason(error)}`);
+        this.clearActivity(attempt.id); await this.releaseRuntime(attempt.id);
       }
     }
   }
   get(id: string) { return this.store.get(id); }
   list(threadId?: string) { if (threadId !== undefined) requireId(threadId, 'thread'); return this.store.list(threadId); }
   async prepare(raw: PrepareJobInput, admit?: () => boolean): Promise<PreparedJobResult> {
-    if (!this.configured || !this.defaults) throw new JobUnavailableError(this.unavailableReason);
+    if (this.closing || !this.configured || !this.defaults) throw new JobUnavailableError(this.unavailableReason);
     const draft = validatePrepare(raw);
     const tier = draft.intent === 'define' ? 'fast' : 'deep';
     const selection = this.library.modelFor(tier);
-    const input: StartJobInput = { ...draft, provider: this.defaults.provider, mode: this.defaults.mode,
+    const mode = this.modeFor(draft.intent);
+    const input: StartJobInput = { ...draft, provider: this.defaults.provider, mode: mode,
       capabilities: [...this.defaults.capabilities], model: selection.model,
-      policyKey: this.policyFor(draft.id, this.defaults.mode, selection.model), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64) };
+      policyKey: this.policyFor(draft.id, mode, selection.model), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64) };
     const context = this.freezeContext(input, selection);
     const prepared = await this.prepared(input, context);
     assertAdmission(admit);
@@ -124,15 +154,16 @@ export class JobService {
     return this.preparedResult(input, context, prepared);
   }
   async prepareRetry(jobId: string, raw: PrepareRetryJobInput, admit?: () => boolean): Promise<PreparedJobResult> {
-    if (!this.configured || !this.defaults) throw new JobUnavailableError(this.unavailableReason);
+    if (this.closing || !this.configured || !this.defaults) throw new JobUnavailableError(this.unavailableReason);
     requireId(jobId, 'job'); requireId(raw?.id, 'job'); requireId(raw?.idempotencyKey, 'request');
     const previous = this.store.get(jobId);
     if (!previous || !['failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(previous.state)) throw new JobConflictError('Only finished unsuccessful work can be tried again.');
     const selection = this.library.modelFor(previous.context.intent === 'define' ? 'fast' : 'deep');
+    const mode = this.modeFor(previous.context.intent);
     const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: previous.threadId, intent: previous.context.intent,
-      question: previous.context.question, provider: this.defaults.provider, mode: this.defaults.mode,
+      question: previous.context.question, provider: this.defaults.provider, mode: mode,
       capabilities: [...this.defaults.capabilities], model: selection.model,
-      policyKey: this.policyFor(raw.id, this.defaults.mode, selection.model), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64), parentReplyId: previous.context.parentReplyId };
+      policyKey: this.policyFor(raw.id, mode, selection.model), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64), parentReplyId: previous.context.parentReplyId };
     const context: FrozenJobContext = { ...structuredClone(previous.context), retryOfJobId: previous.id, parentJobId: undefined,
       parentAttemptId: undefined, preparedPayloadDigest: input.preparedPayloadDigest,
       modelSettingsRevision: selection.settingsRevision, modelCompatibilityKey: selection.compatibilityKey };
@@ -143,18 +174,18 @@ export class JobService {
     return this.preparedResult(input, context, prepared);
   }
   async prepareFollowup(parentJobId: string, raw: PrepareFollowupJobInput, admit?: () => boolean): Promise<PreparedJobResult> {
-    if (!this.configured || !this.defaults) throw new JobUnavailableError(this.unavailableReason);
+    if (this.closing || !this.configured || !this.defaults) throw new JobUnavailableError(this.unavailableReason);
     requireId(parentJobId, 'job');
     validateFollowup({ ...raw, grantId: 'pending', preparedPayloadDigest: '0'.repeat(64) });
     const parent = this.store.get(parentJobId);
     if (!parent || parent.state !== 'succeeded' || !parent.replyVersionId || !parent.latestAttemptId) throw new JobConflictError('A follow-up requires a confirmed completed reply.');
     const selection = this.library.modelFor(parent.context.intent === 'define' ? 'fast' : 'deep');
+    const mode = this.modeFor(parent.context.intent);
     const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: parent.threadId, intent: parent.context.intent,
-      question: raw.question.trim(), provider: this.defaults.provider, mode: this.defaults.mode,
+      question: raw.question.trim(), provider: this.defaults.provider, mode: mode,
       capabilities: [...this.defaults.capabilities], model: selection.model,
-      policyKey: this.policyFor(raw.id, this.defaults.mode, selection.model, parent), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64), parentReplyId: parent.replyVersionId };
-    const context: FrozenJobContext = { ...this.freezeContext(input, selection), parentJobId: parent.id,
-      ...(this.canResume(parent, this.defaults.mode, selection.model) ? { parentAttemptId: parent.latestAttemptId } : {}) };
+      policyKey: this.policyFor(raw.id, mode, selection.model, parent), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64), parentReplyId: parent.replyVersionId };
+    const context = this.followupContext(parent, input, selection);
     const prepared = await this.prepared(input, context);
     assertAdmission(admit);
     this.store.savePreparation(input.id, preparationIdentity(input), prepared.digest);
@@ -178,7 +209,7 @@ export class JobService {
     assertAdmission(admit);
     const digest = packetDigest({ input, context });
     const created = this.store.createAndAttempt(input, context, digest, requestDigest, preparationIdentity(input));
-    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id), created.job.id, created.attempt.id);
+    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id, undefined, admit), created.job.id, created.attempt.id);
     return this.store.get(created.job.id)!;
   }
   async retry(jobId: string, raw: RetryJobInput, admit?: () => boolean): Promise<JobSnapshot> {
@@ -188,8 +219,9 @@ export class JobService {
     const previous = this.store.get(jobId);
     if (!previous || !['failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(previous.state)) throw new JobConflictError('Only finished unsuccessful work can be tried again.');
     const selection = this.library.modelFor(previous.context.intent === 'define' ? 'fast' : 'deep');
+    const mode = this.modeFor(previous.context.intent);
     const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: previous.threadId, intent: previous.context.intent,
-      question: previous.context.question, provider: this.defaults.provider, model: selection.model, mode: this.defaults.mode, policyKey: this.policyFor(raw.id, this.defaults.mode, selection.model),
+      question: previous.context.question, provider: this.defaults.provider, model: selection.model, mode: mode, policyKey: this.policyFor(raw.id, mode, selection.model),
       grantId: raw.grantId, preparedPayloadDigest: raw.preparedPayloadDigest, parentReplyId: previous.context.parentReplyId,
       capabilities: [...this.defaults.capabilities] };
     const context: FrozenJobContext = { ...structuredClone(previous.context), retryOfJobId: previous.id, parentJobId: undefined,
@@ -205,7 +237,7 @@ export class JobService {
       return prior;
     }
     const created = this.store.createAndAttempt(input, context, packetDigest({ input, context }), requestDigest, preparationIdentity(input));
-    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id), created.job.id, created.attempt.id);
+    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id, undefined, admit), created.job.id, created.attempt.id);
     return this.store.get(created.job.id)!;
   }
   async followup(parentJobId: string, raw: FollowupJobInput, admit?: () => boolean): Promise<JobSnapshot> {
@@ -217,9 +249,10 @@ export class JobService {
     const parentAttempt = parent.attempts.find(a => a.id === parent.latestAttemptId);
     if (!parentAttempt?.providerHandle || parentAttempt.providerHandle.state !== 'completed') throw new JobConflictError('The provider completion is not confirmed.');
     const selection = this.library.modelFor(parent.context.intent === 'define' ? 'fast' : 'deep');
+    const mode = this.modeFor(parent.context.intent);
     const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: parent.threadId, intent: parent.context.intent,
       question: raw.question, provider: this.defaults.provider, model: selection.model,
-      mode: this.defaults.mode, policyKey: this.policyFor(raw.id, this.defaults.mode, selection.model, parent),
+      mode: mode, policyKey: this.policyFor(raw.id, mode, selection.model, parent),
       grantId: raw.grantId, preparedPayloadDigest: raw.preparedPayloadDigest, parentReplyId: parent.replyVersionId, capabilities: [...this.defaults.capabilities] };
     const requestDigest = packetDigest(input);
     const prior = this.store.findByIdempotencyKey(input.idempotencyKey);
@@ -227,13 +260,12 @@ export class JobService {
       if (prior.id !== input.id || prior.requestDigest !== requestDigest) throw new JobConflictError('This request key already identifies different work.');
       return prior;
     }
-    const context: FrozenJobContext = { ...this.freezeContext(input, selection), parentJobId: parent.id,
-      ...(this.canResume(parent, this.defaults.mode, selection.model) ? { parentAttemptId: parentAttempt.id } : {}) };
+    const context = this.followupContext(parent, input, selection);
     if ((await this.prepared(input, context)).digest !== input.preparedPayloadDigest) throw new JobConflictError('The reviewed outgoing content changed. Review it again.');
     assertAdmission(admit);
     const digest = packetDigest({ input, context });
     const created = this.store.createAndAttempt(input, context, digest, requestDigest, preparationIdentity(input));
-    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id, parentAttempt.providerHandle), created.job.id, created.attempt.id);
+    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id, parentAttempt.providerHandle, admit), created.job.id, created.attempt.id);
     return this.store.get(created.job.id)!;
   }
   async cancel(jobId: string): Promise<JobSnapshot> {
@@ -244,6 +276,7 @@ export class JobService {
         this.clearActivity(job.latestAttemptId);
         this.store.releaseUndispatchedContinuation(job.latestAttemptId);
         this.recordOutcome(job.latestAttemptId, 'cancelled-before-provider-handoff');
+        await this.releaseRuntime(job.latestAttemptId);
       }
       return this.store.get(jobId)!;
     }
@@ -268,14 +301,14 @@ export class JobService {
       if (!note || !thread.notes.some(n => n.id === note.noteId)) throw new Error('The note version is unavailable in this thread.');
       answeredNote = note;
     }
-    const outgoing = providerPacket(input, thread.anchor, source, thread.sourceUrl, thread.sourceTitle, answeredNote);
+    const outgoing = buildProviderPacket(input, thread.anchor, source, thread.sourceUrl, thread.sourceTitle, answeredNote);
     if (input.parentReplyId) {
       const parent = this.reader.reply(input.parentReplyId);
       if (!parent || parent.deletedAt) throw new Error('The parent reply is unavailable.');
       const sourceBytes = Buffer.from(canonicalReplyData(parent.reply), 'utf8');
-      const excerpt = utf8Prefix(sourceBytes, 4_000);
+      const excerpt = utf8Prefix(sourceBytes.toString('utf8'), 4_000);
       outgoing.parentReply = { replyVersionId: parent.id, attribution: 'Prior generated work, not source evidence.',
-        excerpt, omittedBytes: sourceBytes.length - Buffer.byteLength(excerpt) };
+        excerpt, omittedBytes: sourceBytes.length - Buffer.byteLength(excerpt), sha256: packetDigest(parent.reply) };
       if (outgoing.parentReply.omittedBytes) outgoing.omissions.push('The accepted parent reply was truncated to a 4,000-byte host-owned excerpt.');
     }
     return { threadId: thread.id, sourceVersionId: thread.sourceVersionId, sourceUrl: thread.sourceUrl, sourceTitle: thread.sourceTitle,
@@ -284,7 +317,12 @@ export class JobService {
       parentReplyId: input.parentReplyId, preparedPayloadDigest: input.preparedPayloadDigest,
       modelSettingsRevision: selection.settingsRevision, modelCompatibilityKey: selection.compatibilityKey, outgoing };
   }
-  private async dispatch(jobId: string, attemptId: string, predecessor?: ProviderHandle) {
+  private followupContext(parent: JobSnapshot, input: StartJobInput, selection: ReturnType<LibrarySettingsService['modelFor']>): FrozenJobContext {
+    const thread = this.reader.get(parent.threadId), accepted = parent.replyVersionId && this.reader.reply(parent.replyVersionId);
+    if (!thread || thread.deletedAt || !accepted || accepted.deletedAt || accepted.threadId !== parent.threadId) throw new JobConflictError('The accepted parent reply is unavailable.');
+    return frozenFollowup(parent, input, selection, accepted.id, canonicalReplyData(accepted.reply), this.canResume(parent, input.mode, input.model));
+  }
+  private async dispatch(jobId: string, attemptId: string, predecessor?: ProviderHandle, admit?: () => boolean) {
     if (this.closing) throw new Error('service-closing');
     const factory = this.factory;
     if (!factory) throw new JobUnavailableError();
@@ -297,20 +335,32 @@ export class JobService {
     if (decision.grantId !== job.grantId || decision.policyKey !== job.policyKey) throw new Error('Current consent no longer matches the persisted request.');
     if (!decision.auditScope) throw new Error('Consent authorization identity is unavailable.');
     if (!decision.eligibilityFingerprint || !/^[a-f0-9]{64}$/.test(decision.eligibilityFingerprint)) throw new Error('Current consent eligibility token is unavailable.');
-    if (!this.active(jobId, attemptId)) { this.store.releaseUndispatchedContinuation(attemptId); return; }
+    if (!this.active(jobId, attemptId)) { this.store.releaseUndispatchedContinuation(attemptId); await this.releaseRuntime(attemptId); return; }
     const compatible = this.store.bindAuthorization(attemptId, this.library.continuationIdentity({ model: job.model,
       settingsRevision: job.context.modelSettingsRevision, compatibilityKey: job.context.modelCompatibilityKey }, decision.auditScope));
     if (!job.context.parentAttemptId || !compatible || (predecessor && (predecessor.policyKey !== job.policyKey || predecessor.model !== job.model || predecessor.mode !== job.mode))) predecessor = undefined;
     // MCP continuation is owned by the live loaded process. After restart/retention it must fork.
-    if (predecessor?.provider === 'mcp-server' && (!job.context.parentAttemptId || !this.runtimes.has(job.context.parentAttemptId))) predecessor = undefined;
+    let retained = job.context.parentAttemptId ? this.runtimes.get(job.context.parentAttemptId) : undefined;
+    if (predecessor?.provider === 'mcp-server' && !retained?.canResume?.(predecessor)) predecessor = undefined;
     if (!predecessor) this.store.forkUndispatchedContinuation(attemptId);
     const plannedWorkspace = predecessor?.workspace ?? resolve(this.workspaceRoot, job.id);
     if (this.defaults?.policyFor && this.defaults.policyFor(plannedWorkspace, job.mode, job.model, job.provider) !== job.policyKey) {
       throw new JobConflictError('Continuation workspace or permission changed after review. Prepare this follow-up again.');
     }
+    if (predecessor && retained && job.context.parentAttemptId) {
+      const timer = this.retentionTimers.get(job.context.parentAttemptId); if (timer) clearTimeout(timer);
+      this.retentionTimers.delete(job.context.parentAttemptId); this.runtimes.delete(job.context.parentAttemptId);
+      this.runtimes.set(attemptId, retained);
+    } else retained = undefined;
     const schema = await this.replySchema();
-    if (predecessor) await verifyContinuationWorkspace(predecessor.workspace, schema);
-    if (!this.active(jobId, attemptId)) { this.store.releaseUndispatchedContinuation(attemptId); return; }
+    if (predecessor) {
+      const parent = job.context.parentJobId && this.store.get(job.context.parentJobId);
+      if (!parent) throw new JobConflictError('The continuation predecessor is unavailable.');
+      await restoreCompletedWorkspace(this.workspaceRoot, predecessor.workspace, parent.context.outgoing);
+      await verifyContinuationWorkspace(predecessor.workspace, schema);
+      if (predecessor.provider === 'mcp-server' && !retained?.canResume?.(predecessor)) throw new Error('mcp-session-lost-before-handoff');
+    }
+    if (!this.active(jobId, attemptId)) { this.store.releaseUndispatchedContinuation(attemptId); await this.releaseRuntime(attemptId); return; }
     this.store.markWorkspacePrepared(jobId, attemptId);
     // Capture the prepared state before the filesystem and provider startup awaits.
     const expectedHandoff = this.store.get(jobId)!;
@@ -318,32 +368,35 @@ export class JobService {
       ? await prepareContinuationWorkspace(predecessor.workspace, predecessor.jobId, job.context.outgoing, schema)
       : await prepareWorkspace(this.workspaceRoot, job.id, job.context.outgoing, schema);
     this.workspaces.set(attemptId, workspace);
-    if (!this.active(jobId, attemptId)) { this.workspaces.delete(attemptId); return; }
+    if (!this.active(jobId, attemptId)) { await this.releaseRuntime(attemptId); return; }
     const capabilities = this.store.capabilities(job.id);
     const host = this.hostHooks();
-    let runtime: RunningProvider;
-    if (predecessor && job.context.parentAttemptId && this.runtimes.has(job.context.parentAttemptId)) {
-      runtime = this.runtimes.get(job.context.parentAttemptId)!;
-      const retention = this.retentionTimers.get(job.context.parentAttemptId); if (retention) clearTimeout(retention);
-      this.retentionTimers.delete(job.context.parentAttemptId); this.runtimes.delete(job.context.parentAttemptId);
-    } else runtime = await factory.create(job, attemptId, workspace, host);
+    const runtime = retained ?? await factory.create(job, attemptId, workspace, host);
     if (this.closing) { await runtime.close(); throw new Error('service-closing'); }
     this.runtimes.set(attemptId, runtime);
     if (!this.active(jobId, attemptId)) { await this.releaseRuntime(attemptId); return; }
     if (job.mode === 'workspace-files') this.watchWorkspace(jobId, attemptId, workspace, capabilities);
     job = this.store.get(jobId)!;
-    if (job.cancelRequested) return;
-    const request = this.providerRequest(job, attemptId, workspace, JSON.parse(schema));
-    this.store.withDispatchHandoff(expectedHandoff, attemptId, factory.consent,
-      current => factory.consent.finalizeDispatch(current, attemptId, decision.eligibilityFingerprint!));
-    this.markedDispatch.add(attemptId);
-    const operation = predecessor ? runtime.runner.resume(predecessor, request) : runtime.runner.start(request);
-    const observed = await operation;
-    if (PROVIDER_TERMINAL.has(observed.state)) await this.settleFromDurable(jobId, attemptId);
+    if (job.cancelRequested) { await this.releaseRuntime(attemptId); return; }
+    if (predecessor?.provider === 'mcp-server' && !runtime.canResume?.(predecessor)) throw new Error('mcp-session-lost-before-handoff');
+    const request = this.providerRequest(expectedHandoff, attemptId, workspace, JSON.parse(schema));
+    this.sends.set(attemptId, prepareSendCheckpoint(this.store, expectedHandoff, request, factory.consent,
+      decision.eligibilityFingerprint!, () => !this.closing && (!admit || admit() === true)));
+    try {
+      const observed = await (predecessor ? runtime.runner.resume(predecessor, request) : runtime.runner.start(request));
+      if (PROVIDER_TERMINAL.has(observed.state)) await this.settleFromDurable(jobId, attemptId);
+    } finally { this.sends.delete(attemptId); }
   }
   private hostHooks() {
     return {
       jobForAttempt: (attemptId: string) => this.store.jobForAttempt(attemptId),
+      finalizeSend: (request: ProviderRequest, handle: ProviderHandle) => {
+        const prepared = this.sends.get(request.jobId);
+        if (!prepared) throw new JobConflictError('No current prepared provider send exists.');
+        const canonical = prepared.finalize(request, handle);
+        this.markedDispatch.add(request.jobId);
+        return canonical;
+      },
       checkpoint: async (handle: ProviderHandle) => {
         const acknowledged = this.store.acknowledgeStopFence(handle.jobId, handle);
         if (acknowledged) return acknowledged;
@@ -392,63 +445,77 @@ export class JobService {
         const workspace = this.workspaces.get(attemptId);
         if (workspace) reply = await readReplyFile(workspace, 'reply.json', job.context.sourceText, capabilities);
       }
+      if (!this.currentSettlement(jobId, attemptId, expectedRevision)) return;
       if (!reply) { this.store.setState(jobId, attemptId, 'failed', 'invalid-or-missing-final-reply'); this.recordOutcome(attemptId, 'invalid-output'); return; }
       job = this.store.get(jobId)!;
       const decision = await this.factory!.consent.revalidate(job, 'commit');
+      if (!this.currentSettlement(jobId, attemptId, expectedRevision)) return;
       if (decision.grantId !== job.grantId || decision.policyKey !== job.policyKey) { this.store.setState(jobId, attemptId, 'cancelled', 'consent-revoked-before-commit'); this.recordOutcome(attemptId, 'consent-revoked'); return; }
       const latest = this.store.get(jobId)?.attempts.find(a => a.id === attemptId);
       if (!latest || latest.revision !== expectedRevision || latest.providerHandle?.state !== 'completed') return;
-      this.factory!.consent.withResultAcceptance(job, attemptId, () => this.store.succeed(jobId, attemptId, expectedRevision, reply));
+      const accepted = reply;
+      this.factory!.consent.withResultAcceptance(job, attemptId, () => this.store.succeed(jobId, attemptId, expectedRevision, accepted));
     } catch (error) {
-      const current = this.store.get(jobId)?.attempts.find(a => a.id === attemptId);
-      if (current?.revision === expectedRevision) this.store.setState(jobId, attemptId, 'failed', safeReason(error));
+      if (this.currentSettlement(jobId, attemptId, expectedRevision)) this.store.setState(jobId, attemptId, 'failed', safeReason(error));
     } finally {
       this.settling.delete(attemptId);
-      this.clearActivity(attemptId);
-      const final = this.store.get(jobId);
-      if (final?.state === 'succeeded') this.retainRuntime(attemptId);
-      else if (final && ['failed', 'cancelled'].includes(final.state)) await this.releaseRuntime(attemptId);
-      else {
-        const latest = final?.attempts.find(a => a.id === attemptId);
-        if (latest?.revision !== expectedRevision && latest?.providerHandle?.state === 'completed' && final?.state === 'validating') {
-          queueMicrotask(() => this.launch(this.settle(jobId, attemptId, latest.revision), jobId, attemptId));
-        }
+      let final = this.store.get(jobId);
+      const latest = final?.attempts.find(a => a.id === attemptId);
+      if (final?.cancelRequested && final.state === 'cancel_requested' && latest?.providerHandle?.state === 'completed') {
+        this.store.setState(jobId, attemptId, 'cancelled', 'late-output-fenced'); this.recordOutcome(attemptId, 'cancelled'); final = this.store.get(jobId);
+      }
+      if (latest && latest.revision !== expectedRevision && this.currentSettlement(jobId, attemptId, latest.revision)) {
+        this.launch(this.settle(jobId, attemptId, latest.revision), jobId, attemptId);
+      } else if (final && ['succeeded', 'failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(final.state)) {
+        this.clearActivity(attemptId);
+        if (final.state === 'succeeded') this.retainRuntime(attemptId);
+        else if (['failed', 'cancelled', 'outcome_unknown'].includes(final.state)) await this.releaseRuntime(attemptId);
       }
     }
+  }
+  private currentSettlement(jobId: string, attemptId: string, revision: number): boolean {
+    const job = this.store.get(jobId), attempt = job?.attempts.find(a => a.id === attemptId);
+    return !!job && !job.cancelRequested && job.latestAttemptId === attemptId && job.state === 'validating' &&
+      attempt?.state === 'validating' && attempt.revision === revision && attempt.providerHandle?.state === 'completed';
   }
   private watchWorkspace(jobId: string, attemptId: string, workspace: string, capabilities: readonly ReplyCapability[]) {
     let reading = false;
     const timer = setInterval(() => {
-      if (reading) return;
+      if (reading || this.closing) return;
       reading = true;
-      void (async () => {
+      const observed = (async () => {
         const job = this.store.get(jobId);
         if (!job || job.latestAttemptId !== attemptId || job.cancelRequested || ['succeeded', 'failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(job.state)) return;
         const partial = await readReplyFile(workspace, 'reply.partial.json', job.context.sourceText, capabilities);
-        if (partial) this.store.saveProvisional(jobId, attemptId, provisionalForDisplay(partial));
-      })().catch(() => { /* A transient or invalid partial never gains authority. */ }).finally(() => { reading = false; });
+        if (partial && !this.closing) this.store.saveProvisional(jobId, attemptId, provisionalForDisplay(partial));
+      })().catch(() => { /* A transient or invalid partial never gains authority. */ })
+        .finally(() => { reading = false; this.pending.delete(observed); });
+      this.pending.add(observed);
     }, 250);
     timer.unref();
     this.watchers.set(attemptId, timer);
   }
   private armTimeout(jobId: string, attemptId: string, deadline = Date.now() + this.timeoutMs) {
-    const timer = setTimeout(() => void (async () => {
+    const timer = setTimeout(() => this.launch((async () => {
       const handle = this.store.markTimedOut(jobId, attemptId);
+      const current = this.store.get(jobId);
+      if (current?.state !== 'timed_out' || current.latestAttemptId !== attemptId) return;
       this.recordOutcome(attemptId, 'timed_out');
       const runtime = this.runtimes.get(attemptId);
-      if (handle && runtime) try { await runtime.runner.cancel(handle); } catch { /* Durable timeout preserves uncertainty. */ }
+      if (handle && runtime) try { await runtime.runner.cancel(handle); } catch { /* Timeout remains durable; stopping is unconfirmed. */ }
       this.clearActivity(attemptId);
-    })(), Math.max(1, deadline - Date.now()));
-    timer.unref();
-    this.timers.set(attemptId, timer);
+      await this.releaseRuntime(attemptId);
+    })(), jobId, attemptId), Math.max(1, deadline - Date.now()));
+    timer.unref(); this.timers.set(attemptId, timer);
   }
   private clearActivity(attemptId: string) {
     const timer = this.timers.get(attemptId); if (timer) clearTimeout(timer); this.timers.delete(attemptId);
     const watcher = this.watchers.get(attemptId); if (watcher) clearInterval(watcher); this.watchers.delete(attemptId);
   }
-  private failDispatch(jobId: string, attemptId: string, error: unknown) {
+  private async failDispatch(jobId: string, attemptId: string, error: unknown) {
     this.clearActivity(attemptId);
     const job = this.store.get(jobId);
+    if (job?.state === 'succeeded') return; // Cleanup failure cannot relabel committed success.
     const attempt = job?.attempts.find(value => value.id === attemptId);
     const handedOff = attempt?.handoffMarked ?? this.markedDispatch.has(attemptId);
     const confirmedNotSent = error instanceof ProviderNotSentError && error.provider === job?.provider &&
@@ -456,7 +523,9 @@ export class JobService {
       !['succeeded', 'failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(job!.state);
     this.store.setState(jobId, attemptId, handedOff && !confirmedNotSent ? 'outcome_unknown' : 'failed', safeReason(error));
     if (!handedOff) this.store.releaseUndispatchedContinuation(attemptId);
-    this.recordOutcome(attemptId, handedOff && !confirmedNotSent ? 'outcome_unknown' : 'dispatch-failed');
+    const state = this.store.get(jobId)?.state;
+    this.recordOutcome(attemptId, state === 'timed_out' || state === 'cancelled' ? state : handedOff && !confirmedNotSent ? 'outcome_unknown' : 'dispatch-failed');
+    if (!handedOff || ['cancelled', 'failed', 'outcome_unknown'].includes(state ?? '')) await this.releaseRuntime(attemptId);
   }
   private launch(operation: Promise<void>, jobId: string, attemptId: string) {
     const tracked = operation.catch(error => this.failDispatch(jobId, attemptId, error)).finally(() => this.pending.delete(tracked));
@@ -468,7 +537,7 @@ export class JobService {
     this.runtimes.delete(attemptId);
     this.workspaces.delete(attemptId);
     this.markedDispatch.delete(attemptId);
-    if (runtime) await runtime.close();
+    if (runtime) try { await runtime.close(); } catch { /* Disposal is best effort, never proof of a stopped provider. */ }
   }
   private retainRuntime(attemptId: string) {
     if (!this.runtimes.has(attemptId)) return;
@@ -488,39 +557,23 @@ export class JobService {
   }
   private async prepared(input: StartJobInput, context: FrozenJobContext) {
     const replySchemaText = await this.replySchema();
+    context.hostInstructions = await loadHostInstructions(input.intent);
     const envelopeInput = { sourceUrl: context.sourceUrl,
       scope: input.intent === 'evidence' || input.intent === 'explore' ? 'open-session' : 'cloud-inference',
       recipient: 'openai-codex', provider: input.provider, model: input.model, mode: input.mode, policyKey: input.policyKey,
       context, outputSchema: input.mode === 'structured-final' ? JSON.parse(replySchemaText) as Record<string, unknown> : undefined,
       replySchemaText } as const;
-    const packet = context.outgoing;
-    const omission = 'Additional context was omitted to keep the complete duplicated prompt, packet, instructions, and schema within 64 KiB UTF-8.';
-    let prepared = prepareEnvelope(envelopeInput);
-    for (let pass = 0; totalOutgoingBytes(prepared.outgoing) > 64 * 1024; pass++) {
-      if (pass > 16) throw new JobConflictError('The fixed outgoing instructions and schema exceed the preview limit.');
-      if (!packet.omissions.includes(omission)) packet.omissions.push(omission);
-      const overflow = totalOutgoingBytes(prepared.outgoing) - 64 * 1024;
-      const budget = Math.max(16, Math.ceil(overflow / 2) + 16);
-      if (packet.adjacentContext.after) packet.adjacentContext.after = trimUtf8Tail(packet.adjacentContext.after, budget);
-      else if (packet.adjacentContext.before) packet.adjacentContext.before = trimUtf8Head(packet.adjacentContext.before, budget);
-      else if (packet.parentReply?.excerpt) {
-        const excerpt = packet.parentReply.excerpt, shortened = trimUtf8Tail(excerpt, budget);
-        packet.parentReply.excerpt = shortened;
-        packet.parentReply.omittedBytes += Buffer.byteLength(excerpt) - Buffer.byteLength(shortened);
-      } else if (packet.answeredNote?.text) {
-        packet.answeredNote.text = trimUtf8Tail(packet.answeredNote.text, budget);
-        packet.answeredNote.omittedCharacters = packet.answeredNote.originalCharacters - packet.answeredNote.text.length;
-      } else if (packet.selection.exact) {
-        packet.selection.exact = trimUtf8Tail(packet.selection.exact, budget);
-        packet.selection.end = packet.selection.start + packet.selection.exact.length;
-        packet.selection.omittedCharacters = packet.selection.originalEnd - packet.selection.end;
-      } else throw new JobConflictError('The required outgoing content exceeds the 64 KiB preview limit.');
-      prepared = prepareEnvelope(envelopeInput);
-    }
-    return prepared;
+    const fitted = fitOutgoingPacket(context.outgoing, packet => prepareEnvelope({ ...envelopeInput, context: { ...context, outgoing: packet } }));
+    context.outgoing = fitted.packet;
+    return fitted.prepared;
+  }
+  private modeFor(intent: StartJobInput['intent']): StartJobInput['mode'] {
+    const mode = this.defaults?.modeFor?.(intent) ?? this.defaults!.mode;
+    if (!['structured-final', 'workspace-files'].includes(mode)) throw new JobConflictError('The host execution mode is unavailable.');
+    return mode;
   }
   private assertHostPlan(input: StartJobInput) {
-    if (!this.defaults || input.provider !== this.defaults.provider || input.mode !== this.defaults.mode || input.policyKey !== this.policyFor(input.id, input.mode, input.model) ||
+    if (!this.defaults || input.provider !== this.defaults.provider || input.mode !== this.modeFor(input.intent) || input.policyKey !== this.policyFor(input.id, input.mode, input.model) ||
       packetDigest(input.capabilities ?? []) !== packetDigest(this.defaults.capabilities)) throw new JobConflictError('The requested execution plan is not the current host plan. Review it again.');
   }
   private policyFor(jobId: string, mode: StartJobInput['mode'], model: string, parent?: JobSnapshot): string {
@@ -534,7 +587,7 @@ export class JobService {
     const attempt = parent.attempts.find(a => a.id === parent.latestAttemptId), handle = attempt?.providerHandle;
     return !!handle && handle.state === 'completed' && !handle.tombstone &&
       parent.provider === this.defaults?.provider && parent.mode === mode && parent.model === model &&
-      (parent.provider === 'app-server' || (parent.provider === 'mcp-server' && this.runtimes.has(attempt!.id)));
+      (parent.provider === 'app-server' || (parent.provider === 'mcp-server' && this.runtimes.get(attempt!.id)?.canResume?.(handle) === true));
   }
   private consentInput(input: StartJobInput, context: FrozenJobContext, prepared: { digest: string; outgoing: OutgoingPart[] }): PrepareConsentInput {
     return { requestId: input.id, bindingDigest: prepared.digest, sourceUrl: context.sourceUrl,
@@ -550,92 +603,18 @@ export class JobService {
     for (const attemptId of new Set([...this.timers.keys(), ...this.watchers.keys()])) this.clearActivity(attemptId);
     for (const timer of this.retentionTimers.values()) clearTimeout(timer);
     this.retentionTimers.clear();
-    await Promise.allSettled([...this.pending]);
-    await Promise.allSettled([...new Set(this.runtimes.values())].map(runtime => runtime.close()));
+    while (this.pending.size) await Promise.allSettled([...this.pending]);
+    await Promise.allSettled([...new Set(this.runtimes.values())].map(async runtime => { await runtime.close(); }));
     this.runtimes.clear();
     this.workspaces.clear();
+    this.sends.clear();
   }
 }
 
 export class JobUnavailableError extends Error { override name = 'JobUnavailable'; constructor(reason?: string) { super(reason ?? 'Codex execution is not ready. Reading and saved work remain available.'); } }
+export class JobAdmissionError extends JobConflictError { override name = 'JobAdmission'; constructor() { super('Pairing changed before work was admitted. Pair again.'); } }
 function assertAdmission(admit?: () => boolean) {
-  if (admit && !admit()) throw new JobConflictError('Pairing changed before work was admitted. Pair again.');
-}
-function totalOutgoingBytes(parts: readonly OutgoingPart[]) { return parts.reduce((sum, part) => sum + Buffer.byteLength(part.text), 0); }
-function utf8Prefix(value: string | Buffer, limit: number) {
-  let result = '', used = 0;
-  for (const character of value.toString()) {
-    const size = Buffer.byteLength(character);
-    if (used + size > limit) break;
-    result += character; used += size;
-  }
-  return result;
-}
-function trimUtf8Tail(value: string, removeBytes: number) {
-  return utf8Prefix(value, Math.max(0, Buffer.byteLength(value) - removeBytes));
-}
-function trimUtf8Head(value: string, removeBytes: number) {
-  const characters = [...value];
-  let removed = 0, index = 0;
-  while (index < characters.length && removed < removeBytes) removed += Buffer.byteLength(characters[index++]);
-  return characters.slice(index).join('');
-}
-
-function providerPacket(input: StartJobInput, anchor: QuoteAnchor, source: SourceVersion, url: string, title: string, answeredNote?: FrozenJobContext['answeredNote']): ProviderJobPacket {
-  const CONTEXT_LIMIT = 12_000;
-  const selectionText = anchor.exact.slice(0, 4_000);
-  const noteText = answeredNote?.text.slice(0, 4_000);
-  const beforeAvailable = source.text.slice(0, anchor.start);
-  const afterAvailable = source.text.slice(anchor.end);
-  let before: string, after: string, basis: 'section-adjacent-context' | 'bounded-character-context' | 'whole-page-opening';
-  if (anchor.kind === 'whole-page') {
-    before = ''; after = source.text.slice(selectionText.length, selectionText.length + CONTEXT_LIMIT); basis = 'whole-page-opening';
-  } else if (source.sections?.length) {
-    const first = source.sections.findIndex(section => anchor.start < section.end && anchor.end > section.start);
-    const last = source.sections.findLastIndex(section => anchor.start < section.end && anchor.end > section.start);
-    if (first >= 0 && last >= first) {
-      const rangeStart = source.sections[Math.max(0, first - 1)].start;
-      const rangeEnd = source.sections[Math.min(source.sections.length - 1, last + 1)].end;
-      const availableBefore = source.text.slice(rangeStart, anchor.start);
-      const availableAfter = source.text.slice(anchor.end, rangeEnd);
-      const beforeLimit = Math.min(availableBefore.length, Math.floor(CONTEXT_LIMIT / 2));
-      before = availableBefore.slice(-beforeLimit);
-      after = availableAfter.slice(0, CONTEXT_LIMIT - before.length);
-      basis = 'section-adjacent-context';
-    } else {
-      const beforeLimit = Math.floor(CONTEXT_LIMIT / 2);
-      before = beforeAvailable.slice(-beforeLimit); after = afterAvailable.slice(0, CONTEXT_LIMIT - before.length); basis = 'bounded-character-context';
-    }
-  } else {
-    const beforeLimit = Math.floor(CONTEXT_LIMIT / 2);
-    before = beforeAvailable.slice(-beforeLimit);
-    after = afterAvailable.slice(0, CONTEXT_LIMIT - before.length);
-    basis = 'bounded-character-context';
-  }
-  const omissions = [
-    'The full captured page is retained locally for validation and is not included in this provider packet.',
-    'No vocabulary or library matches were included because no scoped host-owned matches were supplied for this request.',
-  ];
-  if (basis === 'bounded-character-context') omissions.push('Section boundaries were not available for this passage, so adjacent context is a bounded character window.');
-  if (beforeAvailable.length > before.length || afterAvailable.length > after.length) omissions.push('Adjacent source text outside the 12,000-character bound was omitted.');
-  if (basis === 'whole-page-opening' && source.text.length > selectionText.length + after.length) omissions.push('The captured page beyond the bounded 16,000-character opening was omitted from provider context.');
-  if (selectionText.length < anchor.exact.length) omissions.push(`The selected-passage field was deterministically bounded to its first 4,000 characters; ${anchor.exact.length - selectionText.length} trailing characters (${anchor.start + selectionText.length}-${anchor.end}) were omitted from that field.`);
-  if (answeredNote && noteText!.length < answeredNote.text.length) omissions.push(`The answered note was deterministically bounded to its first 4,000 characters; ${answeredNote.text.length - noteText!.length} trailing characters were omitted from provider context.`);
-  return {
-    schema: 'marginalia.job-packet.v1' as const,
-    intent: input.intent,
-    question: input.question,
-    source: { url, title, pageType: source.pageType,
-      capturedAt: source.capturedAt, sourceHash: source.hash, sourceVersionId: source.id },
-    selection: { exact: selectionText, prefix: anchor.prefix, suffix: anchor.suffix, start: anchor.start,
-      end: anchor.start + selectionText.length, originalEnd: anchor.end, omittedCharacters: anchor.exact.length - selectionText.length },
-    adjacentContext: { before, after, basis },
-    ...(answeredNote ? { answeredNote: { noteId: answeredNote.noteId, revision: answeredNote.revision, text: noteText!,
-      originalCharacters: answeredNote.text.length, omittedCharacters: answeredNote.text.length - noteText!.length } } : {}),
-    ...(input.parentReplyId ? { parentReplyId: input.parentReplyId } : {}),
-    availableCapabilities: input.capabilities ?? [],
-    omissions,
-  };
+  if (admit && admit() !== true) throw new JobAdmissionError();
 }
 
 function validateStart(value: StartJobInput): StartJobInput {
@@ -649,7 +628,7 @@ function validateStart(value: StartJobInput): StartJobInput {
   if (value.parentReplyId !== undefined) requireId(value.parentReplyId, 'parent reply');
   if (value.answeredNote && (!ID.test(value.answeredNote.noteId) || !Number.isSafeInteger(value.answeredNote.revision) || value.answeredNote.revision < 1)) throw new Error('Invalid note version.');
   const capabilities = value.capabilities ?? [];
-  const allowed = new Set<ReplyCapability>(['samples', 'solver', 'media.audio', 'media.image', 'media.video', 'network.citations', 'network.shelf']);
+  const allowed = CAPABILITIES;
   if (!Array.isArray(capabilities) || capabilities.length > allowed.size || capabilities.some(c => !allowed.has(c))) throw new Error('Invalid reply capabilities.');
   return structuredClone({ ...value, question: value.question.trim(), capabilities: [...new Set(capabilities)] });
 }

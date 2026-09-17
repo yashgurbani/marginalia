@@ -1,6 +1,6 @@
-import { mkdirSync, realpathSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { startServer } from './server.ts';
 import { createInterface } from 'node:readline';
 import { createDiagnostics } from './diagnostics.ts';
@@ -8,8 +8,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AuthorizedRuntimeFactory } from './jobs/runtime.ts';
 import { randomUUID } from 'node:crypto';
 import { createCodexRuntimeFactory } from './jobs/runtime.ts';
-import { createConsentProviderAuthorization, createObservedPolicyEvidenceCollector, unavailablePolicyHostEvidence } from './consent/index.ts';
-import { createCodexPolicy, PINNED_CODEX_VERSION } from './codex-policy.ts';
+import { createConsentProviderAuthorization, createObservedPolicyEvidenceCollector } from './consent/index.ts';
+import { createDedicatedHostEvidenceSource } from './consent/evidence-host.ts';
+import { modeForIntent } from './jobs/mode.ts';
+import { createCodexPolicy, PINNED_CODEX_VERSION, type JsonValue } from './codex-policy.ts';
 import { policyFingerprint } from './providers/policy-gate.ts';
 
 const userDataRoot = process.platform === 'win32' ? process.env.LOCALAPPDATA
@@ -29,36 +31,50 @@ function dedicatedRuntimeIdentity() {
     const identity = { executable: realpathSync(executable), codexHome: realpathSync(home) };
     if (!statSync(identity.executable).isFile() || !statSync(identity.codexHome).isDirectory()) return undefined;
     const ambient = [join(homedir(), '.codex'), process.env.CODEX_HOME].filter((v): v is string => !!v);
+    const nested = (a: string, b: string) => { const r = relative(a, b); return !r || (!isAbsolute(r) && r !== '..' && !r.startsWith(`..${sep}`)); };
     if (ambient.some(value => {
-      try { return realpathSync(value).toLowerCase() === identity.codexHome.toLowerCase(); }
-      catch { return resolve(value).toLowerCase() === identity.codexHome.toLowerCase(); }
+      let actual: string; try { actual = realpathSync(value); } catch { actual = resolve(value); }
+      return nested(actual, identity.codexHome) || nested(identity.codexHome, actual);
     })) return undefined;
     return identity;
   } catch { return undefined; }
 }
 const runtimeIdentity = dedicatedRuntimeIdentity();
 const runtimeModule = process.env.MARGINALIA_AUTHORIZED_RUNTIME_MODULE;
-const diagnostics = createDiagnostics(runtimeModule ? undefined : runtimeIdentity);
+const hostEvidence = createDedicatedHostEvidenceSource();
+const installationDiagnostics = createDiagnostics(runtimeModule ? undefined : runtimeIdentity);
+const diagnostics = async (refresh = false) => ({ ...await installationDiagnostics(refresh),
+  policyEvidence: runtimeModule ? { status: 'external-runtime-not-verified-here' } : { status: 'incomplete', missing: hostEvidence.readiness().reasons } });
 const runtimeFactoryBuilder = async ({ store, consent }: Parameters<NonNullable<Parameters<typeof startServer>[0]['runtimeFactoryBuilder']>>[0]) => {
   if (runtimeModule) {
     const module = await import(pathToFileURL(resolve(runtimeModule)).href) as { createAuthorizedRuntime?: (input: { dataDir: string; store: typeof store; consent: typeof consent }) => Promise<AuthorizedRuntimeFactory> | AuthorizedRuntimeFactory };
     if (typeof module.createAuthorizedRuntime !== 'function') throw new Error('The authorized runtime module must export createAuthorizedRuntime().');
-    return module.createAuthorizedRuntime({ dataDir: canonicalDataDir, store, consent });
+    const factory = await module.createAuthorizedRuntime({ dataDir: canonicalDataDir, store, consent });
+    if (factory.consent !== consent || !factory.jobDefaults) throw new Error('An authorized runtime must use the provided consent authority and supply its host-owned jobDefaults.');
+    return factory;
   }
   if (!runtimeIdentity) return undefined;
-  const evidence = createObservedPolicyEvidenceCollector({ auditEpoch: randomUUID(), host: unavailablePolicyHostEvidence() });
+  const evidence = createObservedPolicyEvidenceCollector({ auditEpoch: randomUUID(), host: hostEvidence });
   const authorization = createConsentProviderAuthorization({ consent, platform: process.platform as 'win32' | 'linux' | 'darwin', evidence });
   return createCodexRuntimeFactory({ ...runtimeIdentity, consent, authorization,
-    dispatchReady: false, unavailableReason: 'The bundled policy evidence source is intentionally unavailable until dedicated sign-in and host confinement evidence are verified.' });
+    dispatchReady: hostEvidence.readiness().ready, readiness: () => hostEvidence.readiness(),
+    configOverridesFor: (job, workspace) => policyFor(workspace, job.mode, job.model, job.provider).configOverrides });
 };
 const policyAuditEpoch = randomUUID();
+let definitionSchema: Record<string, JsonValue> | undefined;
+function policyFor(workspace: string, mode: 'structured-final' | 'workspace-files', model: string, provider: 'app-server' | 'mcp-server') {
+  if (!runtimeIdentity) throw new Error('No dedicated runtime identity is available.');
+  const common = { version: PINNED_CODEX_VERSION, platform: process.platform as 'win32' | 'linux' | 'darwin',
+    adapter: provider, model, workspace, codexHome: runtimeIdentity.codexHome, auditId: policyAuditEpoch };
+  if (mode === 'structured-final') {
+    definitionSchema ??= JSON.parse(readFileSync(new URL('../contracts/reply.schema.json', import.meta.url), 'utf8')) as Record<string, JsonValue>;
+    return createCodexPolicy({ ...common, operation: 'definition', outputSchema: definitionSchema });
+  }
+  return createCodexPolicy({ ...common, operation: 'generation' });
+}
 const jobDefaults = runtimeIdentity && !runtimeModule ? {
-  provider: 'app-server' as const, mode: 'workspace-files' as const, capabilities: [],
-  policyFor: (workspace: string, mode: 'structured-final' | 'workspace-files', model: string, provider: 'app-server' | 'mcp-server') => {
-    if (mode !== 'workspace-files') throw new Error('Unsupported bundled policy mode.');
-    return policyFingerprint(createCodexPolicy({ version: PINNED_CODEX_VERSION, platform: process.platform as 'win32' | 'linux' | 'darwin',
-      adapter: provider, operation: 'generation', model, workspace, codexHome: runtimeIdentity.codexHome, auditId: policyAuditEpoch }));
-  },
+  provider: 'app-server' as const, mode: 'workspace-files' as const, modeFor: modeForIntent, capabilities: [],
+  policyFor: (workspace: string, mode: 'structured-final' | 'workspace-files', model: string, provider: 'app-server' | 'mcp-server') => policyFingerprint(policyFor(workspace, mode, model, provider)),
 } : undefined;
 const server = await startServer({ database: join(canonicalDataDir, 'marginalia.sqlite'), port, webRoot: fileURLToPath(new URL('../webapp/dist', import.meta.url)), diagnostics,
   jobWorkspaceRoot: join(canonicalDataDir, 'jobs'), runtimeFactoryBuilder, jobDefaults }).catch((error: unknown) => {

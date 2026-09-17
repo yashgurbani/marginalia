@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { preparationAuthorization, type PreparationAuthorization } from '../providers/preparation-authority.ts';
 import type Database from 'better-sqlite3';
 import type {
   ConsentAuthorization, ConsentChoice, ConsentDecisionRequest, ConsentGrant, ConsentPreview,
@@ -35,6 +37,7 @@ type AuthorizationRow = {
  */
 export class ConsentSessionService implements JobConsentAuthority {
   private readonly db: Database.Database;
+  private readonly preparation = new AsyncLocalStorage<{ jobId: string; attemptId: string; fingerprint: string; active: boolean }>();
 
   constructor(reader: Pick<ReaderStore, 'db'>) {
     this.db = reader.db;
@@ -250,8 +253,26 @@ export class ConsentSessionService implements JobConsentAuthority {
     return this.authorization(attemptId)!;
   }
 
-  /** Host-only bridge for provider policy evaluation; never expose this through a page route. */
-  currentAuthorization(job: Readonly<JobSnapshot>, attemptId: string, requireDispatched = true): ConsentAuthorization {
+  /** Isolate parallel attempts and revoke escaped asynchronous preparation callbacks on exit. */
+  async withProviderPreparation<T>(job: Readonly<JobSnapshot>, attemptId: string, observe: () => Promise<T>): Promise<T> {
+    const eligibility = this.dispatchEligibility(job, attemptId);
+    const scope = { jobId: job.id, attemptId, fingerprint: eligibility.eligibilityFingerprint, active: true };
+    try { return await this.preparation.run(scope, observe); }
+    finally { scope.active = false; }
+  }
+
+  /** Evidence preparation is explicitly non-dispatched. Outside its host-only scope, the
+   * existing recovery and acceptance paths still require a real durable authorization. */
+  currentAuthorization(job: Readonly<JobSnapshot>, attemptId: string, requireDispatched = true): ConsentAuthorization | PreparationAuthorization {
+    const scope = this.preparation.getStore();
+    if (scope?.active && scope.jobId === job.id && scope.attemptId === attemptId && !this.authorizationRow(attemptId)) {
+      const current = this.dispatchEligibility(job, attemptId);
+      if (current.eligibilityFingerprint !== scope.fingerprint) throw new ConsentDeniedError('Provider preparation permission changed.');
+      return preparationAuthorization({ jobId: job.id, attemptId, grantId: current.grant.id, grantRevision: current.grant.revision,
+        sitePermissionEpoch: current.sitePermissionEpoch, site: current.site, scope: current.scope, recipient: current.grant.recipient,
+        provider: job.provider, policyKey: job.policyKey, bindingDigest: job.preparedPayloadDigest,
+        permissionFingerprint: current.auditScope, eligibilityFingerprint: current.eligibilityFingerprint });
+    }
     return this.db.transaction(() => this.requireCurrent(job, attemptId, requireDispatched))();
   }
 

@@ -41,7 +41,15 @@ export type PrepareFollowupJobInput = Pick<FollowupJobInput, 'id' | 'idempotency
 export type RetryJobInput = { id: string; idempotencyKey: string; grantId: string; preparedPayloadDigest: string };
 export type PrepareRetryJobInput = Pick<RetryJobInput, 'id' | 'idempotencyKey'>;
 
+/** Actual installed instruction bytes included in the reviewed model prompt, not model data. */
+export type HostInstructionBundle = {
+  kind: 'define'; text: string; sha256: string;
+  documents: { path: string; sha256: string }[];
+};
+
 export type FrozenJobContext = {
+  /** Optional for persisted jobs created before instruction-bundle loading was installed. */
+  hostInstructions?: HostInstructionBundle;
   threadId: string;
   sourceVersionId: string;
   sourceUrl: string;
@@ -74,7 +82,7 @@ export type ProviderJobPacket = {
   answeredNote?: { noteId: string; revision: number; text: string; originalCharacters: number; omittedCharacters: number };
   parentReplyId?: string;
   /** Host-frozen excerpt of the immutable accepted parent reply for a provider fork. */
-  parentReply?: { replyVersionId: string; attribution: 'Prior generated work, not source evidence.'; excerpt: string; omittedBytes: number };
+  parentReply?: { replyVersionId: string; attribution: 'Prior generated work, not source evidence.'; excerpt: string; omittedBytes: number; sha256?: string };
   availableCapabilities: ReplyCapability[];
   omissions: string[];
 };
@@ -126,6 +134,8 @@ export type JobConsentDecision = { grantId: string; policyKey: string; auditScop
 /** T13 implements this from current consent and independently observed policy evidence. */
 export interface JobConsentAuthority {
   revalidate(job: Readonly<JobSnapshot>, stage: JobConsentStage): Promise<JobConsentDecision>;
+  /** Explicit, non-consuming scope for provider evidence preparation. Not send authority. */
+  withProviderPreparation?<T>(job: Readonly<JobSnapshot>, attemptId: string, observe: () => Promise<T>): Promise<T>;
   assertSharedDatabase(database: unknown): void;
   /** Synchronous final consent fence, called within the JobStore handoff transaction. */
   finalizeDispatch(job: Readonly<JobSnapshot>, attemptId: string, expectedEligibilityFingerprint: string): ConsentAuthorization;

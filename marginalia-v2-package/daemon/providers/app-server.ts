@@ -1,6 +1,7 @@
 import { ProviderNotSentError } from '../../contracts/job-runner.ts';
 import type { AuditedPolicy, JobRunner, ProviderAudit, ProviderHandle, ProviderHooks, ProviderRequest } from '../../contracts/job-runner.ts';
 import type { RpcTransport } from './stdio.ts';
+import { sendProviderRequest } from './send.ts';
 import { pages } from './preflight.ts';
 import { randomUUID } from 'node:crypto';
 
@@ -16,6 +17,7 @@ export class AppServerRunner implements JobRunner {
   private audit: ProviderAudit;
   private hooks: ProviderHooks;
   private handles = new Map<string, ProviderHandle>();
+  private staged = new Set<string>();
   private requests = new Map<string, ProviderRequest>();
   private cancelIntents = new Set<string>();
   private instanceId = randomUUID();
@@ -43,7 +45,11 @@ export class AppServerRunner implements JobRunner {
     return this.cancelIntents.has(h.jobId) ? { ...h, tombstone: true, output: undefined,
       state: ['completed', 'failed', 'cancelled'].includes(h.state) ? 'cancelled' : h.state === 'outcome_unknown' ? 'outcome_unknown' : 'cancel_requested' } : h;
   }
+  private stage(h: ProviderHandle): ProviderHandle {
+    const value = this.fenced(h); this.staged.add(h.jobId); this.handles.set(h.jobId, value); return { ...value };
+  }
   private async save(h: ProviderHandle): Promise<ProviderHandle> {
+    if (this.staged.has(h.jobId)) return this.stage(h);
     h = this.fenced(h);
     const committed = await this.hooks.checkpoint({ ...h });
     if (committed) {
@@ -76,29 +82,34 @@ export class AppServerRunner implements JobRunner {
     catch (error) { throw new ProviderNotSentError('app-server', request.jobId, error); }
     let h: ProviderHandle = { jobId: request.jobId, provider: 'app-server', workspace: request.workspace,
       policyKey: request.policyKey, auditScope: policy.auditScope, providerInstanceId: this.instanceId, mode: request.mode, model: request.model, state: 'starting', tombstone: false };
-    h = await this.save(h); this.requests.set(h.jobId, request);
-    let dispatched = false;
+    h = this.stage(h); this.requests.set(h.jobId, request);
+    let dispatched = false, preparingSend = false;
     try {
-      if (this.fenced(h).tombstone) return this.save({ ...h, state: 'cancelled', tombstone: true, reason: 'cancelled-before-thread' });
+      if (this.fenced(h).tombstone) throw new Error('cancelled-before-thread');
       const started = await this.rpc.request('thread/start', { ...policy.thread, model: request.model, allowProviderModelFallback: false });
       if (!started.thread?.id) throw new Error('missing-thread-id');
-      h = await this.save({ ...h, threadId: started.thread.id });
+      h = this.stage({ ...h, threadId: started.thread.id });
       await this.hooks.verifyThread(h, started, this.audit);
       const dispatchPolicy = await this.hooks.authorize(request, this.audit, 'dispatch'); checkPolicy(request, dispatchPolicy);
-      if (this.cancelIntents.has(h.jobId)) return this.save({ ...h, tombstone: true, state: 'cancelled', reason: 'cancelled-before-turn' });
-      // Persist the dispatch boundary. A timeout from this point is not permission to retry.
-      h = await this.save({ ...h, auditScope: dispatchPolicy.auditScope, state: 'starting', reason: 'turn-dispatch-pending' });
-      await this.hooks.authorizeSend(structuredClone(request), structuredClone(h), this.audit);
-      const sendHandle = this.current(h);
-      if (sendHandle.tombstone) return this.save({ ...sendHandle, state: 'cancelled', tombstone: true, reason: 'cancelled-before-turn' });
-      dispatched = true;
-      const result = await this.rpc.request('turn/start', { ...dispatchPolicy.turn, threadId: sendHandle.threadId, model: request.model,
-        input: [{ type: 'text', text: request.prompt, text_elements: [] }],
-        ...(request.mode === 'structured-final' ? { outputSchema: request.outputSchema } : {}) });
+      if (this.cancelIntents.has(h.jobId)) throw new Error('cancelled-before-turn');
+      h = this.stage({ ...h, auditScope: dispatchPolicy.auditScope, state: 'starting', reason: 'turn-dispatch-pending' });
+      preparingSend = true;
+      const sent = await sendProviderRequest(this.rpc, this.hooks, this.audit, request, h, 'turn/start',
+        { ...dispatchPolicy.turn, threadId: h.threadId, model: request.model,
+          input: [{ type: 'text', text: request.prompt, text_elements: [] }],
+          ...(request.mode === 'structured-final' ? { outputSchema: request.outputSchema } : {}) }, () => this.current(h));
+      h = sent.handle; this.staged.delete(h.jobId); this.handles.set(h.jobId, h); dispatched = true;
+      const result = await sent.response;
       if (!result.turn?.id) throw new Error('missing-turn-id');
       h = await this.save({ ...h, turnId: result.turn.id, state: 'running', reason: undefined });
       return result.turn.status !== 'inProgress' ? this.observe(h, result.turn) : h;
-    } catch { return this.save({ ...h, state: dispatched ? 'outcome_unknown' : 'failed', reason: dispatched ? 'dispatch-outcome-unknown' : 'pre-dispatch-preparation-rejected' }); }
+    } catch (error) {
+      if (!dispatched) {
+        this.stage({ ...h, state: 'failed', reason: 'not-sent' });
+        throw preparingSend || error instanceof ProviderNotSentError ? error : new ProviderNotSentError('app-server', request.jobId, error);
+      }
+      return this.save({ ...h, state: 'outcome_unknown', reason: 'dispatch-outcome-unknown' });
+    }
   }); }
   private async observe(h: ProviderHandle, turn: any): Promise<ProviderHandle> {
     if (h.tombstone) return this.save({ ...h, state: turn.status === 'inProgress' ? 'cancel_requested' : 'cancelled', output: undefined });
@@ -161,24 +172,25 @@ export class AppServerRunner implements JobRunner {
     try { policy = await this.hooks.authorize(followup, this.audit, 'dispatch'); checkPolicy(followup, policy); }
     catch (error) { throw new ProviderNotSentError('app-server', followup.jobId, error); }
     if (followup.mode === 'structured-final' && !followup.outputSchema) throw new Error('output-schema-required');
-    let next = await this.save({ ...recovered, revision: undefined, providerInstanceId: this.instanceId, auditScope: policy.auditScope, jobId: followup.jobId, mode: followup.mode, turnId: undefined,
+    let next = this.stage({ ...recovered, revision: undefined, providerInstanceId: this.instanceId, auditScope: policy.auditScope, jobId: followup.jobId, mode: followup.mode, turnId: undefined,
       output: undefined, state: 'starting', reason: 'turn-dispatch-pending' });
     this.requests.set(next.jobId, followup);
     let dispatched = false;
     try {
-      await this.hooks.authorizeSend(structuredClone(followup), structuredClone(next), this.audit);
-      const sendHandle = this.current(next);
-      if (sendHandle.tombstone) return this.save({ ...sendHandle, state: 'cancelled', tombstone: true, reason: 'cancelled-before-turn' });
-      this.successorByAttempt.set(recovered.jobId, next.jobId);
-      dispatched = true;
-      const result = await this.rpc.request('turn/start', { ...policy.turn, threadId: sendHandle.threadId, model: followup.model,
-        input: [{ type: 'text', text: followup.prompt, text_elements: [] }],
-        ...(followup.mode === 'structured-final' ? { outputSchema: followup.outputSchema } : {}) });
+      const sent = await sendProviderRequest(this.rpc, this.hooks, this.audit, followup, next, 'turn/start',
+        { ...policy.turn, threadId: next.threadId, model: followup.model,
+          input: [{ type: 'text', text: followup.prompt, text_elements: [] }],
+          ...(followup.mode === 'structured-final' ? { outputSchema: followup.outputSchema } : {}) }, () => this.current(next));
+      next = sent.handle; this.staged.delete(next.jobId); this.handles.set(next.jobId, next);
+      this.successorByAttempt.set(recovered.jobId, next.jobId); dispatched = true;
+      const result = await sent.response;
       if (!result.turn?.id) throw new Error('missing-turn-id');
       next = await this.save({ ...next, turnId: result.turn.id, state: 'running', reason: undefined });
       return result.turn.status === 'inProgress' ? next : this.observe(next, result.turn);
-    } catch { return this.save({ ...next, state: dispatched ? 'outcome_unknown' : 'failed',
-      reason: dispatched ? 'dispatch-outcome-unknown' : 'pre-dispatch-authorization-rejected' }); }
+    } catch (error) {
+      if (!dispatched) { this.stage({ ...next, state: 'failed', reason: 'not-sent' }); throw error; }
+      return this.save({ ...next, state: 'outcome_unknown', reason: 'dispatch-outcome-unknown' });
+    }
   }); }
   inspect(h: ProviderHandle): Promise<ProviderHandle> { h = structuredClone(h); return this.serial(() => this.recover(h, false)); }
   cancel(handle: ProviderHandle): Promise<ProviderHandle> {
@@ -189,6 +201,7 @@ export class AppServerRunner implements JobRunner {
     let h = this.current(handle);
     if (h.workspace !== this.audit.workspace) throw new Error('provider-process-cwd-mismatch');
     if (h.providerInstanceId !== this.instanceId) await this.hooks.authorizeRecovery(h, this.audit);
+    if (this.staged.has(h.jobId)) return this.stage({ ...h, tombstone: true, state: 'cancelled', output: undefined });
     if (['completed', 'failed', 'cancelled'].includes(h.state)) return { ...h };
     h = await this.save({ ...h, tombstone: true, state: 'cancel_requested', output: undefined });
     if (!h.threadId || !h.turnId) return this.save({ ...h, state: 'outcome_unknown', reason: 'cancel-fenced-missing-identifiers' });
