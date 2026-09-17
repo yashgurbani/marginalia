@@ -3,8 +3,12 @@ import type { ConsentChoice, ConsentGrant, ConsentPreview, SiteExclusion } from 
 export type ConsentSheetOptions = {
   preview: ConsentPreview;
   canAuthorize: boolean;
+  /** Layout context, not a grant of authority. Floating page hosts cannot authorize. */
+  surface?: 'native-panel' | 'floating' | 'localhost';
   decide(choice: ConsentChoice, preview: ConsentPreview, signal: AbortSignal): Promise<ConsentGrant>;
   onGranted?(grant: ConsentGrant, decidedPreview: ConsentPreview): void;
+  onNotNow?(): void;
+  /** Compatibility callback when onNotNow is not supplied. */
   onBack?(): void;
   returnFocus?: HTMLElement;
 };
@@ -13,17 +17,24 @@ export type ConsentSheet = { update(preview: ConsentPreview): void; destroy(): v
 
 /** A modular browser-owned consent surface. Page-embedded margins pass canAuthorize:false. */
 export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOptions): ConsentSheet {
+  const surface = options.surface ?? 'native-panel';
+  if (!['native-panel', 'floating', 'localhost'].includes(surface)) throw new Error('Unknown consent surface.');
+  const canAuthorize = options.canAuthorize && surface !== 'floating';
+  const returnFocus = options.returnFocus ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
   const abort = new AbortController();
   let preview = structuredClone(options.preview), busy = false, destroyed = false, generation = 0;
   let pendingDecision: AbortController | undefined;
   const root = document.createElement('section');
-  root.className = 'm-consent'; root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true');
+  // Contain keyboard traversal in this sheet, not the reader's whole document.
+  // Escape/Not now exits; the page remains interactive, so do not claim modality.
+  root.className = 'm-consent'; root.dataset.surface = surface; root.tabIndex = -1;
+  root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'false');
   root.setAttribute('aria-labelledby', `m-consent-title-${safeId(preview.id)}`);
   const live = document.createElement('p'); live.className = 'm-consent__status'; live.setAttribute('role', 'status'); live.setAttribute('aria-live', 'polite');
   host.replaceChildren(root);
 
   const render = () => {
-    const title = element('h2', 'Review what will be sent', 'm-consent__title'); title.id = `m-consent-title-${safeId(preview.id)}`;
+    const title = element('h2', 'Review what will be sent', 'm-consent__title'); title.id = `m-consent-title-${safeId(preview.id)}`; title.tabIndex = -1;
     const summary = element('dl', undefined, 'm-consent__summary');
     summary.append(element('dt', 'Recipient'), element('dd', preview.recipientLabel), element('dt', 'Permission'), element('dd', preview.scopeLabel));
     const exact = element('div', undefined, 'm-consent__outgoing');
@@ -37,21 +48,21 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
     const controls = element('div', undefined, 'm-consent__actions');
     if (preview.state === 'excluded') controls.append(element('p', 'This site is excluded. Nothing can be sent until you change the exclusion in Settings.', 'm-consent__blocked'));
     else if (preview.state === 'denied') controls.append(element('p', 'Sending is denied for this site. Change that decision in Settings before asking again.', 'm-consent__blocked'));
-    else if (!options.canAuthorize) controls.append(element('p', 'Open the browser-owned margin to approve or send this request.', 'm-consent__blocked'));
+    else if (!canAuthorize) controls.append(element('p', 'Open the browser-owned margin to approve or send this request.', 'm-consent__blocked'));
     else {
       controls.append(
         action('This time', () => choose('this-time')),
         action(`Always on ${preview.site}`, () => choose('always-site')),
-        action(`Never on ${preview.site}`, () => choose('never-site'), 'm-consent__danger'),
+        action(`Never on ${preview.site}`, () => choose('never-site')),
       );
     }
-    if (options.onBack) controls.append(action('Back', options.onBack));
+    const dismiss = action('Not now', notNow); dismiss.dataset.dismiss = 'true'; controls.append(dismiss);
     root.replaceChildren(title, summary, exact, explanation, controls, live);
     setBusy(busy);
   };
 
   const choose = async (choice: ConsentChoice) => {
-    if (busy || destroyed || !options.canAuthorize || preview.state !== 'ready') return;
+    if (busy || destroyed || !canAuthorize || preview.state !== 'ready') return;
     const decidedPreview = structuredClone(preview), operation = ++generation;
     const decisionAbort = new AbortController(); pendingDecision = decisionAbort;
     const abortDecision = () => decisionAbort.abort(abort.signal.reason);
@@ -70,25 +81,54 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
       if (operation === generation) { pendingDecision = undefined; busy = false; if (!destroyed) setBusy(false); }
     }
   };
-  const setBusy = (value: boolean) => root.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = value; });
+  const setBusy = (value: boolean) => {
+    const active = root.contains(document.activeElement) ? document.activeElement : null;
+    root.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = value && button.dataset.dismiss !== 'true'; });
+    // Disabling a focused button can blur it immediately in a real browser.
+    if (active?.matches(':disabled')) focusEntry();
+  };
   const action = (label: string, callback: () => unknown, className = '') => {
     const button = element('button', label, className); button.type = 'button';
     button.addEventListener('click', () => { void callback(); }, { signal: abort.signal }); return button;
   };
+  function focusable() {
+    return Array.from(root.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, [tabindex]'))
+      .filter(node => node.tabIndex >= 0 && !node.matches(':disabled') && !node.closest('[hidden], [inert]'));
+  }
+  function focusEntry() { (focusable()[0] ?? root).focus({ preventScroll: true }); }
+  function destroy() {
+    if (destroyed) return;
+    const ownedFocus = root.contains(document.activeElement);
+    destroyed = true; generation++; cancelAnimationFrame(initialFocus);
+    pendingDecision?.abort(new DOMException('Consent sheet closed.', 'AbortError')); abort.abort(); root.remove();
+    if (ownedFocus && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+  }
+  function notNow() {
+    if (destroyed) return;
+    destroy();
+    (options.onNotNow ?? options.onBack)?.();
+  }
+  root.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); notNow(); return; }
+    if (event.key !== 'Tab') return;
+    const nodes = focusable(), first = nodes[0], last = nodes.at(-1);
+    if (!first) { event.preventDefault(); root.focus(); return; }
+    const active = document.activeElement;
+    if (!nodes.some(node => node === active) || (event.shiftKey ? active === first : active === last)) {
+      event.preventDefault(); (event.shiftKey ? last! : first).focus({ preventScroll: true });
+    }
+  }, { signal: abort.signal });
   render();
-  requestAnimationFrame(() => root.querySelector<HTMLElement>('button:not([disabled]), h2')?.focus());
+  const initialFocus = requestAnimationFrame(() => { if (!destroyed && root.isConnected) focusEntry(); });
   return {
     update(next) {
       if (destroyed) return;
+      const ownedFocus = root.contains(document.activeElement);
       generation++; pendingDecision?.abort(new DOMException('Consent preview replaced.', 'AbortError')); pendingDecision = undefined; busy = false;
       preview = structuredClone(next); root.setAttribute('aria-labelledby', `m-consent-title-${safeId(preview.id)}`); render();
+      if (ownedFocus) focusEntry();
     },
-    destroy() {
-      if (destroyed) return;
-      const ownedFocus = root.contains(document.activeElement);
-      destroyed = true; pendingDecision?.abort(new DOMException('Consent sheet closed.', 'AbortError')); abort.abort(); root.remove();
-      if (ownedFocus && options.returnFocus?.isConnected) options.returnFocus.focus();
-    },
+    destroy,
   };
 }
 

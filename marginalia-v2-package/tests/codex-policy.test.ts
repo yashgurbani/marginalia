@@ -2,306 +2,240 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PINNED_CODEX_VERSION, createCodexPolicy, auditCodexPolicy, cancellationFor,
-  type CodexPolicy, type PolicyInput, type PolicyEvidence, type Observation,
+  type CodexPolicy, type PolicyInput, type PolicyEvidence, type Platform, type PolicyAdapter,
+  type Observation,
 } from '../daemon/codex-policy.ts';
 
-const common = {
-  version: PINNED_CODEX_VERSION, platform: 'win32' as const,
-  workspace: 'C:\\Marginalia\\jobs\\one', codexHome: 'C:\\Marginalia\\codex-home',
-  auditId: 'worker-1/attempt-1/config-1',
-};
 const schema = { type: 'object', additionalProperties: false, properties: { definition: { type: 'string' } }, required: ['definition'] };
-const definitionInput: PolicyInput = { ...common, operation: 'definition', model: 'selected-model', outputSchema: schema };
-const generationInput: PolicyInput = { ...common, operation: 'generation', model: 'selected-model' };
-const solverInput: PolicyInput = {
-  ...common, operation: 'saved-solver', executable: 'C:\\Runtime\\node.exe',
-  solverPath: common.workspace + '\\solver.js', inputPath: common.workspace + '\\input.json',
-  writesWorkspace: false, timeoutMs: 30_000,
+const paths = {
+  win32: { workspace: 'C:\\Marginalia\\jobs\\one', codexHome: 'C:\\Marginalia\\codex-home', executable: 'C:\\Runtime\\node.exe', separator: '\\' },
+  linux: { workspace: '/jobs/one', codexHome: '/codex-home', executable: '/runtime/node', separator: '/' },
+  darwin: { workspace: '/jobs/one', codexHome: '/codex-home', executable: '/runtime/node', separator: '/' },
 };
-const sources: Record<keyof PolicyEvidence, string> = {
-  config: 'config/read', requirements: 'configRequirements/read', threadState: 'host-thread-state-audit', mcp: 'mcpServerStatus/list', skills: 'skills/list',
-  capabilities: 'host-capability-audit', instructions: 'thread-instruction-audit', toolCatalog: 'instrumented-tool-catalog',
-  environment: 'host-environment-audit', runtime: 'controlled-sandbox-probe',
-};
-function observation<T>(policy: CodexPolicy, key: keyof PolicyEvidence, value: T): Observation<T> {
-  return { scope: policy.evidenceScope, source: sources[key], reference: `synthetic-fixture:${key}`, complete: true, value };
+const backends = { win32: 'windows-native', linux: 'linux-landlock-seccomp', darwin: 'macos-seatbelt' } as const;
+function input(platform: Platform, operation: PolicyInput['operation'], adapter: PolicyAdapter = 'app-server'): PolicyInput {
+  const p = paths[platform];
+  const common = { version: PINNED_CODEX_VERSION, platform, adapter, workspace: p.workspace, codexHome: p.codexHome, auditId: 'worker-1/attempt-1/config-1' };
+  return operation === 'saved-solver'
+    ? { ...common, operation, executable: p.executable, solverPath: p.workspace + p.separator + 'solver.js', inputPath: p.workspace + p.separator + 'input.json', writesWorkspace: false, timeoutMs: 30_000 }
+    : operation === 'definition' ? { ...common, operation, model: 'selected-model', outputSchema: schema }
+    : { ...common, operation, model: 'selected-model' };
 }
-/** Synthetic ONLY: these values do not establish that any actual Codex gate has passed. */
+function observation<T>(policy: CodexPolicy, source: string, value: T): Observation<T> {
+  return { scope: policy.evidenceScope, source, reference: `synthetic-fixture:${source}`, complete: true, value };
+}
+/** Synthetic fixtures exercise the evaluator, never attest to an installed platform or provider. */
 function evidenceFor(policy: CodexPolicy): PolicyEvidence {
   const values: Record<string, unknown> = {};
   for (const [path, value] of Object.entries(policy.configOverrides)) {
-    const keys = path.split('.');
-    let target = values;
-    for (const key of keys.slice(0, -1)) {
-      target[key] ??= {};
-      target = target[key] as Record<string, unknown>;
-    }
-    target[keys[keys.length - 1]] = structuredClone(value);
+    const keys = path.split('.'); let target = values;
+    for (const key of keys.slice(0, -1)) { target[key] ??= {}; target = target[key] as Record<string, unknown>; }
+    target[keys.at(-1)!] = structuredClone(value);
   }
+  const app = policy.adapter === 'app-server';
   return {
-    config: observation(policy, 'config', { values, layersReviewed: true }),
-    requirements: observation(policy, 'requirements', { compatible: true, unresolved: [] }),
-    ...(policy.modelTurn ? { threadState: observation(policy, 'threadState', { cwd: policy.workspace, approvalPolicy: 'never',
-      sandboxPolicy: structuredClone(policy.sandboxPolicy) }) } : {}),
-    mcp: observation(policy, 'mcp', []), skills: observation(policy, 'skills', []),
-    capabilities: observation(policy, 'capabilities', []), instructions: observation(policy, 'instructions', []),
-    toolCatalog: observation(policy, 'toolCatalog', policy.operation === 'generation'
-      ? [{ name: 'exec_command', enabled: true, origin: 'builtin' }] : []),
-    environment: observation(policy, 'environment', {
+    authentication: observation(policy, app ? 'account/read' : 'host-dedicated-auth-audit', { available: true, dedicatedHome: true, accountReference: 'synthetic-account' }),
+    config: observation(policy, app ? 'config/read' : 'host-effective-config-audit', { values, layersReviewed: true }),
+    requirements: observation(policy, app ? 'configRequirements/read' : 'host-config-requirements-audit', { compatible: true, unresolved: [] }),
+    ...(app && policy.modelTurn ? { threadState: observation(policy, 'host-thread-state-audit', { cwd: policy.workspace, approvalPolicy: 'never', sandboxPolicy: structuredClone(policy.sandboxPolicy) }) } : {}),
+    mcp: observation(policy, app ? 'mcpServerStatus/list' : 'host-mcp-config-audit', []),
+    skills: observation(policy, app ? 'skills/list' : 'host-skill-config-audit', []),
+    capabilities: observation(policy, app ? 'host-capability-audit' : 'mcp-tools/list', []),
+    instructions: observation(policy, app ? 'thread-instruction-audit' : 'host-instruction-config-audit', []),
+    environment: observation(policy, 'host-environment-audit', {
       serverCwd: policy.workspace, codexHome: policy.codexHome, dedicatedHome: true, credentialsCopied: false,
-      normalSettingsChanged: false, inheritedEnvironmentKeys: [], environmentReviewed: true,
+      normalSettingsChanged: false, inheritedEnvironmentKeys: [], inheritedEnvironmentValueDigests: {}, environmentReviewed: true,
+      executableResolutionReviewed: true, ...(policy.platform === 'win32' ? { windowsKeyCasingReviewed: true } : {}),
     }),
-    runtime: observation(policy, 'runtime', {
-      version: PINNED_CODEX_VERSION, backend: 'windows-native', sandboxPolicy: structuredClone(policy.sandboxPolicy),
-      filesystemWriteProbe: 'passed', toolEgressProbe: 'passed', modelTrafficDistinguished: true,
+    runtime: observation(policy, 'controlled-sandbox-probe', {
+      version: PINNED_CODEX_VERSION, adapter: policy.adapter, platform: policy.platform, backend: backends[policy.platform],
+      providerInstanceId: 'synthetic-worker', profileManifestSha256: policy.reviewedProfile.manifestSha256,
+      sandboxPolicy: structuredClone(policy.sandboxPolicy), modelReachableReadProbe: 'passed',
+      filesystemWriteProbe: 'passed', closedToolNetworkProbe: 'passed', modelTrafficDistinguished: true,
     }),
   };
 }
 function rejected(policy: CodexPolicy, evidence: PolicyEvidence, code?: string) {
   const result = auditCodexPolicy(policy, evidence);
-  assert.equal(result.decision, 'reject');
-  assert.equal(result.runtimeVerifiedHere, false);
-  if (code) assert.ok(result.issues.some((issue) => issue.code === code), JSON.stringify(result.issues));
+  assert.equal(result.decision, 'reject'); assert.equal(result.runtimeVerifiedHere, false);
+  if (code) assert.ok(result.issues.some(issue => issue.code === code), JSON.stringify(result.issues));
 }
 
-test('definition uses transport outputSchema and a read-only closed turn, not output files', () => {
-  const policy = createCodexPolicy(definitionInput);
-  assert.equal(policy.operation, 'definition');
-  if (policy.operation !== 'definition') throw new Error('Expected definition.');
-  assert.deepEqual(policy.threadStart, { method: 'thread/start', params: {
-    model: 'selected-model', cwd: common.workspace, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: false,
-  } });
-  assert.deepEqual(policy.turnPolicy, { cwd: common.workspace, approvalPolicy: 'never',
-    sandboxPolicy: { type: 'readOnly', networkAccess: false }, outputSchema: schema });
-  assert.equal(policy.result, 'transport-final-json');
-  assert.equal(policy.modelTurn, true);
-  assert.equal('commandExec' in policy, false);
-  assert.equal('tools' in policy.threadStart.params, false);
-  assert.equal('response_format' in policy.turnPolicy, false);
-});
-
-test('generation selects exact pinned workspace-write fields and never confuses writes with reads', () => {
-  const policy = createCodexPolicy(generationInput);
-  assert.equal(policy.operation, 'generation');
-  if (policy.operation !== 'generation') throw new Error('Expected generation.');
-  assert.deepEqual(policy.sandboxPolicy, { type: 'workspaceWrite', writableRoots: [common.workspace],
-    networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true });
-  assert.equal(policy.threadStart.params.sandbox, 'workspace-write');
-  assert.equal('outputSchema' in policy.turnPolicy, false);
-  assert.equal(policy.result, 'workspace-json');
-  assert.equal(policy.configOverrides['features.shell_tool'], true);
-  assert.equal(policy.readAccess, 'not-job-confined');
-  assert.equal(policy.requiresRuntimeVerification, true);
-  assert.equal('mcp_servers' in policy.configOverrides, false);
-});
-
-test('saved solver constructs argv and bounded buffered command/exec without a thread or model turn', () => {
-  const policy = createCodexPolicy(solverInput);
-  if (policy.operation !== 'saved-solver') throw new Error('Expected solver.');
-  assert.deepEqual(policy.commandExec, { method: 'command/exec', params: {
-    command: ['C:\\Runtime\\node.exe', common.workspace + '\\solver.js', '--input', common.workspace + '\\input.json'],
-    cwd: common.workspace, timeoutMs: 30_000, sandboxPolicy: { type: 'readOnly', networkAccess: false },
-  } });
-  assert.equal(policy.modelTurn, false);
-  assert.equal('threadStart' in policy, false);
-  assert.equal('turnPolicy' in policy, false);
-  for (const field of ['threadId', 'model', 'env', 'processId', 'tty', 'streamStdin', 'streamStdoutStderr', 'outputBytesCap', 'disableOutputCap', 'disableTimeout']) {
-    assert.equal(field in policy.commandExec.params, false, field);
-  }
-  assert.equal(createCodexPolicy({ ...solverInput, writesWorkspace: true }).sandboxPolicy.type, 'workspaceWrite');
-});
-
-test('pin, model, schema, operation, timeout and Windows paths are validated without IO', () => {
-  assert.throws(() => createCodexPolicy({ ...definitionInput, version: '0.153.5' }), /version/);
-  assert.throws(() => createCodexPolicy({ ...definitionInput, model: '' }), /model/);
-  assert.throws(() => createCodexPolicy({ ...definitionInput, outputSchema: { type: 'string' } }), /outputSchema/);
-  assert.throws(() => createCodexPolicy({ ...definitionInput, operation: 'other' } as unknown as PolicyInput), /operation/);
-  for (const timeoutMs of [0, -1, 0.5, 600_001, Infinity, NaN]) assert.throws(() => createCodexPolicy({ ...solverInput, timeoutMs }), /timeout/);
-  for (const workspace of ['relative', 'C:\\', '\\\\host\\share', 'C:\\jobs\\..\\outside', 'C:\\jobs:stream']) {
-    assert.throws(() => createCodexPolicy({ ...generationInput, workspace }), /path|root|traversal/i);
-  }
-  for (const codexHome of [common.workspace, common.workspace + '\\auth', 'C:\\Marginalia']) {
-    assert.throws(() => createCodexPolicy({ ...generationInput, codexHome }), /disjoint/);
-  }
-  for (const solverPath of ['C:\\elsewhere\\solver.js', common.workspace.toLowerCase()]) {
-    assert.throws(() => createCodexPolicy({ ...solverInput, solverPath }), /descendants/);
-  }
-});
-
-test('policy snapshots are immutable without freezing or modifying the caller schema', () => {
-  const localSchema = structuredClone(schema);
-  const policy = createCodexPolicy({ ...definitionInput, outputSchema: localSchema });
-  localSchema.required.push('another');
-  if (policy.operation !== 'definition') throw new Error('Expected definition.');
-  assert.deepEqual(policy.turnPolicy.outputSchema?.required, ['definition']);
-  assert.match(policy.evidenceScope, /^[a-f0-9]{64}$/);
-  assert.ok(Object.isFrozen(policy));
-  assert.ok(Object.isFrozen(policy.configOverrides));
-  assert.ok(Object.isFrozen(policy.turnPolicy.sandboxPolicy));
-  assert.equal(Object.isFrozen(localSchema), false);
-});
-
-test('complete synthetic evidence is consistent but never reported as verification performed here', () => {
-  for (const input of [definitionInput, generationInput, solverInput]) {
-    const policy = createCodexPolicy(input);
-    const evidence = evidenceFor(policy);
-    const before = structuredClone(evidence);
-    assert.deepEqual(auditCodexPolicy(policy, evidence), { decision: 'evidence-consistent', issues: [], runtimeVerifiedHere: false });
-    assert.deepEqual(evidence, before);
-  }
-});
-
-test('missing, partial, source-unresolved and stale evidence fail closed for every evidence class', () => {
-  const policy = createCodexPolicy(generationInput);
-  rejected(policy, {}, 'evidence-missing');
-  for (const key of Object.keys(sources) as (keyof PolicyEvidence)[]) {
-    const missing = evidenceFor(policy); delete missing[key]; rejected(policy, missing, 'evidence-missing');
-    const partial = evidenceFor(policy); partial[key]!.complete = false; rejected(policy, partial, 'evidence-incomplete');
-    const stale = evidenceFor(policy); stale[key]!.scope = 'old-worker'; rejected(policy, stale, 'evidence-stale-or-mismatched');
-    const noReference = evidenceFor(policy); noReference[key]!.reference = ''; rejected(policy, noReference, 'evidence-source-unresolved');
-  }
-  const newer = createCodexPolicy({ ...generationInput, auditId: 'worker-2/attempt-1/config-1' });
-  rejected(newer, evidenceFor(policy), 'evidence-stale-or-mismatched');
-  rejected(createCodexPolicy(definitionInput), evidenceFor(policy), 'evidence-stale-or-mismatched');
-});
-
-test('MCP inventory cannot stand in for the complete model-visible tool catalog', () => {
-  const policy = createCodexPolicy(generationInput);
-  const missing = evidenceFor(policy); delete missing.toolCatalog; rejected(policy, missing, 'evidence-missing');
-  const fabricated = evidenceFor(policy); fabricated.toolCatalog!.source = 'mcpServerStatus/list';
-  rejected(policy, fabricated, 'evidence-source-unresolved');
-  const unknownTool = evidenceFor(policy);
-  unknownTool.toolCatalog!.value.push({ name: 'web_search', enabled: true, origin: 'builtin' });
-  rejected(policy, unknownTool, 'capability-not-allowed');
-});
-
-test('inherited/unknown enabled capabilities are rejected across all inventories', () => {
-  const policy = createCodexPolicy(generationInput);
-  for (const key of ['mcp', 'skills', 'capabilities', 'instructions', 'toolCatalog'] as const) {
-    for (const origin of ['inherited', 'unknown'] as const) {
-      const evidence = evidenceFor(policy);
-      evidence[key]!.value.push({ name: 'exec_command', origin, enabled: true });
-      rejected(policy, evidence, 'inherited-capability');
+for (const platform of ['win32', 'linux', 'darwin'] as const) {
+  test(`${platform}: construct every operation, but require its own complete runtime evidence`, () => {
+    for (const operation of ['definition', 'generation', 'saved-solver'] as const) {
+      const policy = createCodexPolicy(input(platform, operation));
+      assert.equal(policy.platform, platform);
+      assert.equal(policy.reviewedProfile.platform, platform);
+      assert.equal(policy.reviewedProfile.runtimeBackend, backends[platform]);
+      assert.ok(policy.reviewedProfile.id.includes(`:${platform}:`));
+      assert.equal(policy.configOverrides['windows.sandbox'], platform === 'win32' ? 'elevated' : undefined);
+      assert.equal(policy.sandboxPolicy.networkAccess, false);
+      assert.equal(policy.readAccess, 'not-job-confined'); assert.equal(policy.requiresRuntimeVerification, true);
+      rejected(policy, {}, 'evidence-missing');
+      const evidence = evidenceFor(policy), before = structuredClone(evidence);
+      const result = auditCodexPolicy(policy, evidence);
+      assert.equal(result.decision, 'evidence-consistent'); assert.equal(result.dispatchPolicySatisfied, true);
+      assert.equal(result.runtimeVerifiedHere, false); assert.deepEqual(evidence, before);
+      for (const change of [
+        { platform: platform === 'linux' ? 'win32' : 'linux' },
+        { backend: platform === 'win32' ? 'macos-seatbelt' : 'windows-native' },
+        { profileManifestSha256: '0'.repeat(64) }, { providerInstanceId: '' }, { adapter: 'mcp-server' },
+        { version: '0.153.5' }, { modelReachableReadProbe: 'not-run' }, { filesystemWriteProbe: 'failed' },
+        { closedToolNetworkProbe: 'failed' }, { modelTrafficDistinguished: false },
+        { sandboxPolicy: { ...policy.sandboxPolicy, networkAccess: true } },
+      ]) {
+        const changed = evidenceFor(policy); Object.assign(changed.runtime!.value, change);
+        rejected(policy, changed, 'runtime-evidence-unresolved');
+      }
+      const missing = evidenceFor(policy); delete (missing.runtime!.value as Partial<NonNullable<PolicyEvidence['runtime']>['value']>).platform;
+      rejected(policy, missing, 'runtime-evidence-unresolved');
     }
+  });
+
+  test(`${platform}: platform-specific environment keys still require value and executable review`, () => {
+    const policy = createCodexPolicy(input(platform, 'definition'));
+    const key = platform === 'win32' ? 'SystemRoot' : 'TMPDIR';
+    const evidence = evidenceFor(policy);
+    evidence.environment!.value.inheritedEnvironmentKeys = [key];
+    evidence.environment!.value.inheritedEnvironmentValueDigests = { [key]: 'a'.repeat(64) };
+    assert.equal(auditCodexPolicy(policy, evidence).decision, 'evidence-consistent');
+    for (const change of [
+      { inheritedEnvironmentValueDigests: {} }, { executableResolutionReviewed: false }, { environmentReviewed: false },
+      { credentialsCopied: true }, { normalSettingsChanged: true }, { dedicatedHome: false },
+      { serverCwd: '/different' }, { codexHome: policy.workspace }, { inheritedEnvironmentKeys: ['UNRELATED_TOKEN'] },
+      ...(platform === 'win32' ? [{ windowsKeyCasingReviewed: false }] : [{ inheritedEnvironmentKeys: ['SystemRoot'] }]),
+    ]) {
+      const changed = structuredClone(evidence); Object.assign(changed.environment!.value, change);
+      rejected(policy, changed, 'environment-unresolved');
+    }
+  });
+
+  test(`${platform}: MCP requires its own evidence; a complete model tool catalog is not invented`, () => {
+    const policy = createCodexPolicy(input(platform, 'definition', 'mcp-server'));
+    const evidence = evidenceFor(policy);
+    evidence.capabilities!.value = [{ name: 'codex', enabled: true, origin: 'builtin' }];
+    assert.equal(auditCodexPolicy(policy, evidence).decision, 'evidence-consistent');
+    assert.equal(evidence.threadState, undefined);
+    evidence.config!.source = 'config/read'; rejected(policy, evidence, 'evidence-source-unresolved');
+  });
+}
+
+test('definition, generation and saved-solver construction retain their distinct execution contracts', () => {
+  const definition = createCodexPolicy(input('win32', 'definition'));
+  if (definition.operation !== 'definition') throw new Error('Expected definition');
+  assert.equal(definition.result, 'transport-final-json'); assert.equal(definition.modelTurn, true);
+  assert.deepEqual(definition.turnPolicy, { cwd: paths.win32.workspace, approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, outputSchema: schema });
+  assert.equal('commandExec' in definition, false); assert.equal('tools' in definition.threadStart.params, false);
+  assert.equal('response_format' in definition.turnPolicy, false);
+  const generation = createCodexPolicy(input('win32', 'generation'));
+  if (generation.operation !== 'generation') throw new Error('Expected generation');
+  assert.deepEqual(generation.sandboxPolicy, { type: 'workspaceWrite', writableRoots: [paths.win32.workspace], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true });
+  assert.equal(generation.configOverrides['features.shell_tool'], true); assert.equal('outputSchema' in generation.turnPolicy, false);
+  assert.equal(generation.result, 'workspace-json'); assert.equal('mcp_servers' in generation.configOverrides, false);
+  const solverInput = input('win32', 'saved-solver');
+  if (solverInput.operation !== 'saved-solver') throw new Error('Expected solver');
+  const solver = createCodexPolicy(solverInput);
+  if (solver.operation !== 'saved-solver') throw new Error('Expected solver');
+  assert.deepEqual(solver.commandExec.params.command, [paths.win32.executable, solverInput.solverPath, '--input', solverInput.inputPath]);
+  assert.equal(solver.commandExec.params.timeoutMs, 30_000); assert.equal(solver.modelTurn, false);
+  for (const key of ['threadId', 'model', 'env', 'processId', 'tty', 'streamStdin', 'streamStdoutStderr', 'outputBytesCap', 'disableOutputCap', 'disableTimeout']) assert.equal(key in solver.commandExec.params, false);
+  assert.equal('threadStart' in solver, false); assert.equal('turnPolicy' in solver, false);
+  assert.equal(createCodexPolicy({ ...solverInput, writesWorkspace: true }).sandboxPolicy.type, 'workspaceWrite');
+  assert.throws(() => createCodexPolicy({ ...solverInput, adapter: 'mcp-server' }), /app-server/);
+});
+
+test('unsafe paths, versions, operations, model/schema and time limits remain rejected without IO', () => {
+  const definition = input('win32', 'definition'), solver = input('win32', 'saved-solver');
+  if (definition.operation !== 'definition' || solver.operation !== 'saved-solver') throw new Error('Fixture');
+  assert.throws(() => createCodexPolicy({ ...definition, version: '0.153.5' }), /version/);
+  assert.throws(() => createCodexPolicy({ ...definition, model: '' }), /model/);
+  assert.throws(() => createCodexPolicy({ ...definition, outputSchema: { type: 'string' } }), /outputSchema/);
+  assert.throws(() => createCodexPolicy({ ...definition, operation: 'other' } as unknown as PolicyInput), /operation/);
+  for (const timeoutMs of [0, -1, 0.5, 600_001, Infinity, NaN]) assert.throws(() => createCodexPolicy({ ...solver, timeoutMs }), /timeout/);
+  for (const workspace of ['relative', 'C:\\', '\\\\host\\share', 'C:\\jobs\\..\\outside', 'C:\\jobs:stream']) assert.throws(() => createCodexPolicy({ ...definition, workspace }), /path|root|traversal/i);
+  for (const codexHome of [paths.win32.workspace, paths.win32.workspace + '\\auth', 'C:\\Marginalia']) assert.throws(() => createCodexPolicy({ ...definition, codexHome }), /disjoint/);
+  for (const solverPath of ['C:\\elsewhere\\solver.js', paths.win32.workspace.toLowerCase()]) assert.throws(() => createCodexPolicy({ ...solver, solverPath }), /descendants/);
+  for (const platform of ['linux', 'darwin'] as const) {
+    const posix = input(platform, 'generation');
+    for (const workspace of ['relative', '/', '/jobs/../outside', 'C:\\jobs']) assert.throws(() => createCodexPolicy({ ...posix, workspace }), /path|root|traversal/i);
+    assert.throws(() => createCodexPolicy({ ...posix, codexHome: '/jobs/one/auth' }), /disjoint/);
   }
-  const disabled = evidenceFor(policy);
-  disabled.mcp!.value.push({ name: 'canary', origin: 'inherited', enabled: false });
-  assert.equal(auditCodexPolicy(policy, disabled).decision, 'evidence-consistent');
 });
 
-test('read-only definition catalog has no implicit builtin tool allowance', () => {
-  const policy = createCodexPolicy(definitionInput);
+test('policy snapshots are immutable and audit epochs differ from platform profile identity', () => {
+  const localSchema = structuredClone(schema), base = input('win32', 'definition');
+  if (base.operation !== 'definition') throw new Error('Fixture');
+  const policy = createCodexPolicy({ ...base, outputSchema: localSchema }); localSchema.required.push('another');
+  if (policy.operation !== 'definition') throw new Error('Fixture');
+  assert.deepEqual(policy.turnPolicy.outputSchema?.required, ['definition']);
+  assert.ok(Object.isFrozen(policy.configOverrides)); assert.ok(Object.isFrozen(policy.turnPolicy.sandboxPolicy)); assert.equal(Object.isFrozen(localSchema), false);
+  const newer = createCodexPolicy({ ...base, auditId: 'worker-2' });
+  assert.notEqual(policy.evidenceScope, newer.evidenceScope); assert.equal(policy.reviewedProfile.manifestSha256, newer.reviewedProfile.manifestSha256);
+  rejected(newer, evidenceFor(policy), 'evidence-stale-or-mismatched');
+  assert.notEqual(createCodexPolicy(input('linux', 'definition')).reviewedProfile.manifestSha256, createCodexPolicy(input('darwin', 'definition')).reviewedProfile.manifestSha256);
+});
+
+test('missing, incomplete, wrong-source and stale mandatory evidence fail closed', () => {
+  const policy = createCodexPolicy(input('win32', 'generation'));
+  for (const key of Object.keys(evidenceFor(policy)) as Exclude<keyof PolicyEvidence, 'catalog'>[]) {
+    const missing = evidenceFor(policy); delete missing[key]; rejected(policy, missing, 'evidence-missing');
+    for (const [field, value, code] of [['complete', false, 'evidence-incomplete'], ['scope', 'old-worker', 'evidence-stale-or-mismatched'], ['reference', '', 'evidence-source-unresolved']] as const) {
+      const changed = evidenceFor(policy); Object.assign(changed[key]!, { [field]: value }); rejected(policy, changed, code);
+    }
+    const malformed = evidenceFor(policy); (malformed[key] as Observation<unknown>).value = null; rejected(policy, malformed);
+  }
+  const bootstrap = evidenceFor(policy); delete bootstrap.threadState;
+  assert.equal(auditCodexPolicy(policy, bootstrap, 'bootstrap').decision, 'evidence-consistent');
+  rejected(policy, bootstrap, 'evidence-missing');
+});
+
+test('catalog observation is optional but any observed unreviewed tool still vetoes dispatch', () => {
+  const policy = createCodexPolicy(input('win32', 'generation'));
   const evidence = evidenceFor(policy);
-  evidence.toolCatalog!.value.push({ name: 'exec_command', origin: 'builtin', enabled: true });
-  rejected(policy, evidence, 'capability-not-allowed');
+  evidence.catalog = { status: 'incomplete', scope: policy.evidenceScope, source: 'instrumented-tool-catalog', reference: 'synthetic-catalog', reason: 'Partial observation only', entries: [{ name: 'exec_command', enabled: true, origin: 'builtin' }] };
+  assert.equal(auditCodexPolicy(policy, evidence).decision, 'evidence-consistent');
+  evidence.catalog.entries.push({ name: 'web_search', enabled: true, origin: 'builtin' });
+  rejected(policy, evidence); assert.equal(auditCodexPolicy(policy, evidence).perRequestCatalogVeto, 'unsupported');
+  const definition = createCodexPolicy(input('win32', 'definition')), tools = evidenceFor(definition);
+  tools.catalog = { ...evidence.catalog, scope: definition.evidenceScope, entries: [{ name: 'exec_command', enabled: true, origin: 'builtin' }] };
+  rejected(definition, tools);
 });
 
-test('effective config contradictions and unreviewed features cannot be hidden by empty inventories', () => {
-  const policy = createCodexPolicy(generationInput);
+test('inherited capabilities, config contradictions, extra write roots and unreviewed constraints remain blocked', () => {
+  const policy = createCodexPolicy(input('win32', 'generation'));
+  for (const key of ['mcp', 'skills', 'capabilities', 'instructions'] as const) for (const origin of ['inherited', 'unknown'] as const) {
+    const evidence = evidenceFor(policy); evidence[key]!.value.push({ name: 'exec_command', origin, enabled: true }); rejected(policy, evidence, 'inherited-capability');
+  }
+  const disabled = evidenceFor(policy); disabled.mcp!.value.push({ name: 'canary', origin: 'inherited', enabled: false }); assert.equal(auditCodexPolicy(policy, disabled).decision, 'evidence-consistent');
   for (const [key, value] of [['approval_policy', 'on-request'], ['web_search', 'live'], ['sandbox_mode', 'danger-full-access']] as const) {
-    const evidence = evidenceFor(policy); evidence.config!.value.values[key] = value;
-    rejected(policy, evidence, 'config-mismatch');
+    const evidence = evidenceFor(policy); evidence.config!.value.values[key] = value; rejected(policy, evidence, 'config-mismatch');
   }
   for (const value of [true, 'false']) {
-    const evidence = evidenceFor(policy);
-    (evidence.config!.value.values.features as Record<string, unknown>).new_unknown_capability = value;
-    rejected(policy, evidence, 'unreviewed-feature');
+    const evidence = evidenceFor(policy); (evidence.config!.value.values.features as Record<string, unknown>).unreviewed = value; rejected(policy, evidence, 'unreviewed-feature');
   }
   for (const table of ['mcp_servers', 'plugins']) {
-    const evidence = evidenceFor(policy); evidence.config!.value.values[table] = { canary: {} };
-    rejected(policy, evidence, 'inherited-capability');
+    const evidence = evidenceFor(policy); evidence.config!.value.values[table] = { canary: {} }; rejected(policy, evidence, 'inherited-capability');
   }
-  const skills = evidenceFor(policy);
-  (skills.config!.value.values.skills as Record<string, unknown>).config = [{ path: 'C:\\canary\\SKILL.md', enabled: true }];
-  rejected(policy, skills, 'inherited-capability');
-});
-
-test('unreviewed layers or administrative constraints block acceptance', () => {
-  const policy = createCodexPolicy(generationInput);
+  const skills = evidenceFor(policy); (skills.config!.value.values.skills as Record<string, unknown>).config = [{ path: 'canary', enabled: true }]; rejected(policy, skills, 'inherited-capability');
+  const roots = evidenceFor(policy); (roots.config!.value.values.sandbox_workspace_write as Record<string, unknown>).writable_roots = [policy.workspace, 'C:\\outside']; rejected(policy, roots, 'config-mismatch');
   const layers = evidenceFor(policy); layers.config!.value.layersReviewed = false; rejected(policy, layers, 'config-unresolved');
-  const constraints = evidenceFor(policy); constraints.requirements!.value.compatible = false; rejected(policy, constraints, 'requirements-unresolved');
-  const unresolved = evidenceFor(policy); unresolved.requirements!.value.unresolved.push('managed policy'); rejected(policy, unresolved, 'requirements-unresolved');
-});
-
-test('credential copying, normal-settings changes, inherited env and server/job cwd mismatch are refused', () => {
-  const policy = createCodexPolicy(solverInput);
-  const changes = [
-    { credentialsCopied: true }, { normalSettingsChanged: true }, { dedicatedHome: false }, { environmentReviewed: false },
-    { inheritedEnvironmentKeys: ['UNRELATED_TOKEN'] }, { serverCwd: 'C:\\different' }, { codexHome: common.workspace },
-  ];
-  for (const change of changes) {
-    const evidence = evidenceFor(policy); Object.assign(evidence.environment!.value, change);
-    rejected(policy, evidence, 'environment-unresolved');
+  for (const change of [{ compatible: false }, { unresolved: ['managed policy'] }]) {
+    const evidence = evidenceFor(policy); Object.assign(evidence.requirements!.value, change); rejected(policy, evidence, 'requirements-unresolved');
   }
-});
-
-test('network policy is not proof: missing probes, widened policies or conflated model traffic fail', () => {
-  const policy = createCodexPolicy(generationInput);
-  const changes = [
-    { toolEgressProbe: 'not-run' }, { toolEgressProbe: 'failed' }, { filesystemWriteProbe: 'failed' },
-    { modelTrafficDistinguished: false }, { version: '0.153.5' }, { backend: 'none' },
-    { sandboxPolicy: { ...policy.sandboxPolicy, networkAccess: true } },
-  ];
-  for (const change of changes) {
-    const evidence = evidenceFor(policy); Object.assign(evidence.runtime!.value, change);
-    rejected(policy, evidence, 'runtime-evidence-unresolved');
-  }
-});
-
-test('malformed host observations fail closed rather than throwing or exposing raw values', () => {
-  const policy = createCodexPolicy(generationInput);
-  for (const key of Object.keys(sources) as (keyof PolicyEvidence)[]) {
-    const evidence = evidenceFor(policy); (evidence[key] as Observation<unknown>).value = null;
-    rejected(policy, evidence);
-  }
-  const evidence = evidenceFor(policy);
-  evidence.config!.value.values.web_search = 'DO-NOT-ECHO-SECRET';
-  assert.equal(JSON.stringify(auditCodexPolicy(policy, evidence)).includes('DO-NOT-ECHO-SECRET'), false);
-});
-
-test('Windows solver cancellation fences output; no terminate, confirmed kill or automatic retry', () => {
-  const policy = createCodexPolicy(solverInput);
-  assert.deepEqual(cancellationFor(policy), {
-    strategy: 'fence-and-timeout', request: null, state: 'cancel_requested', discardLateOutput: true,
-    processStopConfirmed: false, automaticRetry: false,
-  });
-  assert.equal(policy.disconnectOutcome, 'outcome_unknown');
-  assert.equal(policy.automaticRetry, false);
-});
-
-test('model cancellation requests interrupt but does not turn its acknowledgement into completion', () => {
-  const policy = createCodexPolicy(generationInput);
-  const cancel = cancellationFor(policy, { threadId: 'thread-1', turnId: 'turn-1' });
-  assert.deepEqual(cancel.request, { method: 'turn/interrupt', params: { threadId: 'thread-1', turnId: 'turn-1' } });
-  assert.equal(cancel.state, 'cancel_requested');
-  assert.equal(cancel.processStopConfirmed, false);
-  assert.equal(cancel.discardLateOutput, true);
-  assert.equal(cancellationFor(policy).strategy, 'fence-unverified');
-});
-
-test('non-Windows construction is not mistaken for verified platform support', () => {
-  const policy = createCodexPolicy({ ...solverInput, platform: 'linux', workspace: '/jobs/one', codexHome: '/codex-home',
-    executable: '/runtime/node', solverPath: '/jobs/one/solver.js', inputPath: '/jobs/one/input.json' });
-  rejected(policy, evidenceFor(policy), 'platform-unverified');
-  assert.equal(cancellationFor(policy).strategy, 'fence-unverified');
-});
-
-
-test('inherited writable roots must not survive the effective config projection', () => {
-  const policy = createCodexPolicy(generationInput);
-  const evidence = evidenceFor(policy);
-  (evidence.config!.value.values.sandbox_workspace_write as Record<string, unknown>).writable_roots = [policy.workspace, 'C:\\outside'];
-  rejected(policy, evidence, 'config-mismatch');
-});
-
-test('returned model-thread policy is audited independently; solver execution requires no thread', () => {
-  const policy = createCodexPolicy(generationInput);
   for (const change of [{ cwd: 'C:\\outside' }, { approvalPolicy: 'on-request' }, { sandboxPolicy: { type: 'dangerFullAccess' } }]) {
-    const evidence = evidenceFor(policy); Object.assign(evidence.threadState!.value, change);
-    rejected(policy, evidence, 'thread-policy-unresolved');
+    const evidence = evidenceFor(policy); Object.assign(evidence.threadState!.value, change); rejected(policy, evidence, 'thread-policy-unresolved');
   }
-  const solver = createCodexPolicy(solverInput);
-  const evidence = evidenceFor(solver);
-  assert.equal(evidence.threadState, undefined);
-  assert.equal(auditCodexPolicy(solver, evidence).decision, 'evidence-consistent');
+  const secret = evidenceFor(policy); secret.config!.value.values.web_search = 'DO-NOT-ECHO-SECRET'; assert.equal(JSON.stringify(auditCodexPolicy(policy, secret)).includes('DO-NOT-ECHO-SECRET'), false);
+});
+
+test('cancellation never claims confirmed process termination or automatic retry on any platform', () => {
+  for (const platform of ['win32', 'linux', 'darwin'] as const) {
+    const solver = createCodexPolicy(input(platform, 'saved-solver'));
+    assert.deepEqual(cancellationFor(solver), { strategy: platform === 'win32' ? 'fence-and-timeout' : 'fence-unverified', request: null, state: 'cancel_requested', discardLateOutput: true, processStopConfirmed: false, automaticRetry: false });
+    assert.equal(solver.disconnectOutcome, 'outcome_unknown'); assert.equal(solver.automaticRetry, false);
+    const model = createCodexPolicy(input(platform, 'generation')), cancel = cancellationFor(model, { threadId: 'thread-1', turnId: 'turn-1' });
+    assert.deepEqual(cancel.request, { method: 'turn/interrupt', params: { threadId: 'thread-1', turnId: 'turn-1' } });
+    assert.equal(cancel.processStopConfirmed, false); assert.equal(cancel.discardLateOutput, true); assert.equal(cancellationFor(model).strategy, 'fence-unverified');
+  }
 });

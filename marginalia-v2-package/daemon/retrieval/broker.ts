@@ -26,8 +26,13 @@ export type RetrievalOptions = RetrievalLimits & Readonly<{
 }>;
 
 export class RetrievalError extends Error {
-  constructor(readonly code: string, readonly record: FetchedResource) {
+  readonly code: string;
+  readonly record: FetchedResource;
+
+  constructor(code: string, record: FetchedResource) {
     super(code);
+    this.code = code;
+    this.record = record;
     this.name = 'RetrievalError';
   }
 }
@@ -173,6 +178,10 @@ function oneRequest(url: URL, pinned: { address: string; family: 4 | 6 }, maxHea
   return new Promise((resolve, reject) => {
     const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
       method: 'GET', agent: false, maxHeaderSize: maxHeaderBytes,
+      // A fixed family disables Node's family autoselection, so the lookup
+      // callback returns only the vetted address, without another DNS lookup.
+      // The original URL still supplies Host, TLS SNI and certificate verification.
+      family: pinned.family,
       headers: { Accept: '*/*', 'Accept-Encoding': 'identity', 'User-Agent': 'Marginalia-retrieval/1' },
       lookup: (_host, _options, callback) => callback(null, pinned.address, pinned.family),
       signal,

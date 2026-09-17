@@ -222,7 +222,7 @@ export class ConsentSessionService implements JobConsentAuthority {
         (id,jobId,attemptId,grantId,grantRevision,sitePermissionEpoch,site,scope,recipient,provider,policyKey,bindingDigest,permissionFingerprint,egressEventId,createdAt,dispatchedAt,acceptedAt,outcome)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL)`)
         .run(authorizationId, job.id, attemptId, grant.id, grant.revision, sitePermissionEpoch, site, scope, grant.recipient, job.provider, job.policyKey, job.preparedPayloadDigest, permissionFingerprint, egressEventId, now);
-      const hashes = this.contextHashes(grant.previewId, job.preparedPayloadDigest);
+      const hashes = this.contextHashes(job, site, scope, grant.recipient);
       this.db.prepare(`INSERT INTO egress_events
         (id,jobId,attemptId,grantId,grantRevision,recipient,scope,provider,policyKey,contextHashes,permissionFingerprint,approvedAt,dispatchedAt,outcome,fetched,complete,updatedAt)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,'[]',0,?)`)
@@ -344,10 +344,21 @@ export class ConsentSessionService implements JobConsentAuthority {
     return this.db.prepare('SELECT * FROM consent_attempt_authorizations WHERE attemptId=?').get(attemptId) as AuthorizationRow | undefined;
   }
   private authorization(attemptId: string) { const row = this.authorizationRow(attemptId); return row ? authorizationFrom(row) : undefined; }
-  private contextHashes(previewId: string | null, fallback: string): string[] {
-    if (!previewId) return [fallback];
-    const row = this.db.prepare('SELECT contextHashes FROM consent_previews WHERE id=?').get(previewId) as { contextHashes: string } | undefined;
-    return row ? JSON.parse(row.contextHashes) as string[] : [fallback];
+  private contextHashes(job: Readonly<JobSnapshot>, site: string, scope: ConsentScope, recipient: string): string[] {
+    // An allow-site grant outlives the preview that created it. Audit the current
+    // prepared request, never that original preview or a digest from another job.
+    const row = this.db.prepare('SELECT * FROM consent_previews WHERE requestId=? AND bindingDigest=?')
+      .get(job.id, job.preparedPayloadDigest) as PreviewRow | undefined;
+    if (!row || row.site !== site || row.scope !== scope || row.recipient !== recipient ||
+        row.provider !== job.provider || row.policyKey !== job.policyKey) {
+      throw new ConsentDeniedError('The current outgoing preview does not match this request. Review it again.');
+    }
+    const hashes: unknown = JSON.parse(row.contextHashes);
+    if (!Array.isArray(hashes) || hashes.length < 1 || hashes.length > 16 ||
+        hashes.some(value => typeof value !== 'string' || !SHA256.test(value))) {
+      throw new ConsentDeniedError('The current outgoing preview hashes are unavailable. Review it again.');
+    }
+    return hashes;
   }
   private event(kind: string, value: unknown) {
     this.db.prepare('INSERT INTO events(kind,payload,createdAt) VALUES(?,?,?)').run(kind, JSON.stringify(value), new Date().toISOString());

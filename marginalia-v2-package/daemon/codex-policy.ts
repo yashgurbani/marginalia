@@ -5,6 +5,11 @@ import { posix, win32 } from 'node:path';
 export const PINNED_CODEX_VERSION = '0.153.4' as const;
 export const CODEX_POLICY_VERSION = 'marginalia.codex-policy.v1' as const;
 export type Platform = 'win32' | 'linux' | 'darwin';
+/** Host evidence labels, not a claim that a backend was provisioned or probed. */
+export type RuntimeBackend = 'windows-native' | 'linux-landlock-seccomp' | 'macos-seatbelt';
+const platformBackends: Readonly<Record<Platform, RuntimeBackend>> = {
+  win32: 'windows-native', linux: 'linux-landlock-seccomp', darwin: 'macos-seatbelt',
+};
 export type Operation = 'definition' | 'generation' | 'saved-solver';
 export type PolicyAdapter = 'app-server' | 'mcp-server';
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
@@ -76,6 +81,7 @@ const SHA256_DIGEST = /^[a-f0-9]{64}$/;
 export const REVIEWED_PROVIDER_ENVIRONMENT_KEYS = [
   'SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'PATH', 'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'LANG', 'LC_ALL',
 ] as const;
+const POSIX_PROVIDER_ENVIRONMENT_KEYS = ['PATH', 'HOME', 'TMPDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL'] as const;
 export type ReviewedPolicyProfile = {
   readonly id: string;
   readonly reviewRef: string;
@@ -85,6 +91,7 @@ export type ReviewedPolicyProfile = {
   readonly adapter: PolicyAdapter;
   readonly platform: Platform;
   readonly operation: Operation;
+  readonly runtimeBackend: RuntimeBackend;
   readonly reviewedBuiltinTools: readonly string[];
   readonly reviewedAdapterCapabilities: readonly string[];
   readonly reviewedInstructionSources: readonly string[];
@@ -98,12 +105,13 @@ function reviewedProfile(adapter: PolicyAdapter, operation: Operation, platform:
     ? ['thread/start', 'thread/resume', 'turn/start', 'turn/interrupt', 'thread/read']
     : ['codex', 'codex-reply', 'codex/event'];
   const manifest: Omit<ReviewedPolicyProfile, 'manifestSha256'> = {
-    id: `codex-0.153.4:${adapter}:${operation}:review-2026-09-17`, version: PINNED_CODEX_VERSION,
+    id: `codex-0.153.4:${platform}:${adapter}:${operation}:review-2026-09-17`, version: PINNED_CODEX_VERSION,
     reviewRef: 'wayfinder/build-receipts/T13-pro.md', reviewedSourceRevision: '3d2ee51ca2d5db578f328aa75e20aa22c0197c9a',
-    adapter, platform, operation, reviewedBuiltinTools: operation === 'generation' ? [...generationTools] : [],
+    adapter, platform, operation, runtimeBackend: platformBackends[platform],
+    reviewedBuiltinTools: operation === 'generation' ? [...generationTools] : [],
     reviewedAdapterCapabilities: modelTurn ? capabilities : ['command/exec'],
     reviewedInstructionSources: modelTurn ? ['marginalia-request-instructions'] : [],
-    inheritedEnvironmentKeys: [...REVIEWED_PROVIDER_ENVIRONMENT_KEYS],
+    inheritedEnvironmentKeys: [...(platform === 'win32' ? REVIEWED_PROVIDER_ENVIRONMENT_KEYS : POSIX_PROVIDER_ENVIRONMENT_KEYS)],
     requiredEvidence: [
       'dedicated-auth', 'effective-config', 'capability-closure', 'instruction-manifest', 'environment',
       'model-reachable-read-confinement', 'write-confinement', 'tool-network', 'model-traffic-separation',
@@ -245,11 +253,11 @@ export type PolicyEvidence = {
   environment?: Observation<{
     serverCwd: string; codexHome: string; dedicatedHome: boolean; credentialsCopied: boolean;
     normalSettingsChanged: boolean; inheritedEnvironmentKeys: string[]; environmentReviewed: boolean;
-    inheritedEnvironmentValueDigests: Record<string, string>; windowsKeyCasingReviewed: boolean;
+    inheritedEnvironmentValueDigests: Record<string, string>; windowsKeyCasingReviewed?: boolean;
     executableResolutionReviewed: boolean;
   }>;
   runtime?: Observation<{
-    version: string; adapter: PolicyAdapter; sandboxPolicy: unknown; backend: string;
+    version: string; adapter: PolicyAdapter; platform: Platform; sandboxPolicy: unknown; backend: RuntimeBackend;
     providerInstanceId: string; profileManifestSha256: string;
     modelReachableReadProbe: 'passed' | 'failed' | 'not-run';
     filesystemWriteProbe: 'passed' | 'failed' | 'not-run';
@@ -289,8 +297,7 @@ function same(value: unknown, expected: unknown): boolean {
 export function auditCodexPolicy(policy: CodexPolicy, evidence: PolicyEvidence, stage: AuditStage = 'dispatch'): AuditDecision {
   const issues: AuditIssue[] = [];
   const issue = (code: string, field: string) => { issues.push({ code, field }); };
-  if (policy.platform !== 'win32') issue('platform-unverified', 'platform');
-  const read = (key: keyof PolicyEvidence, source: string): unknown => {
+  const read = (key: Exclude<keyof PolicyEvidence, 'catalog'>, source: string): unknown => {
     const item = evidence?.[key];
     if (!record(item)) { issue('evidence-missing', key); return undefined; }
     if (item.complete !== true) { issue('evidence-incomplete', key); return undefined; }
@@ -382,17 +389,20 @@ export function auditCodexPolicy(policy: CodexPolicy, evidence: PolicyEvidence, 
     if (catalog.status === 'incomplete' && !nonempty(catalog.reason)) issue('catalog-observation-invalid', 'catalog.reason');
   } else if (!nonempty(catalog.reason)) issue('catalog-observation-invalid', 'catalog.reason');
   const environment = read('environment', 'host-environment-audit');
-  const allowedEnvironment = new Set<string>(REVIEWED_PROVIDER_ENVIRONMENT_KEYS);
+  const allowedEnvironment = new Set<string>(policy.reviewedProfile.inheritedEnvironmentKeys);
+  const environmentDigests = record(environment) && record(environment.inheritedEnvironmentValueDigests)
+    ? environment.inheritedEnvironmentValueDigests : undefined;
   if (!record(environment) || environment.serverCwd !== policy.workspace || environment.codexHome !== policy.codexHome ||
       environment.dedicatedHome !== true || environment.credentialsCopied !== false || environment.normalSettingsChanged !== false ||
       environment.environmentReviewed !== true || !Array.isArray(environment.inheritedEnvironmentKeys) ||
       environment.inheritedEnvironmentKeys.some(key => typeof key !== 'string' || !allowedEnvironment.has(key)) ||
-      !record(environment.inheritedEnvironmentValueDigests) || environment.windowsKeyCasingReviewed !== true ||
-      environment.executableResolutionReviewed !== true || environment.inheritedEnvironmentKeys.some(key => !SHA256_DIGEST.test(String(environment.inheritedEnvironmentValueDigests[key] ?? '')))) {
+      !environmentDigests || (policy.platform === 'win32' && environment.windowsKeyCasingReviewed !== true) ||
+      environment.executableResolutionReviewed !== true || environment.inheritedEnvironmentKeys.some(key => !SHA256_DIGEST.test(String(environmentDigests[key] ?? '')))) {
     issue('environment-unresolved', 'environment');
   }
   const runtime = read('runtime', 'controlled-sandbox-probe');
-  if (!record(runtime) || runtime.version !== PINNED_CODEX_VERSION || runtime.adapter !== policy.adapter || runtime.backend !== 'windows-native' ||
+  if (!record(runtime) || runtime.version !== PINNED_CODEX_VERSION || runtime.adapter !== policy.adapter ||
+      runtime.platform !== policy.platform || runtime.backend !== policy.reviewedProfile.runtimeBackend ||
       !nonempty(runtime.providerInstanceId) || runtime.profileManifestSha256 !== policy.reviewedProfile.manifestSha256 ||
       !same(runtime.sandboxPolicy, policy.sandboxPolicy) || runtime.modelReachableReadProbe !== 'passed' || runtime.filesystemWriteProbe !== 'passed' ||
       runtime.closedToolNetworkProbe !== 'passed' || runtime.modelTrafficDistinguished !== true) issue('runtime-evidence-unresolved', 'runtime');
