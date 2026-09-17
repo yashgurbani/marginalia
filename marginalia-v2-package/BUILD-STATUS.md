@@ -2,6 +2,8 @@
 
 ## Latest integration update
 
+T08 corrected module is now merged at8a08853 (Proa9a6a08 plus Solefb3031). Fresh56asking tests and complete typecheck pass. Working plan and readable connection labels corrected. T05/T06 mounting/runtime gates remain; this is not live asking acceptance. T20 independent adapter review still pending before merge.
+
 Evidence/Explore corrected modules are now integrated after chief review:32focused tests and complete typecheck pass. They do not yet have live stage5a/reader mounting acceptance. Opus5 T20 finished atfda8dba with two adapters and committed-claim correction; the other two host prerequisites fail closed. T20 independent delta review is running before integration. See consolidation checkpoint for this newer disposition over older hold tables.
 
 All four Luna regression slices are integrated, including the Sol capture typing/dependency repair at14b63c7. Fresh capture/protocol16tests and full package typecheck pass; the earlier persistence/library/renderer8tests also passed at their integration checkpoint. Full ticket/browser/platform acceptance remains open.

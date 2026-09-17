@@ -1,5 +1,11 @@
 # Chief consolidation checkpoint
 
+## Accepted group 4 — corrected T08 module
+
+Merged Pro finala9a6a08 plus Sol correctionefb30310111c75f5f428c1273cab4aec009f39d2 via8a08853cd2dd864ffd629b86dd642afb6504ba1e. Chief inspected F4/F5 diff: detached reviewed preparation remains display-only during submitting/working/provisional; private preparation remains dispatch authority. Plan line renders current reviewed intent/recipient/model. Provider identifiers map to Codex app connection / Codex compatibility connection. Invalidation/replacement clears display state. Fresh integrated56asking tests pass; full package typecheck exit0. Prior premerge baseline full suite338pass/1skip.
+
+This accepts bounded source, not the whole T08 live experience. T05 mounts and T06 authenticated transport/definition loading/runtime remain open. No automatic inference added. T20 final independent review still executing (Luna/max requested, session01a0b0f3-53f3-7701-ba57-dee774df283c, exec7); report skeleton exists, not final. Combined candidate updated with accepted T08 without conflicts, but no T20 merge yet.
+
 ## Accepted group 3 — Evidence and Explore modules
 
 Chief reviewed and integrated original transform9443074 plus Sol Evidence053a203, Explorebead552 and saved-shelf correction184c12a. Final behavior: retrieval is not semantic support, no support headline is minted; requested/final attribution and partial reply status remain explicit. Explore accepts valid serialized saved shelves and preserves original return context when reading elsewhere; no WeakMap identity grant or blanket freshness rule. These address the earlier chief holds. Fresh integrated32transform tests pass and full package typecheck exit0. Module acceptance only: real retrieval/reader click mounting and stage5a remain open.
