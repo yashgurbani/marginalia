@@ -1,5 +1,6 @@
 import { ReaderJournal, type Persistence, type JournalState } from './journal.ts';
 import type { QuoteAnchor, ReaderMutation, SourceCapture, Thread, ReplyVersion, ReplyViewState, SourceVersion } from '../contracts/reader.ts';
+import type { AskingSelection } from './asking-host.ts';
 import type { HostCheckReport } from '../contracts/host-checks.ts';
 import type { SampleGenerationRecord } from '../contracts/sample-provenance.ts';
 import { canonicalReplyData } from '../contracts/reply.ts';
@@ -63,6 +64,42 @@ export async function applyIntendedNote(journal: ReaderJournal, mutation: Reader
   if (journal.unsaved || journal.state.conflicts.some(item => item.change.id === mutation.id) || !applied) {
     throw new Error('This note has not been applied. Its draft and change identity are preserved; review the conflict in Settings.');
   }
+}
+
+/** A resolution is not an applied note. Release only this exact retained draft
+ * after the resolution itself is durable; preserve its text and original anchor. */
+export function draftAfterResolution(journal: ReaderJournal, draft?: MarginDraft): MarginDraft | undefined {
+  const mutation = draft?.mutation;
+  if (!mutation || journal.unsaved || journal.state.conflicts.some(item => item.change.id === mutation.id)) return;
+  const resolution = journal.state.resolutions?.find(item => item.change.id === mutation.id && item.resolution !== 'device-choice-recovered');
+  if (!resolution) return;
+  if (canonicalReplyData(resolution.change) !== canonicalReplyData(mutation)) throw new Error('This draft identity belongs to different content. The draft is preserved.');
+  const next = structuredClone(draft!); delete next.mutation;
+  const thread = journal.state.threads.find(item => item.id === mutation.threadId && !item.deletedAt);
+  if (thread && thread.sourceUrl === (draft?.source?.url ?? thread.sourceUrl) && canonicalReplyData(thread.anchor) === canonicalReplyData(draft!.anchor)) {
+    next.threadId = thread.id;
+    const noteId = mutation.kind === 'keep' ? mutation.id + '-note' : mutation.kind === 'note' ? mutation.noteId : draft?.noteId;
+    const note = thread.notes.find(item => item.id === noteId && !item.deletedAt);
+    next.noteId = note?.id ?? crypto.randomUUID(); next.revision = note?.revision ?? 0;
+  } else { delete next.threadId; delete next.noteId; delete next.revision; }
+  return next;
+}
+
+/** Caller holds the shared journal lock. Never invoke a transport here. */
+export async function retryDraftMutation(journal: ReaderJournal, draft: MarginDraft): Promise<
+  { kind: 'applied' } | { kind: 'resolved'; draft: MarginDraft }
+> {
+  if (!draft.mutation) throw new Error('The draft has no saved change identity.');
+  await journal.retryPersistence(); await journal.load();
+  const resolved = draftAfterResolution(journal, draft);
+  if (resolved) return { kind: 'resolved', draft: resolved };
+  await applyIntendedNote(journal, draft.mutation);
+  return { kind: 'applied' };
+}
+
+/** Explicit local choice. Failed saves remain unsaved in the real T07 journal. */
+export async function keepDeviceConflict(journal: ReaderJournal, lock: (operation: () => Promise<void>) => Promise<void>, changeId: string) {
+  await lock(async () => { await journal.load(); await journal.keepDeviceVersion(changeId); });
 }
 
 /** Serialize the helper read with current journal loading and reconciliation.
@@ -157,9 +194,41 @@ export function documentDraft(namespace: string, key: string, source: SourceCapt
   draftBuffers.set(identity, { namespace, key, buffer });
   return buffer;
 }
-export function unsavedDrafts(namespace: string, sourceUrl: string) {
-  return [...draftBuffers.values()].filter(entry => entry.namespace === namespace && entry.buffer.source.url === sourceUrl && entry.buffer.unsaved())
+export function unsavedDrafts(namespace: string, sourceUrl?: string) {
+  return [...draftBuffers.values()].filter(entry => entry.namespace === namespace && (sourceUrl === undefined || entry.buffer.source.url === sourceUrl) && entry.buffer.unsaved())
     .map(entry => ({ key: entry.key, source: structuredClone(entry.buffer.get()?.source ?? entry.buffer.source), draft: entry.buffer.get() ?? null, durable: false as const }));
+}
+
+/** Question drafts share the existing reader store, but retain failed values
+ * in this document just like note drafts. A delayed read never beats typing. */
+type QuestionIO = { read(): Promise<AskingSelection | undefined>; write(value: AskingSelection | undefined): Promise<void> };
+function questionBuffer(io: QuestionIO) {
+  let value: AskingSelection | undefined, known = false, dirty = false, revision = 0;
+  let tail: Promise<void> = Promise.resolve();
+  return {
+    bind(next: QuestionIO) { io = next; },
+    get: () => structuredClone(value), unsaved: () => dirty,
+    async load() {
+      if (!known) { const before = revision, saved = await io.read(); if (!known && before === revision) { value = structuredClone(saved); known = true; } }
+      return structuredClone(value);
+    },
+    save(next: AskingSelection | undefined) {
+      value = structuredClone(next); known = true; dirty = true;
+      const saved = structuredClone(value), current = ++revision, write = io.write;
+      const work = tail.catch(() => {}).then(async () => { await write(saved); if (current === revision) dirty = false; });
+      tail = work; return work;
+    },
+  };
+}
+const questions = new Map<string, { namespace: string; sourceUrl: string; buffer: ReturnType<typeof questionBuffer> }>();
+export function documentQuestion(namespace: string, key: string, sourceUrl: string, io: QuestionIO) {
+  const identity = JSON.stringify([namespace, key, sourceUrl]), existing = questions.get(identity);
+  if (existing) { existing.buffer.bind(io); return existing.buffer; }
+  const buffer = questionBuffer(io); questions.set(identity, { namespace, sourceUrl, buffer }); return buffer;
+}
+export function unsavedQuestions(namespace: string, sourceUrl?: string) {
+  return [...questions.values()].filter(item => item.namespace === namespace && (sourceUrl === undefined || sourceUrl === item.sourceUrl) && item.buffer.unsaved())
+    .map(item => ({ sourceUrl: item.sourceUrl, draft: item.buffer.get() ?? null, durable: false as const }));
 }
 
 /** Orphan keeps carry source identity even when their Thread was never saved.
@@ -168,12 +237,14 @@ export function sourceBoundJournal(state: JournalState, sourceUrl: string) {
   const sources = new Map<string, Set<string>>();
   const associate = (id: string, url: string) => { const values = sources.get(id) ?? new Set<string>(); values.add(url); sources.set(id, values); };
   for (const thread of state.threads) associate(thread.id, thread.sourceUrl);
+  for (const resolution of state.resolutions ?? []) if (resolution.deviceVersion?.id === resolution.change.threadId) {
+    associate(resolution.change.threadId, resolution.deviceVersion.sourceUrl);
+  }
   const changes = [...state.pending, ...state.conflicts.map(item => item.change),
     ...(state.resolutions ?? []).flatMap(item => item.replacement ? [item.change, item.replacement] : [item.change])];
   for (const change of changes) if (change.kind === 'keep') associate(change.threadId, change.capture.url);
-  const belongs = (change: ReaderMutation) => change.kind === 'keep' ? change.capture.url === sourceUrl :
-    sources.get(change.threadId)?.size === 1 && sources.get(change.threadId)!.has(sourceUrl);
-  const resolutions = (state.resolutions ?? []).filter(item => belongs(item.change) && (!item.replacement || belongs(item.replacement)));
+  const belongs = (change: ReaderMutation) => sources.get(change.threadId)?.size === 1 && sources.get(change.threadId)!.has(sourceUrl);
+  const resolutions = (state.resolutions ?? []).filter(item => belongs(item.change) && (!item.replacement || belongs(item.replacement)) && (!item.deviceVersion || item.deviceVersion.id === item.change.threadId && item.deviceVersion.sourceUrl === sourceUrl));
   return structuredClone({ threads: state.threads.filter(thread => thread.sourceUrl === sourceUrl),
     pending: state.pending.filter(belongs), conflicts: state.conflicts.filter(item => belongs(item.change)), resolutions });
 }
@@ -192,6 +263,13 @@ export function localPersistence(name = 'marginalia-reader') {
       const request = db.transaction('reader').objectStore('reader').get(key);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
+    });
+  }
+  async function values<T>(prefix: string): Promise<T[]> {
+    const db = await database;
+    return new Promise((resolve, reject) => {
+      const request = db.transaction('reader').objectStore('reader').getAll(IDBKeyRange.bound(prefix, prefix + '\uffff'));
+      request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
     });
   }
   async function write(key: string, value: unknown, stillCurrent?: () => boolean): Promise<void> {
@@ -378,13 +456,13 @@ export function localPersistence(name = 'marginalia-reader') {
           await write(key, pending); // Stable identity before the helper side effect.
         }
         if (pending.kind !== 'remove' || pending.removed || pending.threadId !== thread.id) throw new Error('The saved restore request does not match this thread.');
-        try { await send(pending); }
+        try { await send(structuredClone(pending)); }
         catch (error) {
           if (error instanceof Error && error.name === 'Conflict') await write(key, undefined);
           throw error; // Transport uncertainty retains exactly this request.
         }
         const canonical = (await list()).find(candidate => candidate.id === thread.id);
-        if (!canonical || canonical.deletedAt || canonical.revision <= pending.expectedRevision) {
+        if (!canonical || canonical.deletedAt || !Number.isSafeInteger(canonical.revision) || canonical.revision <= pending.expectedRevision || canonical.sourceUrl !== thread.sourceUrl || canonical.sourceVersionId !== thread.sourceVersionId) {
           if (canonical && canonical.revision > pending.expectedRevision) await write(key, undefined); // Confirmed old restore was superseded; a new choice needs a fresh revision.
           throw new Error('The helper has not confirmed a current restored thread. Reload the library before choosing another action.');
         }
@@ -393,5 +471,5 @@ export function localPersistence(name = 'marginalia-reader') {
       });
     },
   };
-  return { read, write, journal, replies, library };
+  return { read, write, values, journal, replies, library };
 }

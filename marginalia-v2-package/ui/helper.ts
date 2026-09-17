@@ -43,6 +43,9 @@ export class HelperClient {
   readonly origin: string;
   private credential = '';
   private epoch = 0;
+  private permissionsEpoch = 0;
+  get permissionVersion() { return this.permissionsEpoch; }
+  permissionsChanged() { this.permissionsEpoch++; }
   private connection = new AbortController();
   private disconnecting: number | undefined;
   get token() { return this.credential; }
@@ -57,7 +60,7 @@ export class HelperClient {
     this.origin = url.origin;
   }
   async request(path: string, body?: unknown, externalSignal?: AbortSignal) {
-    if (!path.startsWith('/') || path.startsWith('//')) throw new Error('Use a local helper path.');
+    if (!path.startsWith('/') || path.startsWith('//') || new URL(path, this.origin).origin !== this.origin) throw new Error('Use a local helper path.');
     if (this.disconnecting !== undefined && path !== '/pair') throw new HelperConnectionChangedError();
     const epoch = this.epoch;
     const signal = AbortSignal.any([this.connection.signal, AbortSignal.timeout(8000), ...(externalSignal ? [externalSignal] : [])]);
@@ -130,10 +133,10 @@ export class HelperClient {
   async deleteVocabulary(term: string): Promise<void> { await this.request('/api/vocabulary/delete', { term }); }
   async permissions(signal: AbortSignal): Promise<{ grants: ConsentGrant[]; exclusions: SiteExclusion[] }> { return this.request('/api/consent/settings', undefined, signal); }
   async revokeGrant(grant: ConsentGrant, signal: AbortSignal): Promise<ConsentGrant> {
-    return (await this.request('/api/consent/settings', { action: 'revoke-grant', grantId: grant.id, expectedRevision: grant.revision }, signal)).grant;
+    const result = await this.request('/api/consent/settings', { action: 'revoke-grant', grantId: grant.id, expectedRevision: grant.revision }, signal); this.permissionsChanged(); return result.grant;
   }
   async setExcluded(site: string, excluded: boolean, expectedRevision: number | undefined, signal: AbortSignal): Promise<SiteExclusion> {
-    return (await this.request('/api/consent/settings', { action: 'set-exclusion', site, excluded, ...(expectedRevision === undefined ? {} : { expectedRevision }) }, signal)).exclusion;
+    const result = await this.request('/api/consent/settings', { action: 'set-exclusion', site, excluded, ...(expectedRevision === undefined ? {} : { expectedRevision }) }, signal); this.permissionsChanged(); return result.exclusion;
   }
   async replies(threadId: string): Promise<{ replies: ReplyVersion[]; source: SourceVersion; views: ReplyViewState[] }> {
     return this.read('/api/replies?threadId=' + encodeURIComponent(threadId));
@@ -191,4 +194,10 @@ export async function forgetPairingIfCurrent(
   if (saved && (saved.origin !== origin || saved.token !== token)) return false;
   await io.write('pairing', undefined);
   return true;
+}
+
+/** A broadcast carries a one-way predecessor identity, never a bearer token. */
+export async function pairingIdentity(origin: string, token: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([origin, token])));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
