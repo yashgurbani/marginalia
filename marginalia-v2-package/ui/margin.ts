@@ -89,8 +89,12 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     options.capture = page.capture; options.sections = page.sections;
     workspace.append(source);
   }
-  const capture = options.capture;
-  const sections = options.sections?.length ? options.sections : [{ title: 'Whole page', start: 0, end: capture.text.length }];
+  // Freeze the original capture and use its recorded section boundaries unless
+  // the host explicitly supplies a trusted replacement. UI ordering must not
+  // be confused with source attachment identity.
+  const capture = structuredClone(options.capture);
+  const recordedSections = options.sections ?? capture.sections;
+  const sections = recordedSections?.length ? structuredClone(recordedSections) : [{ title: 'Whole page', start: 0, end: capture.text.length }];
   const shell = el('aside', undefined, 'mg'); shell.setAttribute('aria-label', 'Marginalia'); shell.id = instance;
   const rail = el('div', undefined, 'm-rail');
   const panel = el('div', undefined, 'm-panel');
@@ -134,15 +138,20 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   try { tabKey = sessionStorage.getItem(sessionKey) ?? id(); sessionStorage.setItem(sessionKey, tabKey); } catch { tabKey = id(); }
   const draftKey = 'draft:' + tabKey + ':' + capture.url + (options.draftScope ? ':' + options.draftScope : '');
   const draftBuffer = documentDraft(namespace, draftKey, capture, { read: () => persistence.read<Draft>(draftKey), write: value => persistence.write(draftKey, value) });
-  const questionKey = 'question:' + draftKey;
+  // Questions are source-bound, not aliases of a draft key that may later be
+  // reused by another captured page or saved view.
+  const questionKey = 'question:' + tabKey + ':' + capture.url + (options.draftScope ? ':' + options.draftScope : '');
   const questionBuffer = documentQuestion(namespace, questionKey, capture.url, { read: () => persistence.read<AskingSelection>(questionKey), write: value => persistence.write(questionKey, value) });
   draft = draftBuffer.get(); pendingNoteMutation = draft?.mutation; questionDraft = questionBuffer.get();
   const threadsNow = () => {
     const saved = options.savedThread;
     // A read-only helper preview must not resurrect a device-choice absence or
     // override locally retained work. The journal remains the only reader authority.
-    if (!saved || journal.state.threads.some(t => t.id === saved.id) || journal.state.pending.some(m => m.threadId === saved.id)
-      || journal.state.conflicts.some(c => c.change.threadId === saved.id) || journal.state.resolutions?.some(r => r.change.threadId === saved.id)) return journal.state.threads;
+    if (!saved || journal.state.threads.some(t => t.id === saved.id)) return journal.state.threads;
+    // A deliberately retained device absence must not be undone by a library
+    // fallback snapshot while pending/conflict/resolution history names it.
+    const known = [...journal.state.pending, ...journal.state.conflicts.map(item => item.change), ...(journal.state.resolutions ?? []).map(item => item.change)].some(change => change.threadId === saved.id);
+    if (known) return journal.state.threads;
     return [...journal.state.threads, saved];
   };
   const currentThread = (threadId: string) => threadsNow().find(thread => thread.id === threadId);
