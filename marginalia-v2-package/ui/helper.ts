@@ -8,6 +8,25 @@ const readRoutes = new Map([
   ['/api/reply-view', '/api/read/reply-view'],
 ]);
 
+export class HelperTransportError extends Error {
+  kind: 'network' | 'timeout' | 'response-unknown';
+  constructor(kind: HelperTransportError['kind']) {
+    const detail = kind === 'timeout' ? 'The local helper did not reply in time.'
+      : kind === 'response-unknown' ? 'The local helper’s reply could not be read.'
+      : 'The local helper could not be reached.';
+    super(`${detail} Check that it is running. The result of this request is unconfirmed.`);
+    this.name = 'HelperTransportError'; this.kind = kind;
+  }
+}
+
+export class HelperHttpError extends Error {
+  status: number;
+  constructor(status: number, message?: string) {
+    super(message || `The local helper rejected this request (HTTP ${status}).`);
+    this.name = status === 409 ? 'Conflict' : 'HelperHttpError'; this.status = status;
+  }
+}
+
 export class HelperClient {
   origin: string;
   token = '';
@@ -17,9 +36,24 @@ export class HelperClient {
     this.origin = url.origin;
   }
   async request(path: string, body?: unknown) {
-    const response = await fetch(this.origin + path, { method: body === undefined ? 'GET' : 'POST', headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(8000), cache: 'no-store', credentials: 'omit' });
-    const data = await response.json();
-    if (!response.ok) { const error = new Error(data.error ?? 'The local helper could not save this change.'); if (response.status === 409) error.name = 'Conflict'; throw error; }
+    const signal = AbortSignal.timeout(8000);
+    const options: RequestInit = { method: body === undefined ? 'GET' : 'POST', headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(this.token ? { authorization: `Bearer ${this.token}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal, cache: 'no-store', credentials: 'omit' };
+    let response: Response;
+    try { response = await fetch(this.origin + path, options); }
+    catch (error) {
+      // Do not expose raw transport errors, request headers or credentials.
+      const timedOut = error instanceof Error && error.name === 'TimeoutError'
+        || signal.aborted && signal.reason instanceof Error && signal.reason.name === 'TimeoutError';
+      throw new HelperTransportError(timedOut ? 'timeout' : 'network');
+    }
+    let data;
+    try { data = await response.json(); }
+    catch {
+      if (!response.ok) throw new HelperHttpError(response.status);
+      throw new HelperTransportError('response-unknown');
+    }
+    if (!response.ok) throw new HelperHttpError(response.status, typeof data?.error === 'string' ? data.error : undefined);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new HelperTransportError('response-unknown');
     return data;
   }
   async read(path: string) {
