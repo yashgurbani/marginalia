@@ -1,3 +1,6 @@
+<!-- Current takeover status: 18 September 2026 -->
+> Fable takeover supersedes historical owner/merge status below. T05, T08, T20 and T06 source are consolidated on codex/marginalia-v2 at product merge 6fb78e0. T06 independent review was waived by the user, not passed; its reported FIFO/shutdown defect remains open. Full product/runtime acceptance is not claimed. See marginalia-v2-package/docs/FABLE-TAKEOVER.md and FABLE-TICKET-STATUS.md for current ownership and remaining work.
+
 # Final Pro delivery intake — T05 and T06
 
 Captured from the completed Pro chats on 17 September 2026. These are worker claims pending local archive recovery, hash validation, independent review and native integration. The final source is not necessarily the last remote branch commit.
