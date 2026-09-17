@@ -1,5 +1,14 @@
 # Chief consolidation checkpoint
 
+## Combined candidate — 18 September 2026, review hold
+
+Isolated codex/final-pro-combined-check at fb1900367409de7ade052f05c68801b1d9eb390b assembles T05 329626b and T06 9945cc5 on integration324c288. Merges applied without conflicts; this is not chief integration acceptance. Full test suite:671tests,661pass,8fail,2skip. Fulltypecheck passes.
+
+All8failures are retained margin-entry.test.ts tests absent from the earlier passing focused list: reading-position editor/retry, startup restoration/remount, equal-revision metadata, embedded privilege controls, local context identity, explicit helper review, end-of-page draft actions and failed-pairing credential retention. Complete log in combined worktree package/.combined-tests.log. Sol same-session followup01a0b16e-11ba-7001-a82c-94e8f99f8d1c is actively correcting T05-owned source/tests, exec59. Preserve pending edits; do not launch duplicate writer. Chief findings also saved in T05 evidence/CHIEF-COMBINED-FINDINGS.md.
+
+Independent Luna reviews remain active: T06 session01a0b170-eada-7072-a823-eefcae6ab901 (client timed out, fresh runtime events continued); T05 session01a0b176-8a2a-78c3-ab0d-a82997260340 (exec51). Reports expected in respective final-consolidation worktrees, evidence/INDEPENDENT-REVIEW.md. Recover final verdicts before merging. T06 standalone passing606+2skip and T05 focused passes do not supersede combined failures.
+
+Fresh comprehensive Pro prompt remains prepared, NOT sent. Send only after corrections, independent closure, combined checks, accepted merges and push, with exact finalSHA and source-document index. Goal remains active; no T05/T06 full ticket closure claimed.
 ## Accepted group 5 — T20 reviewed corrections and merge
 
 Merged `d2a67b5` through `4466e32cc29a1148e344bea3eda0817810528165`, preserving Opus4.8, Opus5, Sol correction `a8a3a34`, and both independent review dispositions. Luna closed both concrete findings: the saved reply now resolves only to its succeeded producing attempt, and durable claim release requires explicit synchronous confirmation. Its five targeted regressions passed. Chief's combined candidate `be69eae` passed 550 tests, one existing skip, zero failures, and full pinned typecheck. Production/contracts/tests/UI trees match the merged integration exactly; no redundant full-suite rerun was needed.
