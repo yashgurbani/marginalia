@@ -1,13 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { ProviderNotSentError } from '../contracts/job-runner.ts';
 import { formatMcpPrompt } from '../daemon/providers/prompt.ts';
 import { AppServerRunner } from '../daemon/providers/app-server.ts';
 import { McpServerRunner, initializeMcp } from '../daemon/providers/mcp-server.ts';
 import { assertSeparateHome, assertVersion, pages, providerEnvironment } from '../daemon/providers/preflight.ts';
-import { authorizePolicy, policyFingerprint } from '../daemon/providers/policy-gate.ts';
-import { createCodexPolicy } from '../daemon/codex-policy.ts';
 import type { ProviderAudit, ProviderHandle, ProviderHooks, ProviderRequest } from '../contracts/job-runner.ts';
 import type { RpcTransport } from '../daemon/providers/stdio.ts';
 
@@ -20,6 +19,17 @@ class FakeRpc implements RpcTransport {
   messages: any[] = [{ type: 'agentMessage', phase: 'final_answer', text: '{"ok":true}' }];
   failTurn = false;
   mcpResolve?: (result: any) => void;
+  private nextPreparedId = 1;
+  prepareRequest(method: string, input?: unknown, options?: { onRequestId(id: number): void }) {
+    const params = structuredClone(input), id = this.nextPreparedId++;
+    let used = false;
+    return { id, generation: 'synthetic-peer', sha256: createHash('sha256').update(JSON.stringify({ method, params })).digest('hex'),
+      send: (finalize?: () => undefined) => {
+        if (used) throw new Error('prepared-request-already-used'); used = true;
+        options?.onRequestId(id); finalize?.();
+        return this.request(method, params);
+      } };
+  }
   async request(method: string, params?: any, options?: { onRequestId(id: number): void }): Promise<any> {
     this.calls.push({ method, params });
     options?.onRequestId(this.calls.length);
@@ -47,6 +57,7 @@ function fixture() {
       turn: { cwd: r.workspace, approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false } },
       mcp: { cwd: r.workspace, 'approval-policy': 'never', sandbox: 'read-only' } }),
     authorizeSend: async () => {},
+    finalizeSend: (_r, h) => { const canonical = { ...h, revision: 1 }; saved.push(canonical); return canonical; },
     authorizeRecovery: async () => {}, verifyThread: async () => {}, validateOutput: async text => JSON.parse(text).ok === true,
   };
   return { rpc, saved, hooks };
@@ -104,8 +115,8 @@ test('app refusal, ambiguous missing phases and host-invalid JSON are withheld',
   assert.equal((await new AppServerRunner(rpc, audit, hooks).start(request)).state, 'completed');
 });
 test('denied grant, failed checkpoint or rejected returned policy prevents turn dispatch', async () => {
-  for (const name of ['authorize', 'checkpoint', 'verifyThread'] as const) {
-    const { rpc, hooks } = fixture(); hooks[name] = async () => { throw new Error('blocked'); };
+  for (const name of ['authorize', 'finalizeSend', 'verifyThread'] as const) {
+    const { rpc, hooks } = fixture(); hooks[name] = () => { throw new Error('blocked'); };
     await new AppServerRunner(rpc, audit, hooks).start(request).catch(() => {});
     assert.equal(rpc.calls.filter(c => c.method === 'turn/start').length, 0);
   }
@@ -134,7 +145,9 @@ test('mcp restart has explicit unknown outcome without invoking codex-reply', as
   await assert.rejects(runner.resume(h, { ...request, jobId: 'job-2' }), /unsupported:mcp-continuation-after-process-restart/);
   assert.equal(freshRpc.calls.length, 0);
 });
-test('policy gate rejects missing evidence and separate-home/pin checks fail closed', () => {
+test('policy gate rejects missing evidence and separate-home/pin checks fail closed', async () => {
+  const { createCodexPolicy } = await import('../daemon/codex-policy.ts');
+  const { authorizePolicy, policyFingerprint } = await import('../daemon/providers/policy-gate.ts');
   const policy = createCodexPolicy({ version: '0.153.4', platform: 'win32', adapter: 'app-server', operation: 'definition', model: request.model,
     workspace: request.workspace, codexHome: 'D:\\private-codex', auditId: 'test', outputSchema: { type: 'object' } });
   const policyKey = policyFingerprint(policy);
@@ -196,7 +209,7 @@ test('app followup rejects stale parent when another provider turn is active', a
 async function terminalParent(mode: ProviderRequest['mode'] = 'structured-final', restarted = false) {
   const f = fixture(), durable = new Map<string, ProviderHandle>();
   let sealed = false, parentWrites = 0;
-  f.hooks.checkpoint = async h => {
+  const checkpoint = (h: ProviderHandle) => {
     if (sealed && h.jobId === request.jobId) { parentWrites++; throw new Error('terminal-parent-checkpoint'); }
     const prior = durable.get(h.jobId);
     if (prior && h.revision !== prior.revision) throw new Error('stale-checkpoint');
@@ -204,6 +217,8 @@ async function terminalParent(mode: ProviderRequest['mode'] = 'structured-final'
     durable.set(h.jobId, structuredClone(next)); f.saved.push(structuredClone(next));
     return structuredClone(next);
   };
+  f.hooks.checkpoint = async h => checkpoint(h);
+  f.hooks.finalizeSend = (_r, h) => checkpoint(h);
   f.rpc.status = 'completed';
   let runner = new AppServerRunner(f.rpc, audit, f.hooks);
   const parent = await runner.start({ ...request, mode });
@@ -269,7 +284,7 @@ test('F1 rejected predecessor verification leaves terminal history unchanged and
 test('F1 successor lease rejection and predecessor identity/tombstone fences still prevent dispatch', async () => {
   const f = await terminalParent();
   await assert.rejects(f.runner.resume({ ...f.parent, turnId: 'other-turn' }, { ...request, jobId: 'next' }), /handle-binding-mismatch/);
-  f.hooks.checkpoint = async () => { throw new Error('successor-lease-rejected'); };
+  f.hooks.finalizeSend = () => { throw new Error('successor-lease-rejected'); };
   await assert.rejects(f.runner.resume(f.parent, { ...request, jobId: 'next' }), /successor-lease-rejected/);
   await assert.rejects(f.runner.resume({ ...f.parent, revision: f.parent.revision! + 1, tombstone: true }, { ...request, jobId: 'next' }), /confirmed-completion/);
   assert.equal(f.parentWrites(), 0);
@@ -319,10 +334,10 @@ test('F6 followup authorization rejection is bound to the fresh successor, not t
 test('F6 checkpoint conflicts and launched uncertainty are never relabelled not-sent', async () => {
   for (const kind of ['app-server', 'mcp-server'] as const) {
     const f = fixture(), conflict = new Error('duplicate-durable-attempt');
-    f.hooks.checkpoint = async () => { throw conflict; };
+    f.hooks.finalizeSend = () => { throw conflict; };
     const runner = kind === 'app-server' ? new AppServerRunner(f.rpc, audit, f.hooks) : new McpServerRunner(f.rpc, audit, f.hooks);
     await assert.rejects(runner.start(request), error => error === conflict && !(error instanceof ProviderNotSentError));
-    assert.equal(f.rpc.calls.length, 0);
+    assert.equal(f.rpc.calls.filter(c => c.method === 'turn/start' || c.method === 'tools/call').length, 0);
   }
   const f = fixture(); f.rpc.failTurn = true;
   const runner = new AppServerRunner(f.rpc, audit, f.hooks), h = await runner.start(request);
@@ -331,17 +346,17 @@ test('F6 checkpoint conflicts and launched uncertainty are never relabelled not-
   assert.equal(f.rpc.calls.filter(c => c.method === 'turn/start').length, 1);
 });
 
-test('final authorizeSend remains after checkpoint and blocks both adapters before inference', async () => {
+test('async authorizeSend is non-consuming preparation before the final canonical checkpoint', async () => {
   for (const kind of ['app-server', 'mcp-server'] as const) {
     const f = fixture(); let checked = false;
     f.hooks.authorizeSend = async (sent, handle) => {
       checked = true; assert.equal(sent.jobId, handle.jobId);
-      assert.ok(f.saved.some(h => h.jobId === sent.jobId));
+      assert.equal(f.saved.some(h => h.jobId === sent.jobId), false);
       assert.equal(f.rpc.calls.some(c => c.method === 'turn/start' || c.method === 'tools/call'), false);
       throw new Error('revoked-at-final-fence');
     };
     const runner = kind === 'app-server' ? new AppServerRunner(f.rpc, audit, f.hooks) : new McpServerRunner(f.rpc, audit, f.hooks);
-    assert.equal((await runner.start(request)).state, 'failed'); assert.equal(checked, true);
+    await assert.rejects(runner.start(request), ProviderNotSentError); assert.equal(checked, true);
     assert.equal(f.rpc.calls.some(c => c.method === 'turn/start' || c.method === 'tools/call'), false);
   }
 });

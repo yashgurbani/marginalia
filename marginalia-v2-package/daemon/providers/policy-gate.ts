@@ -2,6 +2,7 @@ import { auditCodexPolicy, type AuditStage, type CodexPolicy, type PolicyEvidenc
 import { createHash } from 'node:crypto';
 import type { AuditedPolicy, ProviderAudit, ProviderRequest } from '../../contracts/job-runner.ts';
 import type { ConsentAuthorization } from '../../contracts/consent.ts';
+import { isPreparationAuthorization, type PreparationAuthorization } from './preparation-authority.ts';
 
 /** Semantic identity survives a worker restart; evidenceScope deliberately does not. */
 export function policyFingerprint(policy: CodexPolicy): string {
@@ -12,9 +13,9 @@ export function policyFingerprint(policy: CodexPolicy): string {
 /** Connects T13's pure audit to T02. The host must supply observations and current consent.
  * No requested value is promoted to observed evidence here. */
 export function authorizePolicy(policy: CodexPolicy, request: ProviderRequest, audit: ProviderAudit,
-  evidence: PolicyEvidence, authorization: ConsentAuthorization, stage: AuditStage): AuditedPolicy {
+  evidence: PolicyEvidence, authorization: ConsentAuthorization | PreparationAuthorization, stage: AuditStage): AuditedPolicy {
   if (!authorization || authorization.attemptId !== request.jobId || authorization.policyKey !== request.policyKey ||
-      authorization.provider !== policy.adapter || (stage === 'dispatch' && !authorization.dispatchedAt)) throw new Error('current-attempt-authorization-required');
+      authorization.provider !== policy.adapter || (stage === 'dispatch' && !authorization.dispatchedAt && !isPreparationAuthorization(authorization))) throw new Error('current-attempt-authorization-required');
   if (!policy.modelTurn) throw new Error('saved-solver-is-not-a-model-job');
   if (audit.workspace !== policy.workspace || audit.codexHome !== policy.codexHome) throw new Error('policy-runtime-binding-mismatch');
   if (policyFingerprint(policy) !== request.policyKey || policy.workspace !== request.workspace
