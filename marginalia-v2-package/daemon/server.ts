@@ -62,11 +62,14 @@ export async function startServer(options: { database: string; port?: number; we
     }
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   }
-  async function emptyBody(request: IncomingMessage) {
+  async function emptyBody(request: IncomingMessage, requireObject = false) {
     const chunks: Buffer[] = []; let length = 0;
     for await (const chunk of request) { length += chunk.length; if (length > 1024) throw new Error('Request is too large.'); chunks.push(chunk); }
     const text = Buffer.concat(chunks).toString('utf8').trim();
-    if (text && (text !== '{}' || JSON.parse(text) === null)) throw new Error('This action accepts only an empty object.');
+    if (requireObject) {
+      const value = JSON.parse(text);
+      if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length) throw new Error('This action accepts only an empty object.');
+    } else if (text && (text !== '{}' || JSON.parse(text) === null)) throw new Error('This action accepts only an empty object.');
   }
   const server = createServer(async (request, response) => {
     try {
@@ -105,6 +108,23 @@ export async function startServer(options: { database: string; port?: number; we
         if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to reopen saved work.' });
         const principal = { surface: authOrigin === origin ? 'localhost-settings' as const : 'browser-owned-margin' as const,
           pairingId: token, origin: authOrigin! };
+        // Explicit read transports preserve browser-generated Origin on extension
+        // POSTs. They do not reinterpret methods on any mutation endpoint.
+        let readOperation: 'threads' | 'replies' | 'reply-view' | undefined;
+        if (url.pathname.startsWith('/api/read/')) {
+          if (url.pathname === '/api/read/threads') readOperation = 'threads';
+          else if (url.pathname === '/api/read/replies') readOperation = 'replies';
+          else if (url.pathname === '/api/read/reply-view') readOperation = 'reply-view';
+          else return send(response, 404, { error: 'Unknown read operation.' });
+          if (request.method !== 'POST') return send(response, 405, { error: 'Use POST for this read operation.' });
+          if (!requestOrigin) return send(response, 401, { error: 'Origin required.' });
+          await emptyBody(request, true);
+          if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to reopen saved work.' });
+        } else if (request.method === 'GET') {
+          if (url.pathname === '/api/threads') readOperation = 'threads';
+          else if (url.pathname === '/api/replies') readOperation = 'replies';
+          else if (url.pathname === '/api/reply-view') readOperation = 'reply-view';
+        }
         if (url.pathname === '/api/revoke' && request.method === 'POST') {
           await emptyBody(request);
           if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to revoke this session.' });
@@ -112,7 +132,7 @@ export async function startServer(options: { database: string; port?: number; we
           for (const [ws, session] of sessions) if (session.token === token) ws.close(1008, 'Pairing revoked');
           return send(response, 200, { revoked: true });
         }
-        if (url.pathname === '/api/threads' && request.method === 'GET') return send(response, 200, { threads: store.list(url.searchParams.get('url') ?? undefined, url.searchParams.get('removed') === 'true') });
+        if (readOperation === 'threads') return send(response, 200, { threads: store.list(url.searchParams.get('url') ?? undefined, url.searchParams.get('removed') === 'true') });
         if (url.pathname === '/api/change' && request.method === 'POST') {
           const input = await body(request) as ReaderMutation;
           if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to reopen saved work.' });
@@ -130,7 +150,7 @@ export async function startServer(options: { database: string; port?: number; we
           if (!Number.isSafeInteger(after) || after < 0) throw new Error('Invalid replay position.');
           return send(response, 200, { events: store.events(after) });
         }
-        if (url.pathname === '/api/replies' && request.method === 'GET') {
+        if (readOperation === 'replies') {
           const threadId = url.searchParams.get('threadId');
           if (!threadId || !/^[\w-]{1,100}$/.test(threadId)) throw new Error('Invalid thread identifier.');
           const thread = store.get(threadId);
@@ -138,7 +158,7 @@ export async function startServer(options: { database: string; port?: number; we
           const replies = store.replies(threadId, true), source = store.sourceVersion(thread.sourceVersionId);
           return send(response, 200, { replies, source, views: replies.map(reply => store.replyView(reply.id)).filter(view => view !== undefined) });
         }
-        if (url.pathname === '/api/reply-view' && request.method === 'GET') {
+        if (readOperation === 'reply-view') {
           const threadId = url.searchParams.get('threadId'), replyId = url.searchParams.get('replyVersionId');
           if (!threadId || !replyId) throw new Error('Reply identity is required.');
           const reply = store.reply(replyId);
