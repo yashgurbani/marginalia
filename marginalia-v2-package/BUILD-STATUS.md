@@ -1,5 +1,11 @@
 # Marginalia overall build report
 
+## Latest integration update
+
+All four Luna regression slices are integrated, including the Sol capture typing/dependency repair at14b63c7. Fresh capture/protocol16tests and full package typecheck pass; the earlier persistence/library/renderer8tests also passed at their integration checkpoint. Full ticket/browser/platform acceptance remains open.
+
+T08 Pro finished at a9a6a08 and passes53tests/full typecheck in candidate27bdbaf; independent actual-interface review is still pending, so it is not merged. T05/T06 Pro remain active. Opus4.8 T20 finishedc4a6744; Opus5 has resumed after the PC crash and is implementing solver adapters/corrections. Evidence and Explore Sol changes remain unmerged; Explore's saved-shelf correction is underway. The one-time Pro check was fulfilled and its automation paused. See [current consolidation checkpoint](docs/CONSOLIDATION-CHECKPOINT.md) for authoritative live owners and review holds; the following earlier stocktake is historical where superseded.
+
 ## Current checkpoint — 17 September 2026, whole-project consolidation
 
 The project has substantial implemented foundations but is not launch-ready. No accepted real reader-to-provider-to-saved-solver journey exists yet. All T00–T20 and the full feature inventory remain scope. The priority is composing and verifying the real reader journey, not accumulating isolated modules or redesigning the architecture.
