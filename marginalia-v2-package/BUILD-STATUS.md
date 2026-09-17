@@ -32,3 +32,11 @@ Current frontier: T01 helper hardening and T05 basic margin/design integration (
 Published baseline: bb5b5b8 on origin/codex/marginalia-v2. Includes v2 package only; unrelated root modifications excluded. Whitespace check reported one trailing blank line in SCOPE-COVERAGE.md; no functional implication, cleanup deferred to document owner. Chief does not claim tests freshly rerun after worker evidence.
 
 Pro integration recipe received (advisory, not executed): generated 0.153.4 schema governs; read-only outputSchema final-message transport; private home does not eliminate inherited config or establish job-only reads; audited capabilities required. Native Windows command/exec lacks streaming/terminate; cancellation fences results and waits for timeout, no confirmed immediate kill. Main Pro assigned pure policy construction/audit preparation, not live sandbox certification. Third writer is remote-only and disjoint, bounded to those three files with stop after commit/report; local writers never touch them.
+
+Pro access discrepancy: T01 reports its fresh Chat page exposes Latest/Sol/5.5 and a workspace-credit banner, not 6 Pro. No account or billing change authorized/performed. Existing chief Pro conversation accepted the T13 assignment and is thinking. Ticket owners may use an observed Branch in new chat action on a completed response to obtain separate Pro conversations, without changing original; otherwise chief routes their consolidated review packets through working Pro. Do not label advice as GPT-6 Pro without visible model verification.
+
+T07 assigned to task 01a0adcb-25bd-7451-831f-40197dade46a (Astra low selected): daemon/store.ts, contracts/reader.ts, ui/journal.ts and storage tests only. Public signatures coordinated with T01/T05; bounded one-ticket implementation/review pass, at most one child, then stop. T03 dependency complete. This third local writer has a disjoint scope, with no shared package/config edits.
+
+GitHub observation: codex/pro-t13-policy exists at baseline bb5b5b801b285d3f888dd47728be508501261724. Pro visibly processing implementation; branch creation is verified, implementation/test success is not.
+
+Integration finding: T05 browser GET omits Origin. T01 owns secure supported browser read-route resolution and regression checks; no blanket missing-Origin exception permitted.

@@ -38,6 +38,10 @@ Domain: interactive reading companion; see the whitepaper (Claude Doc) for ethos
 - WebMCP surface v2 and repo/licence decided. ([13-webmcp-mirror-v2](tickets/13-webmcp-mirror-v2.md), [14-repo-and-licence](tickets/14-repo-and-licence.md))
 - Prior art: build on PaperCraft's overlay model for PDFs, Hypothesis-style anchoring, ScholarPhi entity types as block types; cite CiteSee, Scim, Threddy, Qlarify. (17 Sep)
 
+## Build execution status
+
+The build is active. See [BUILD-STATUS.md](../BUILD-STATUS.md) for current owners and observed gates, [PRO-COLLABORATION.md](PRO-COLLABORATION.md) for GitHub handoffs, and build-receipts/ for per-ticket evidence. Closed decision tickets do not mean implemented, tested or released. The basic margin is split from rich rendering to break the T05/T16 stage cycle; all T18 and T05 rich-reply requirements remain required.
+
 ## Open tickets
 
 - [12-margin-design](tickets/12-margin-design.md) — pass 2 of the Claude Design session (HITL, now); acceptance criteria in DESIGN-BRIEF-FINAL.md

@@ -23,7 +23,9 @@ Destination: a working extension + daemon in which selecting a passage on a real
 | Fixture | corrected toy: y' = y² − γy + f, analytic classification; kinematic vortex field u = (−ax−ωy, ωx−ay, 2az) as a second illustration if time allows | scientifically true demo |
 | WebMCP | experimental adapter, `insert_reply`, capability-checked | kept, nothing depends on it |
 
-## Reply contract v1 (write this file first)
+## Reply contract v1 (historical design example)
+
+> Implementation authority: use contracts/reply.schema.json, contracts/reply.ts and docs/CONTRACT.md. The example below predates T03: candidate replies cannot assert host results, classification formatting is renderer-owned, y0 has units 1/s, and read-only definitions return validated structured output over transport. Do not copy this example as a valid fixture.
 
 ```json
 {
@@ -116,6 +118,8 @@ One lane per file tree; "tested" means a screenshot or console transcript; the i
 | 5a Evidenced expansion (launch if green) | T14, T15 | closed session provably offline; open session's fetched record complete or labelled incomplete; no fabricated sources |
 | 5b Roadmap | T10, PDF viewer, library search, local models, hosted home | each with its own fidelity, permission, persistence and failure contract |
 
-## Cut order if the day runs short
+## Historical cut order (superseded by user direction)
+
+> The user explicitly retained the entire feature inventory. The order below is historical context, not authorization to remove scope. Release claims remain limited to verified capabilities; unfinished features remain required work.
 
 Drop in this order: T10, T15, T14 (both become an honest "needs web access, coming" state, never a dead action), T17's assumed terms (keep identity), the assumptions editor (show read-only), the kinematic second illustration. Never T00, T03, T18's classification path, T20 (without it a changed input outside the envelope becomes a model turn, which is the token burn we set out to avoid), T13's closed-session guarantee, T19's fresh-machine test, or T12.
