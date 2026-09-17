@@ -10,24 +10,34 @@ function validate({ gamma, f, y0 }: GrowthInputs) {
     throw new Error('Damping and forcing must be finite and non-negative; the starting value must be finite.');
 }
 
+function divergence(time: number): GrowthConclusion {
+  if (!Number.isFinite(time) || time <= 0) throw new Error('The divergence time is outside the supported numeric range.');
+  return { kind: 'diverges', time };
+}
+
 export function classifyGrowth(inputs: GrowthInputs): GrowthConclusion {
   validate(inputs);
   const { gamma, f, y0 } = inputs;
   const delta = f - gamma * gamma / 4;
+  if (!Number.isFinite(delta)) throw new Error('The growth criterion exceeds the supported numeric range.');
+  if (gamma > 0 && gamma * gamma / 4 === 0) throw new Error('The damping threshold is below the supported numeric range.');
   const z = y0 - gamma / 2;
   if (delta > 0) {
     const s = Math.sqrt(delta);
-    return { kind: 'diverges', time: Math.atan2(s, z) / s };
+    return divergence(Math.atan2(s, z) / s);
   }
   if (delta === 0) {
-    if (z > 0) return { kind: 'diverges', time: 1 / z };
+    if (z > 0) return divergence(1 / z);
     return z === 0 ? { kind: 'equilibrium', value: y0 } : { kind: 'settles', value: gamma / 2 };
   }
   const a = Math.sqrt(-delta);
-  const lower = gamma / 2 - a;
   const upper = gamma / 2 + a;
+  // Rationalization preserves a small positive root when subtraction loses f.
+  const lower = f / upper;
+  if (f > 0 && lower === 0) throw new Error('The equilibrium is below the supported numeric range.');
+  if (f > 0 && delta === -gamma * gamma / 4 && y0 === upper) throw new Error('The upper equilibrium cannot be distinguished at this numeric precision.');
   if (y0 === lower || y0 === upper) return { kind: 'equilibrium', value: y0 };
-  if (y0 > upper) return { kind: 'diverges', time: Math.log1p(2 * a / (z - a)) / (2 * a) };
+  if (y0 > upper) return divergence(Math.log1p(2 * a / (y0 - upper)) / (2 * a));
   return { kind: 'settles', value: lower };
 }
 
@@ -47,8 +57,11 @@ export function growthAt(inputs: GrowthInputs, t: number): number {
   }
   if (delta === 0) return gamma / 2 + z / (1 - z * t);
   const a = Math.sqrt(-delta);
+  const upper = gamma / 2 + a;
+  const lower = f / upper;
+  const offset = y0 - lower;
   const q = Math.exp(-2 * a * t);
-  return gamma / 2 + a * ((z + a) * q + (z - a)) / ((z + a) * q - (z - a));
+  return lower + (2 * a * offset * q) / (2 * a + offset * Math.expm1(-2 * a * t));
 }
 
 export function growthSentence(inputs: GrowthInputs, horizon: number): string {

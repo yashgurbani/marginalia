@@ -1,0 +1,17 @@
+# Local numeric kernel
+
+`runModel` adapts validated reply model blocks to the bounded integrator. RK4 uses the declared fixed step, shortening only the final step. RK45 treats a declared step as its initial and maximum step. Adaptive attempts count against `maxSteps`. Event times are linearly estimated inside the accepted step that brackets the root and include that bracket in the returned trajectory. They are finite-horizon numerical observations, not stability or long-term conclusions.
+
+Events must be continuous zero-crossing expressions; Boolean predicates are refused. Sign changes are detected over accepted steps. Multiple crossings inside one step, discontinuities and tangencies are not generally detected. This is not an event-completeness guarantee.
+
+Event interpolation normalizes finite endpoint magnitudes to avoid overflow. A model stops at the 512-event record cap, and the renderer presents events in pages of 25. Parameters/sample axes named `pi` or `e` are refused where they would conflict with mathematical constants. Known growth poles constrain numerical display even when classification presentation is unsupported (for example, an event-modified model).
+
+`runModel` accepts an optional renderer-owned `stopBefore` domain bound. For a recognized growth singularity, the integrator refuses a generating step whose endpoint reaches that bound, before evaluating the step or interpolating its events. This prevents a terminal event from disguising a pole-crossing step with an interpolated timestamp before the pole. The stop is reported as a numerical limit; no headline authority follows from it.
+
+`interpolateSamples` accepts complete rectilinear grids with recorded error evidence. Axis coordinates come from the data; nonuniform spacing is supported. Exact samples, nearest-neighbour lookup, and multilinear interpolation stay strictly inside declared bounds. A forbidden expression is checked at the query. Every off-grid interpolation fails closed when any forbidden region is declared because arbitrary expressions can hide a region between finite probes. Recorded error text is a producer statement, not an independently verified bound.
+
+The renderer additionally requires every reply parameter to appear as a sample axis. The current contract has no fixed-parameter generation record, so neither default values nor mount-time values establish the missing provenance. Unsupported grids remain available as historical tables and offer explicit recomputation when a saved solver is unambiguously linked.
+
+The renderer budgets 40,000 integration attempts per complete parameter update, shares each result across repeated views, and marks budget exhaustion. Unsupported horizons or expressions are refused rather than silently truncated. Known growth singularities bound displayed trajectories. Independent analytic conclusions remain distinct from finite-interval numerical observations.
+
+After the user's testing deferral, parent changes to sample geometry, event crossing and growth formulas were reviewed statically only. Earlier worker results do not verify these revisions.
