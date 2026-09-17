@@ -1,5 +1,7 @@
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
+import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { attachQuote, validateReaderMutation, validateSourceCapture, type JsonValue, type ReaderMutation, type Thread, type Note, type QuoteAnchor, type SourceCapture, type SourceVersion, type SourceSection, type AttachmentRecord, type NoteVersionRef, type NoteVersion, type ReplyVersion, type ReplyViewState } from '../contracts/reader.ts';
 import { canonicalReplyData, validateReply, type CandidateReply, type ReplyCapability } from '../contracts/reply.ts';
 import { digestReply, runHostChecks } from '../contracts/host-checks.ts';
@@ -9,10 +11,51 @@ export class ConflictError extends Error { override name = 'Conflict'; }
 export class ReaderStore {
   db: Database.Database;
   constructor(filename: string) {
-    this.db = new Database(filename);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.db.pragma('synchronous = FULL');
+    const diskPath = filename === ':memory:' || filename === '' ? undefined : resolve(filename);
+    // Inspect existing files read-only before opening a writer or setting journal_mode.
+    if (diskPath && existsSync(diskPath)) {
+      const preflight = new Database(diskPath, { readonly: true, fileMustExist: true });
+      try { inspectReaderSchema(preflight); } finally { preflight.close(); }
+    }
+    this.db = new Database(diskPath ?? filename);
+    let backup: string | undefined;
+    try {
+      if (needsReaderMigration(inspectReaderSchema(this.db))) {
+        this.db.pragma('synchronous = FULL');
+        this.db.pragma('foreign_keys = OFF');
+        this.db.transaction(() => {
+          // The write reservation prevents another connection changing the source between
+          // the independent read-only snapshot and the complete migration transaction.
+          const schema = inspectReaderSchema(this.db);
+          if (!needsReaderMigration(schema)) return;
+          if (diskPath && schema.hasSchema) backup = createPreUpgradeBackup(diskPath, schema);
+          this.migrate();
+          verifySqliteIntegrity(this.db);
+          if (this.db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Source migration would leave invalid references.');
+        }).immediate();
+      }
+      this.db.pragma('foreign_keys = ON');
+      this.db.pragma('synchronous = FULL');
+      this.db.pragma('journal_mode = WAL');
+      if (backup) finishRoutineBackup(backup);
+    } catch (error) {
+      this.db.close();
+      if (backup) throw new ReaderMigrationError('Opening saved work failed. The verified pre-upgrade backup is retained for recovery.', backup, true, error);
+      throw error;
+    }
+  }
+
+  /** Explicit host action after recovery is resolved; never restores or edits the database. */
+  static resolveRecoveryBackup(filename: string, backupName: string): string {
+    if (filename === ':memory:' || filename === '' || !/^recovery-[0-9]+-[0-9a-f-]{36}$/.test(backupName)) throw new Error('Invalid recovery backup.');
+    const root = backupDirectory(resolve(filename));
+    requireDirectory(root);
+    const directory = join(root, backupName);
+    verifyBackup(directory);
+    return finishRoutineBackup(directory);
+  }
+
+  private migrate() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, url TEXT UNIQUE NOT NULL, title TEXT NOT NULL, pageType TEXT NOT NULL);
@@ -48,9 +91,7 @@ export class ReaderStore {
       `);
     })();
     if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=4').get()) {
-      this.db.pragma('foreign_keys = OFF');
-      try {
-        this.db.transaction(() => {
+      this.db.transaction(() => {
           this.db.exec(`
             CREATE TABLE source_versions_v4(id TEXT PRIMARY KEY, sourceId TEXT NOT NULL REFERENCES sources(id), hash TEXT NOT NULL, text TEXT NOT NULL, capturedAt TEXT NOT NULL, extractionVersion TEXT NOT NULL, title TEXT, pageType TEXT, metadataStatus TEXT NOT NULL DEFAULT 'legacy', sections TEXT NOT NULL DEFAULT '', UNIQUE(sourceId,hash,extractionVersion,sections));
             INSERT INTO source_versions_v4(id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections)
@@ -60,16 +101,11 @@ export class ReaderStore {
             CREATE TRIGGER source_version_immutable BEFORE UPDATE ON source_versions BEGIN SELECT RAISE(ABORT, 'Source versions are immutable'); END;
             INSERT INTO migrations(version) VALUES(4);
           `);
-        })();
-      } finally {
-        this.db.pragma('foreign_keys = ON');
-      }
+      })();
     }
     // T07-scoped migration number; existing T06/T13 markers remain untouched.
     if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=7001').get()) {
-      this.db.pragma('foreign_keys = OFF');
-      try {
-        this.db.transaction(() => {
+      this.db.transaction(() => {
           this.db.exec(`
             CREATE TABLE source_versions_metadata(id TEXT PRIMARY KEY, sourceId TEXT NOT NULL REFERENCES sources(id), hash TEXT NOT NULL, text TEXT NOT NULL, capturedAt TEXT NOT NULL, extractionVersion TEXT NOT NULL, title TEXT, pageType TEXT, metadataStatus TEXT NOT NULL DEFAULT 'legacy', sections TEXT NOT NULL DEFAULT '');
             INSERT INTO source_versions_metadata SELECT id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections FROM source_versions;
@@ -82,10 +118,7 @@ export class ReaderStore {
             INSERT INTO migrations(version) VALUES(7001);
           `);
           if (this.db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Source migration would leave invalid references.');
-        })();
-      } finally {
-        this.db.pragma('foreign_keys = ON');
-      }
+      })();
     }
   }
   close() { this.db.close(); }
@@ -413,4 +446,159 @@ function exportRequest(serialized: string): HistoryRow {
     request.outgoing = outgoing;
   }
   return request;
+}
+
+// Membership, not MAX(version): T06/T13 share this database but own their migrations.
+const READER_MIGRATIONS = [1, 2, 4, 7001] as const;
+const KNOWN_MIGRATIONS = new Set<number>([...READER_MIGRATIONS, 3, 13]);
+type ReaderSchema = { versions: number[]; hasSchema: boolean };
+type BackupManifest = { schema: 'marginalia.reader-backup.v1'; createdAt: string; versions: number[]; sha256: string };
+
+export class UnsupportedReaderSchemaError extends Error {
+  override name = 'UnsupportedReaderSchema';
+}
+export class ReaderMigrationError extends Error {
+  override name = 'ReaderMigration';
+  readonly backupPath: string;
+  readonly backupVerified: boolean;
+  constructor(message: string, backupPath: string, backupVerified: boolean, cause: unknown) {
+    super(message, { cause });
+    this.backupPath = backupPath;
+    this.backupVerified = backupVerified;
+  }
+}
+
+function inspectReaderSchema(db: Database.Database): ReaderSchema {
+  // These product-owned pragma markers are unused (zero) in this build. SQLite's
+  // automatic schema_version counter is deliberately NOT a product version marker.
+  if (db.pragma('user_version', { simple: true }) !== 0 || db.pragma('application_id', { simple: true }) !== 0) {
+    throw new UnsupportedReaderSchemaError('This database has an unsupported schema marker. Open it with the matching newer build. Nothing was migrated.');
+  }
+  const objects = db.prepare("SELECT name,type FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all() as { name: string; type: string }[];
+  const hasSchema = objects.length > 0;
+  if (!objects.some(object => object.name === 'migrations' && object.type === 'table')) {
+    if (hasSchema) throw new UnsupportedReaderSchemaError('This database has no recognized migration history. Nothing was migrated.');
+    return { versions: [], hasSchema: false };
+  }
+  const columns = db.prepare('PRAGMA table_info(migrations)').all() as { name: string; type: string; pk: number }[];
+  if (columns.length !== 1 || columns[0].name !== 'version' || columns[0].type.toUpperCase() !== 'INTEGER' || columns[0].pk !== 1) {
+    throw new UnsupportedReaderSchemaError('The migration history has an unsupported shape. Nothing was migrated.');
+  }
+  const versions = (db.prepare('SELECT version FROM migrations ORDER BY version').all() as { version: number }[]).map(row => row.version);
+  if (versions.some(version => !Number.isSafeInteger(version) || !KNOWN_MIGRATIONS.has(version)) || (!versions.length && objects.some(object => object.name !== 'migrations'))) {
+    throw new UnsupportedReaderSchemaError('This database contains a newer or unknown migration. Open it with a compatible build. Nothing was migrated.');
+  }
+  return { versions, hasSchema };
+}
+function needsReaderMigration(schema: ReaderSchema) {
+  return READER_MIGRATIONS.some(version => !schema.versions.includes(version));
+}
+function verifySqliteIntegrity(db: Database.Database) {
+  const rows = db.prepare('PRAGMA integrity_check').all() as { integrity_check: string }[];
+  if (rows.length !== 1 || rows[0].integrity_check !== 'ok') throw new Error('SQLite integrity verification failed.');
+}
+function backupDirectory(filename: string) {
+  // Resolve symlinked source files to one sibling backup location where possible.
+  return `${existsSync(filename) ? realpathSync(filename) : filename}.backups`;
+}
+function requireDirectory(directory: string) {
+  const stat = lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Backup location must be an ordinary directory.');
+}
+function syncFile(filename: string) {
+  const fd = openSync(filename, 'r+');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+function syncDirectory(directory: string) {
+  // Node does not expose a portable Windows directory-fsync handle. SQLite and the
+  // file fsync still flush the snapshot; POSIX also flushes directory entries.
+  if (process.platform === 'win32') return;
+  const fd = openSync(directory, 'r');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+function backupDigest(filename: string) {
+  const fd = openSync(filename, 'r'), hash = createHash('sha256'), buffer = Buffer.alloc(1024 * 1024);
+  try {
+    let bytes: number;
+    while ((bytes = readSync(fd, buffer, 0, buffer.length, null)) > 0) hash.update(buffer.subarray(0, bytes));
+    return hash.digest('hex');
+  } finally { closeSync(fd); }
+}
+function verifyBackup(directory: string): BackupManifest {
+  requireDirectory(directory);
+  const filename = join(directory, 'reader.sqlite'), metadata = join(directory, 'verified.json');
+  for (const file of [filename, metadata]) if (!lstatSync(file).isFile() || lstatSync(file).isSymbolicLink()) throw new Error('Backup files must be ordinary files.');
+  const manifest = JSON.parse(readFileSync(metadata, 'utf8')) as BackupManifest;
+  if (manifest.schema !== 'marginalia.reader-backup.v1' || !Array.isArray(manifest.versions) || !Number.isFinite(Date.parse(manifest.createdAt)) || !/^[a-f0-9]{64}$/.test(manifest.sha256) || backupDigest(filename) !== manifest.sha256) {
+    throw new Error('Backup verification record does not match the snapshot.');
+  }
+  const check = new Database(filename, { readonly: true, fileMustExist: true });
+  try {
+    verifySqliteIntegrity(check);
+    if (JSON.stringify(inspectReaderSchema(check).versions) !== JSON.stringify(manifest.versions)) throw new Error('Backup migration history does not match.');
+  } finally { check.close(); }
+  return manifest;
+}
+function createPreUpgradeBackup(filename: string, schema: ReaderSchema): string {
+  const root = backupDirectory(filename);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  requireDirectory(root);
+  // Recovery is the default disposition, including interruption before verification.
+  // Only a successfully completed opening makes a snapshot eligible for rotation.
+  const directory = join(root, `recovery-${Date.now()}-${randomUUID()}`);
+  mkdirSync(directory, { mode: 0o700 });
+  syncDirectory(root);
+  const snapshot = join(directory, 'reader.sqlite');
+  try {
+    const reader = new Database(filename, { readonly: true, fileMustExist: true });
+    try {
+      reader.pragma('synchronous = FULL');
+      reader.prepare('VACUUM main INTO ?').run(snapshot);
+    } finally { reader.close(); }
+    chmodSync(snapshot, 0o600);
+    syncFile(snapshot);
+    const check = new Database(snapshot, { readonly: true, fileMustExist: true });
+    try {
+      verifySqliteIntegrity(check);
+      if (JSON.stringify(inspectReaderSchema(check).versions) !== JSON.stringify(schema.versions)) throw new Error('Source changed while making the backup.');
+    } finally { check.close(); }
+    const manifest: BackupManifest = { schema: 'marginalia.reader-backup.v1', createdAt: new Date().toISOString(), versions: schema.versions, sha256: backupDigest(snapshot) };
+    const metadata = join(directory, 'verified.json');
+    writeFileSync(metadata, JSON.stringify(manifest) + '\n', { flag: 'wx', mode: 0o600 });
+    syncFile(metadata);
+    syncDirectory(directory);
+    syncDirectory(root);
+    verifyBackup(directory);
+    return directory;
+  } catch (error) {
+    throw new ReaderMigrationError('A verified pre-upgrade backup could not be completed. Nothing was migrated; the recovery files were retained.', directory, false, error);
+  }
+}
+function finishRoutineBackup(directory: string): string {
+  verifyBackup(directory);
+  const root = dirname(directory);
+  const routine = readdirSync(root, { withFileTypes: true })
+    .filter(entry => entry.isDirectory() && /^routine-[0-9]+-[0-9a-f-]{36}$/.test(entry.name))
+    .map(entry => join(root, entry.name));
+  const verified: { directory: string; createdAt: string }[] = [];
+  for (const entry of routine) {
+    try { verified.push({ directory: entry, createdAt: verifyBackup(entry).createdAt }); }
+    catch {
+      // Corrupt/unverifiable copies are recovery material too, never routine deletion.
+      renameSync(entry, join(root, `recovery-${Date.now()}-${randomUUID()}`));
+    }
+  }
+  verified.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.directory.localeCompare(b.directory));
+  // The new verified copy is still protected while pruning, so an error never makes
+  // three routine backups or destroys the only verified pre-upgrade snapshot.
+  for (const old of verified.slice(0, Math.max(0, verified.length - 1))) rmSync(old.directory, { recursive: true });
+  const destination = join(root, basename(directory).replace(/^recovery-/, 'routine-'));
+  renameSync(directory, destination);
+  try { syncDirectory(root); }
+  catch (error) {
+    // A failed finalization must not make this opening's backup eligible for pruning.
+    renameSync(destination, directory);
+    throw error;
+  }
+  return destination;
 }
