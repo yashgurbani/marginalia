@@ -47,24 +47,24 @@ Integrated means committed for review, not that the full reader experience passe
 | T00 | Numerical fixture | Foundation integrated; final rendered/live fixture remains |
 | T01 | Helper and pairing | Pro diagnostics correction integrated as 39ff68c, 9/9 focused owner checks on Node 24; T06 canonical identity wiring and live recovery remain |
 | T02 | App-server and MCP adapters | Pro continuation/not-sent correction integrated as eefb8b6; 49/49 local focused checks pass; T06 integration and real authenticated asking/recovery remain |
-| T03 | Reply contract/host authority | Integrated with samples binding; Pro contract corrections/tests active; real host records and delivery remain |
-| T04 | Extension capture/private host | Pro review delivered, implementation ended with Thinking failed and no artifact; accepted eight fixes reassigned to isolated Sol Medium via dynamic MCP; actual host/recovery gates remain |
-| T05 | Margin/design | Saved replies and recovery history integrated; Pro persistence/lifecycle, reading-position UI and library mount fixes active; browser/visual acceptance remains |
-| T06 | Jobs/cancellation/helper APIs | Integrated; Pro lifecycle, prepare types and continuation fixes active; shared runtime, admission and restart/cancel gates remain |
+| T03 | Reply contract/host authority | Pro fixes integrated c14b351/7e6bf2c; 32/32 contract/renderer checks including Chrome pass; real host records and delivery remain |
+| T04 | Extension capture/private host | Reviewed routed-Sol fixes integrated 2cbe4d0; 9/9 tests and extension build pass; actual browser verification active |
+| T05 | Margin/design | Pro implementation publication/retrieval pending; browser transport unavailable, owner checks Git artifacts; no duplicate writer; browser/visual acceptance remains |
+| T06 | Jobs/cancellation/helper APIs | Routed Sol lifecycle/preparation worker active after Pro returned no artifact; shared runtime and F20 atomic handoff remain |
 | T07 | Store/threads/journal | Integrated through migration 4; Pro conflict/migration safety corrections active; preservation/recovery acceptance remains |
 | T08 | Contextual definition | Queued; depends on real provider, margin and consent flow |
 | T09 | Simulation | Queued; real new passage through jobs and renderer required |
 | T10 | WebMCP | Queued; typed replies and honest unsupported behavior required |
 | T11 | Library/settings | Pro lifecycle + two Sol MCP compatibility corrections integrated as d79bc63; 31/31 focused checks pass; T05 entry/return flow, full export and diagnostics remain |
 | T12 | Launch | Queued; fresh-machine gates, video and evidence-based listing required |
-| T13 | Consent/provider boundaries | Integrated; Pro consent hashing, policy portability and focus fixes active; actual runtime isolation remains unverified |
+| T13 | Consent/provider boundaries | Pro/Sol fixes integrated e60000c; 35/35 focused tests pass; F20 implementation queued after T06 lifecycle and actual runtime isolation remains unverified |
 | T14 | Evidence | Queued; dated claim-level support and abstention required |
 | T15 | Explore | Queued; useful linked shelf parked by default required |
 | T16 | Notes/vocabulary | Basic notes integrated; note-version Ask and complete origin/deletion/recovery remain |
 | T17 | Page header | Queued; local identity, granted enrichment and return position required |
 | T18 | Renderer/kernel | Pro corrections integrated as 57ad295; 13/13 owner checks including browser scenarios and build pass; host arbitration, real sidecar delivery and complete reader flow remain |
 | T19 | Install/recovery | Opus experience slice delivered; C1–C15 routed; installers and fresh-machine recovery on all platforms remain |
-| T20 | Saved solver | First-party headless Opus 5 worker running; isolated new modules/tests; T06/T05 integration and zero-inference execution acceptance remain |
+| T20 | Saved solver | Initial module returned but unaccepted; same first-party Opus5 worker corrects exact RPC, output limits and authority binding; actual recompute flow remains |
 
 ## Ownership and model routing
 
@@ -85,7 +85,7 @@ Chief owns source fidelity, dispatch, receipts, cross-ticket decisions, integrat
 
 Each owner operates its own Pro chat and returns exact source artifacts, review disposition and test evidence. No duplicate operator or overlapping Sol writer while Pro owns a fix. GitHub writes are preferred where exposed; ZIP/diff fallback is authorized. A claimed commit or passing test is not accepted until the returned artifact is inspected. [Pro collaboration rules](wayfinder/PRO-COLLABORATION.md) retain the handoff details.
 
-T20 worktree: `D:\Projects\Marginalia-worktrees\t20-saved-solver`, branch `codex/opus-t20-saved-solver`, based on `2c35157`. Session `163a228c-e0a6-4723-9a7d-285c8bda36a2`, active execution handle 25761. Owned new files: `contracts/solver.ts`, `daemon/solver/**`, `tests/saved-solver*.test.ts`, `docs/evidence/T20/**`, receipt T20. It must propose shared integration changes as artifacts rather than edit T05/T06 paths. Claude always uses first-party account authentication.
+T20 worktree: `D:\Projects\Marginalia-worktrees\t20-saved-solver`, branch `codex/opus-t20-saved-solver`, advanced to `6987e64`. Session `163a228c-e0a6-4723-9a7d-285c8bda36a2`, active correction execution handle 60311. Owned new files: `contracts/solver.ts`, `daemon/solver/**`, `tests/saved-solver*.test.ts`, `docs/evidence/T20/**`, receipt T20. It must propose shared integration changes as artifacts rather than edit T05/T06 paths. Claude always uses first-party account authentication.
 
 ## Main integration risks
 
