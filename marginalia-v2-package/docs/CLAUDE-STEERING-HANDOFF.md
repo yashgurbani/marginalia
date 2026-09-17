@@ -1,5 +1,7 @@
 # Claude steering handoff
 
+**Current entry point:** [Fable/Codex steering handoff](FABLE-STEERING-HANDOFF.md). Shared-project access restored; full T05/T06/T08 Pro runs and first-party Opus4.8Medium T14/T15 implementation are active. Its ownership/status supersedes the older checkpoint and tables below. [Takeover prompt](FABLE-CONTINUATION-PROMPT.md).
+
 ## Latest checkpoint — read before the earlier ownership snapshot
 
 T07's bounded device-choice/migration continuation is now integrated and pushed at `dc0f963684fa616599cbe67ff183eebe6058ba7d`, from Pro head `2464ce63862d70f6ec702f759f2bdd88e054839c`. See [native verification](evidence/pro-t07-fixes/NATIVE-VERIFICATION.md): 42 reader/store/journal tests passed on the identical runtime implementation and assertions; the final type-only correction passed project-config typecheck. Windows Node 24.14.1 / better-sqlite3 13.0.3 was exercised. Browser conflict controls, Linux/macOS and whole-ticket acceptance remain open. The merge differs from the tested Pro head only in the three steering documents.
