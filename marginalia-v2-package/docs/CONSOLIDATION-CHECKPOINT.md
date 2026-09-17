@@ -1,5 +1,11 @@
 # Chief consolidation checkpoint
 
+## Chief acceptance — 18 September 2026
+
+T05 final Pro delivery and concurrent c5d7d51 entry work are reconciled and merged through96eef734e94b85f554be6e7eee8086ff40fb8876. Accepted source includes d216063 and41207c4 corrections; independent closure51655d8 withdraws the incorrect current-source-only requirement for historical replies and closes question continuity/retry findings. Original capture/source/history remain preserved. Settings warning/retry reflects actual pending/failure state, and the established question storage key remains compatible.
+
+Combined T05+T06 candidate (T06 still independently unaccepted) passed669tests,2skips,0failures; fulltypecheck, appbuild, extensionbuild/typecheck passed. T05 standalone focused checks and independent closure are separately recorded. No whole-ticket completion: real browser persistence/origin enforcement, installed helper journey, accessibility/zoom and authentic provider/runtime acceptance remain open. Do not use source acceptance to erase those criteria. Canonical independent report: docs/evidence/pro-t05-fixes/INDEPENDENT-REVIEW.md.
+
 ## Chief fidelity hold — 18 September 2026
 
 T05 correction aaf42f4 restored ui/margin.ts byte-for-byte to c5d7d51 (both Git blob8dca3afac92d5b4fed7d8fe9ead04bf9ed7d96d4). Chief does NOT accept this as proof of full final-Pro reconciliation. Passing earlier tests cannot justify losing later source-position, recovery, focus, exact-request and lifecycle improvements. Same Sol session has been explicitly tasked to compare every finalPro margin requirement and preserve both intended behaviors with narrow changes, exec71. Do not merge aaf42f4 merely because it restores the older green version. Independent T05 Luna is still reviewing329626b plus concurrent effects, session01a0b176-8a2a-78c3-ab0d-a82997260340; preserve its work.
