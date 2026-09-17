@@ -24,6 +24,7 @@
     "fixtures/**/*.ts",
     "ui/**/*.ts",
     "webapp/**/*.ts",
-    "renderer/**/*.ts"
+    "renderer/**/*.ts",
+    "extension/lib/anchors.d.ts"
   ]
 }

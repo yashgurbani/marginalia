@@ -1,12 +1,147 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseHTML } from 'linkedom';
 import { captureSelection, locate } from '../extension/lib/capture.ts';
 import { validAnchor } from '../extension/lib/protocol.ts';
 
 const SHOW_TEXT = 4;
 const GLOBALS = ['document', 'Node', 'NodeFilter', 'HTMLDetailsElement', 'getComputedStyle', 'location', 'getSelection', 'fetch'];
 type GlobalState = { exists: boolean; value: unknown };
+
+class FixtureNode {
+  static readonly ELEMENT_NODE = 1;
+  static readonly TEXT_NODE = 3;
+  readonly nodeType: number;
+  ownerDocument: FixtureDocument;
+  parentNode: FixtureNode | null = null;
+  childNodes: FixtureNode[] = [];
+
+  constructor(nodeType: number, ownerDocument?: FixtureDocument) {
+    this.nodeType = nodeType;
+    this.ownerDocument = ownerDocument ?? this as unknown as FixtureDocument;
+  }
+
+  get parentElement(): FixtureElement | null { return this.parentNode instanceof FixtureElement ? this.parentNode : null; }
+  get firstChild(): FixtureNode | null { return this.childNodes[0] ?? null; }
+  get nextSibling(): FixtureNode | null {
+    if (!this.parentNode) return null;
+    const index = this.parentNode.childNodes.indexOf(this);
+    return this.parentNode.childNodes[index + 1] ?? null;
+  }
+  get textContent(): string { return this.childNodes.map(node => node.textContent).join(''); }
+  set textContent(value: string) {
+    this.childNodes = [];
+    if (value) this.append(this.ownerDocument.createFixtureText(value));
+  }
+  append(...nodes: FixtureNode[]) {
+    for (const node of nodes) {
+      node.remove();
+      node.parentNode = this;
+      this.childNodes.push(node);
+    }
+  }
+  appendChild(node: FixtureNode) { this.append(node); return node; }
+  insertBefore(node: FixtureNode, reference: FixtureNode | null) {
+    node.remove();
+    node.parentNode = this;
+    const index = reference ? this.childNodes.indexOf(reference) : -1;
+    if (index < 0) this.childNodes.push(node);
+    else this.childNodes.splice(index, 0, node);
+    return node;
+  }
+  remove() {
+    if (!this.parentNode) return;
+    const index = this.parentNode.childNodes.indexOf(this);
+    if (index >= 0) this.parentNode.childNodes.splice(index, 1);
+    this.parentNode = null;
+  }
+  contains(node: FixtureNode): boolean { return this === node || this.childNodes.some(child => child.contains(node)); }
+}
+
+class FixtureText extends FixtureNode {
+  private value: string;
+  constructor(value: string, ownerDocument: FixtureDocument) { super(3, ownerDocument); this.value = value; }
+  override get textContent() { return this.value; }
+  override set textContent(value: string) { this.value = value; }
+  get nodeValue() { return this.value; }
+  set nodeValue(value: string) { this.value = value; }
+  get length() { return this.value.length; }
+  override toString() { return this.value; }
+}
+
+class FixtureElement extends FixtureNode {
+  readonly tagName: string;
+  readonly attributes: Record<string, string>;
+  open = false;
+
+  constructor(tagName: string, ownerDocument: FixtureDocument, attributes: Record<string, string> = {}) {
+    super(1, ownerDocument);
+    this.tagName = tagName.toLowerCase();
+    this.attributes = { ...attributes };
+  }
+
+  private excluded() {
+    const tag = this.tagName;
+    const contenteditable = this.attributes.contenteditable;
+    return ['script', 'style', 'noscript', 'template', 'form', 'input', 'textarea', 'select', 'button'].includes(tag)
+      || (contenteditable !== undefined && contenteditable !== 'false')
+      || ['textbox', 'combobox'].includes(this.attributes.role ?? '')
+      || 'hidden' in this.attributes || 'inert' in this.attributes || this.attributes['aria-hidden'] === 'true'
+      || (this.attributes.id ?? '').startsWith('marginalia-host-');
+  }
+  closest(_selector: string): FixtureElement | null {
+    for (let element: FixtureElement | null = this; element; element = element.parentElement) if (element.excluded()) return element;
+    return null;
+  }
+  querySelector(selector: string): FixtureElement | null {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+  querySelectorAll(selector: string): FixtureElement[] {
+    const tags = selector.split(',').map(value => value.trim().toLowerCase());
+    const matches = (element: FixtureElement) => tags.includes(element.tagName)
+      || (selector === '[data-selection]' && 'data-selection' in element.attributes);
+    const result: FixtureElement[] = [];
+    const visit = (node: FixtureNode) => {
+      if (node instanceof FixtureElement && matches(node)) result.push(node);
+      for (const child of node.childNodes) visit(child);
+    };
+    for (const child of this.childNodes) visit(child);
+    return result;
+  }
+  override toString() {
+    const attributes = Object.entries(this.attributes).map(([name, value]) => value ? ` ${name}="${value}"` : ` ${name}`).join('');
+    return `<${this.tagName}${attributes}>${this.childNodes.map(node => node.toString()).join('')}</${this.tagName}>`;
+  }
+}
+
+class FixtureDetailsElement extends FixtureElement {}
+
+class FixtureDocument extends FixtureNode {
+  readonly body: FixtureElement;
+  title = '';
+
+  constructor() {
+    super(9);
+    this.ownerDocument = this;
+    this.body = new FixtureElement('body', this);
+    this.append(this.body);
+  }
+  createFixtureText(value: string) { return new FixtureText(value, this); }
+  createTextNode(value: string) { return this.createFixtureText(value) as unknown as Text; }
+  createElement(tagName: string) { return new FixtureElement(tagName, this) as unknown as HTMLElement; }
+  createRange() { return new FixtureRange() as unknown as Range; }
+  createTreeWalker(root: Node) { return new FixtureTextIterator(root) as unknown as TreeWalker; }
+  createNodeIterator(root: Node) { return new FixtureTextIterator(root) as unknown as NodeIterator; }
+  querySelector(selector: string) { return this.body.querySelector(selector) as unknown as Element | null; }
+  querySelectorAll(selector: string) { return this.body.querySelectorAll(selector) as unknown as NodeListOf<Element>; }
+}
+
+function appendElement(parent: FixtureNode, tagName: string, content: string | FixtureNode[], attributes: Record<string, string> = {}) {
+  const element = new FixtureElement(tagName, parent.ownerDocument, attributes);
+  if (typeof content === 'string') element.textContent = content;
+  else element.append(...content);
+  parent.append(element);
+  return element;
+}
 
 function textNodes(root: Node): Text[] {
   const result: Text[] = [];
@@ -49,7 +184,7 @@ function offsetAt(root: Node, target: Node, offset: number): number {
   return found ? position : Number.NaN;
 }
 
-/** The anchor packages need Range and NodeIterator, which linkedom does not expose fully. */
+/** The anchor packages need the browser Range and NodeIterator traversal semantics. */
 class FixtureRange {
   startContainer: Node | null = null;
   startOffset = 0;
@@ -126,12 +261,8 @@ type Fixture = {
   restore: () => void;
 };
 
-function installPage(markup: string, url: string): Fixture {
-  const page = parseHTML(markup);
-  const pageDocument = page.document;
-  const selectedElement = pageDocument.querySelector('[data-selection]');
-  const selectedNode = selectedElement?.firstChild;
-  const selected = selectedNode?.nodeType === 3 ? selectedNode as Text : null;
+function installPage(pageDocument: FixtureDocument, selectedNode: FixtureText | null, url: string): Fixture {
+  const selected = selectedNode as unknown as Text | null;
   let selectionRange: FixtureRange | null = null;
   if (selected) {
     selectionRange = new FixtureRange();
@@ -139,18 +270,15 @@ function installPage(markup: string, url: string): Fixture {
     selectionRange.setEnd(selected, selected.textContent?.length ?? 0);
   }
 
-  Object.defineProperty(pageDocument, 'createRange', { configurable: true, value: () => new FixtureRange() });
-  Object.defineProperty(pageDocument, 'createNodeIterator', { configurable: true, value: (root: Node) => new FixtureTextIterator(root) });
-
   const globalObject = globalThis as unknown as Record<string, unknown>;
   const previous = new Map<string, GlobalState>();
   for (const name of GLOBALS) previous.set(name, { exists: Object.hasOwn(globalObject, name), value: globalObject[name] });
 
   let fetchCalls = 0;
-  globalObject.document = pageDocument;
-  globalObject.Node = page.Node;
+  globalObject.document = pageDocument as unknown as Document;
+  globalObject.Node = FixtureNode;
   globalObject.NodeFilter = { SHOW_TEXT };
-  globalObject.HTMLDetailsElement = page.HTMLDetailsElement;
+  globalObject.HTMLDetailsElement = FixtureDetailsElement;
   globalObject.getComputedStyle = () => ({ display: 'block', visibility: 'visible', opacity: '1' });
   globalObject.location = new URL(url);
   globalObject.getSelection = () => ({
@@ -164,7 +292,7 @@ function installPage(markup: string, url: string): Fixture {
   };
 
   return {
-    document: pageDocument,
+    document: pageDocument as unknown as Document,
     selected,
     fetchCalls: () => fetchCalls,
     markup: () => pageDocument.body?.toString() ?? '',
@@ -178,10 +306,39 @@ function installPage(markup: string, url: string): Fixture {
   };
 }
 
-const selectionPage = '<html><head><title>Reading</title></head><body><h1>Heading</h1><p id="passage" data-source="original">Before <em data-selection="yes">selected passage</em> after.</p><form><p>form text must not be captured</p></form><script>script text must not be captured</script><p hidden>hidden text must not be captured</p></body></html>';
+function selectionPage() {
+  const document = new FixtureDocument();
+  document.title = 'Reading';
+  appendElement(document.body, 'h1', 'Heading');
+  const selected = document.createFixtureText('selected passage');
+  const emphasis = new FixtureElement('em', document, { 'data-selection': 'yes' });
+  emphasis.append(selected);
+  appendElement(document.body, 'p', [document.createFixtureText('Before '), emphasis, document.createFixtureText(' after.')], { id: 'passage', 'data-source': 'original' });
+  const form = appendElement(document.body, 'form', []);
+  appendElement(form, 'p', 'form text must not be captured');
+  appendElement(document.body, 'script', 'script text must not be captured');
+  appendElement(document.body, 'p', 'hidden text must not be captured', { hidden: '' });
+  return { document, selected };
+}
+
+function excludedSelectionPage() {
+  const document = new FixtureDocument();
+  appendElement(document.body, 'p', 'Visible source.');
+  const form = appendElement(document.body, 'form', []);
+  const selected = document.createFixtureText('private form selection');
+  appendElement(form, 'p', [selected], { 'data-selection': 'yes' });
+  return { document, selected };
+}
+
+function textPage(text: string) {
+  const document = new FixtureDocument();
+  document.body.append(document.createFixtureText(text));
+  return document;
+}
 
 test('selection captures safe source identity without page mutation or implicit send', () => {
-  const fixture = installPage(selectionPage, 'https://arxiv.org/html/2303.08774v6#results');
+  const page = selectionPage();
+  const fixture = installPage(page.document, page.selected, 'https://arxiv.org/html/2303.08774v6#results');
   try {
     const before = fixture.markup();
     const markers: unknown[] = [];
@@ -206,7 +363,8 @@ test('selection captures safe source identity without page mutation or implicit 
 });
 
 test('source locator accepts exact and uniquely moved immutable passages', () => {
-  const fixture = installPage(selectionPage, 'https://example.org/article#part');
+  const page = selectionPage();
+  const fixture = installPage(page.document, page.selected, 'https://example.org/article#part');
   try {
     const snapshot = captureSelection('capture-document-2', 1, true);
     assert.ok(snapshot?.anchor);
@@ -235,7 +393,8 @@ test('source locator accepts exact and uniquely moved immutable passages', () =>
 });
 
 test('source locator refuses ambiguous passages without changing the source', () => {
-  const fixture = installPage(selectionPage, 'https://example.org/article');
+  const page = selectionPage();
+  const fixture = installPage(page.document, page.selected, 'https://example.org/article');
   try {
     const snapshot = captureSelection('capture-document-3', 1, true);
     assert.ok(snapshot?.anchor);
@@ -253,7 +412,8 @@ test('source locator refuses ambiguous passages without changing the source', ()
 });
 
 test('source locator refuses a lost passage without changing the source', () => {
-  const fixture = installPage(selectionPage, 'https://example.org/article');
+  const page = selectionPage();
+  const fixture = installPage(page.document, page.selected, 'https://example.org/article');
   try {
     const snapshot = captureSelection('capture-document-4', 1, true);
     assert.ok(snapshot?.anchor);
@@ -269,7 +429,8 @@ test('source locator refuses a lost passage without changing the source', () => 
 });
 
 test('selection in excluded form content is declined without page mutation or implicit send', () => {
-  const fixture = installPage('<html><body><p>Visible source.</p><form><p data-selection="yes">private form selection</p></form></body></html>', 'https://example.org/form');
+  const page = excludedSelectionPage();
+  const fixture = installPage(page.document, page.selected, 'https://example.org/form');
   try {
     const before = fixture.markup();
     assert.equal(captureSelection('capture-document-5', 1, true), null);
@@ -282,7 +443,7 @@ test('selection in excluded form content is declined without page mutation or im
 
 test('oversized source capture fails closed instead of truncating or sending', () => {
   const source = 'x'.repeat(1_000_001);
-  const fixture = installPage(`<html><body>${source}</body></html>`, 'https://example.org/large');
+  const fixture = installPage(textPage(source), null, 'https://example.org/large');
   try {
     const before = fixture.document.body?.textContent;
     assert.equal(before?.length, 1_000_001);
