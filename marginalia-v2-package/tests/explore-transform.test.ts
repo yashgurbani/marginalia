@@ -86,7 +86,7 @@ test('a non-public destination is dropped at the shelf', () => {
   assert.ok(result.issues.some((i) => i.includes('i2') && i.includes('policy')));
 });
 
-test('more than five authentic items are truncated to the shelf cap', () => {
+test('more than five suggested items are truncated to the shelf cap', () => {
   const many = Array.from({ length: 7 }, (_, n) => item({ id: `i${n}`, url: `https://example.org/${n}` }));
   const result = assessShelf(reply(many), CONTEXT);
   assert.equal(result.itemCount, EXPLORE_MAX_ITEMS);
@@ -102,7 +102,7 @@ test('assessing a shelf performs no async work and stays parked', () => {
 
 test('opening a parked item yields a validated navigation with the return context', () => {
   const result = assessShelf(reply([item({ id: 'i1', url: 'https://example.org/a', timecodeSeconds: 42 })]), CONTEXT);
-  const open = prepareOpen(result, 'i1');
+  const open = prepareOpen(result, 'i1', CONTEXT.returnTo);
   assert.equal(open.ok, true);
   if (open.ok) {
     assert.equal(open.open.url, 'https://example.org/a');
@@ -113,8 +113,48 @@ test('opening a parked item yields a validated navigation with the return contex
 
 test('opening an unknown item id fails without side effects', () => {
   const result = assessShelf(reply([item({ id: 'i1' })]), CONTEXT);
-  const open = prepareOpen(result, 'missing');
+  const open = prepareOpen(result, 'missing', CONTEXT.returnTo);
   assert.equal(open.ok, false);
+});
+
+test('section fragments and public IPv6 survive shelf and open navigation', () => {
+  const urls = ['https://example.org/article#section-2', 'https://[2001:4860:4860::8888]/paper#methods'];
+  const result = assessShelf(reply(urls.map((url, n) => item({ id: `i${n}`, url }))), CONTEXT);
+  assert.equal(result.itemCount, 2);
+  for (let n = 0; n < urls.length; n++) {
+    const open = prepareOpen(result, `i${n}`, CONTEXT.returnTo);
+    assert.equal(open.ok, true);
+    if (open.ok) assert.equal(open.open.url, urls[n]);
+  }
+});
+
+test('private IPv6 and mapped private IPv4 are dropped', () => {
+  const result = assessShelf(reply([
+    item({ id: 'a', url: 'https://[::1]/' }),
+    item({ id: 'b', url: 'https://[fc00::1]/' }),
+    item({ id: 'c', url: 'https://[::ffff:127.0.0.1]/' }),
+  ]), CONTEXT);
+  assert.equal(result.itemCount, 0);
+});
+
+test('caller-constructed, unparked and stale-context assessments cannot prepare an open', () => {
+  const result = assessShelf(reply([item({ id: 'i1' })]), CONTEXT);
+  assert.equal(prepareOpen({ ...result }, 'i1', CONTEXT.returnTo).ok, false);
+  assert.equal(prepareOpen(result, 'i1', { ...CONTEXT.returnTo, sourceVersionId: 'new-source' }).ok, false);
+  Object.assign(result, { parked: false });
+  assert.equal(prepareOpen(result, 'i1', CONTEXT.returnTo).ok, false);
+});
+
+test('assessment field mutation cannot change the issued open request', () => {
+  const result = assessShelf(reply([item({ id: 'i1' })]), CONTEXT);
+  result.items[0]!.url = 'https://example.org/replaced';
+  result.returnTo.sourceVersionId = 'replacement';
+  const open = prepareOpen(result, 'i1', CONTEXT.returnTo);
+  assert.equal(open.ok, true);
+  if (open.ok) {
+    assert.equal(open.open.url, 'https://example.org/a');
+    assert.deepEqual(open.open.returnTo, CONTEXT.returnTo);
+  }
 });
 
 test('a shelf built in a closed session is still valid because it never fetches', () => {

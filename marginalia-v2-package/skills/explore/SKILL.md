@@ -27,8 +27,9 @@ One `shelf` block inside a valid `marginalia.reply.v1` reply. Each item is:
 
 ## Rules
 
-1. Three to five items when you have that many authentic, distinct resources. Never pad. Fewer
-   real items is fine; the host reports the thin shelf honestly.
+1. Three to five items when you can suggest that many distinct resources with honest reasons.
+   Never pad. Fewer suggestions are fine; the host reports the thin shelf honestly. Do not call
+   an item fetched, verified or authentic unless the supplied packet actually establishes that.
 2. Every item needs a genuine reason to open, tied to what the reader just read.
 3. No duplicates. Distinct destinations only.
 4. Public `https://` destinations only. The host drops anything else.
@@ -43,5 +44,6 @@ One `shelf` block inside a valid `marginalia.reply.v1` reply. Each item is:
   dropped and flagged.
 - Three to five surviving items → the shelf is `ready`. One or two → `insufficient`, still parked
   and openable. Zero → `insufficient`, nothing invented.
-- Opening is `prepareOpen`, an explicit callback that returns a validated navigation with the
-  reader's return context. It performs no fetch.
+- On the reader's explicit open action, the host checks its held assessment against the current
+  source and anchor, then calls `prepareOpen`. The returned URL is a navigation request, not a
+  permission or proof that the resource exists. It performs no fetch.

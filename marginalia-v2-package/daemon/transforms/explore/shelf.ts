@@ -10,8 +10,8 @@ import type { ConsentScope } from '../../../contracts/consent.ts';
  *
  * It performs no IO. Building or rendering a shelf must not fetch, navigate, download or start
  * an inference turn; keeping this module pure guarantees that structurally. Opening an item is a
- * separate, explicit host callback (`prepareOpen`) that only yields a validated browser
- * navigation request. It never pads missing links with inventions and reports thin shelves
+ * separate, explicit host callback (`prepareOpen`) that yields a browser navigation request
+ * after the host checks the current reading context. It never pads missing links and reports thin shelves
  * honestly.
  */
 
@@ -69,29 +69,49 @@ export type OpenShelfItemResult =
   | { ok: true; open: OpenShelfItemRequest }
   | { ok: false; error: string };
 
-/** Defense-in-depth URL policy at the open seam: HTTPS only, no credentials, no local/private host. */
+// Assessments are ephemeral host-held values. A serialized or caller-constructed copy cannot
+// authorize an open. The snapshot also prevents later mutation of public assessment fields.
+const issued = new WeakMap<ExploreAssessment, { items: readonly ExploreItemAssessment[]; returnTo: ReturnContext }>();
+
+function privateIpv4(parts: readonly number[]): boolean {
+  const [a, b] = parts;
+  return a === 0 || a === 10 || a === 127 || a === 192 && b === 168 ||
+    a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 ||
+    a === 100 && b >= 64 && b <= 127;
+}
+
+/** URL supplies canonical bracketed IPv6 hostnames, including mapped IPv4 as hex words. */
+function privateIpv6(host: string): boolean {
+  const halves = host.slice(1, -1).split('::');
+  const words = (part: string) => part ? part.split(':').map(word => Number.parseInt(word, 16)) : [];
+  const left = words(halves[0]);
+  const right = halves.length === 2 ? words(halves[1]) : [];
+  const address = halves.length === 2 ? [...left, ...Array<number>(8 - left.length - right.length).fill(0), ...right] : left;
+  if (address.length !== 8 || address.some(word => !Number.isInteger(word) || word < 0 || word > 0xffff)) return true;
+  if (address.slice(0, 7).every(word => word === 0) && address[7] <= 1) return true;
+  if ((address[0] & 0xfe00) === 0xfc00 || (address[0] & 0xffc0) === 0xfe80) return true;
+  if (address.slice(0, 5).every(word => word === 0) && address[5] === 0xffff)
+    return privateIpv4([address[6] >>> 8, address[6] & 255, address[7] >>> 8, address[7] & 255]);
+  return false;
+}
+
+/** Match the existing reply navigation policy; browser opening does not use broker fetch rules. */
 function isPublicHttpsUrl(input: string): boolean {
   let url: URL;
   try { url = new URL(input); } catch { return false; }
-  if (url.protocol !== 'https:' || url.username || url.password || url.hash) return false;
+  if (url.protocol !== 'https:' || url.username || url.password) return false;
   const host = url.hostname.toLowerCase().replace(/\.$/, '');
   if (host.length === 0) return false;
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) return false;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
-    const octets = host.split('.').map(Number);
-    if (octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
-    const [a, b] = octets;
-    if (a === 0 || a === 10 || a === 127 || (a === 192 && b === 168) || (a === 169 && b === 254) ||
-        (a === 172 && b >= 16 && b <= 31) || (a === 100 && b >= 64 && b <= 127)) return false;
-  }
-  if (host.startsWith('[')) return false; // IPv6 literals are handled by the host retrieval policy, not opened here.
+  if (host.startsWith('[')) return !privateIpv6(host);
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return !privateIpv4(host.split('.').map(Number));
   return true;
 }
 
 function normalizeUrl(input: string): string | null {
   try {
     const url = new URL(input);
-    return `${url.protocol}//${url.hostname.toLowerCase()}${url.port ? `:${url.port}` : ''}${url.pathname}${url.search}`;
+    return url.href;
   } catch {
     return null;
   }
@@ -104,7 +124,7 @@ function shelfItems(reply: CandidateReply): ShelfBlock['items'] {
 }
 
 /**
- * Assess an explore shelf. Pure and deterministic. Drops padded or unusable items (missing
+ * Assess an explore shelf. Pure and deterministic for a given input. Drops unusable items (missing
  * reason, missing title, non-public URL, duplicate destination) and reports the count honestly.
  */
 export function assessShelf(reply: CandidateReply, context: ExploreContext): ExploreAssessment {
@@ -112,15 +132,18 @@ export function assessShelf(reply: CandidateReply, context: ExploreContext): Exp
   const raw = shelfItems(reply);
   const kept: ExploreItemAssessment[] = [];
   const seen = new Set<string>();
+  const seenIds = new Set<string>();
 
   for (const item of raw) {
     if (item.title.trim().length === 0) { issues.push(`item ${item.id}: missing title, dropped`); continue; }
     if (item.reason.trim().length === 0) { issues.push(`item ${item.id}: missing reason to open, dropped`); continue; }
+    if (seenIds.has(item.id)) { issues.push(`item ${item.id}: duplicate id, dropped`); continue; }
     if (!isPublicHttpsUrl(item.url)) { issues.push(`item ${item.id}: URL failed the open policy, dropped`); continue; }
     const key = normalizeUrl(item.url);
     if (key === null) { issues.push(`item ${item.id}: URL could not be normalized, dropped`); continue; }
     if (seen.has(key)) { issues.push(`item ${item.id}: duplicate destination, dropped`); continue; }
     seen.add(key);
+    seenIds.add(item.id);
     if (kept.length >= EXPLORE_MAX_ITEMS) { issues.push(`item ${item.id}: exceeds ${EXPLORE_MAX_ITEMS}-item shelf, dropped`); continue; }
     kept.push({
       id: item.id,
@@ -139,10 +162,10 @@ export function assessShelf(reply: CandidateReply, context: ExploreContext): Exp
   const reason = ready
     ? `Parked ${kept.length} reasoned item(s) to open on your action.`
     : kept.length === 0
-      ? 'No authentic items to park; nothing was invented to fill the shelf.'
-      : `Only ${kept.length} authentic item(s) were available, fewer than the ${EXPLORE_MIN_ITEMS} a full shelf shows.`;
+      ? 'No suggested links to park; nothing was invented to fill the shelf.'
+      : `Only ${kept.length} suggested link(s) were available, fewer than the ${EXPLORE_MIN_ITEMS} a full shelf shows.`;
 
-  return {
+  const assessment: ExploreAssessment = {
     transform: EXPLORE_TRANSFORM,
     verdict,
     reason,
@@ -151,9 +174,11 @@ export function assessShelf(reply: CandidateReply, context: ExploreContext): Exp
     items: kept,
     itemCount: kept.length,
     droppedCount,
-    returnTo: context.returnTo,
+    returnTo: structuredClone(context.returnTo),
     issues,
   };
+  issued.set(assessment, { items: structuredClone(kept), returnTo: structuredClone(context.returnTo) });
+  return assessment;
 }
 
 /**
@@ -161,12 +186,20 @@ export function assessShelf(reply: CandidateReply, context: ExploreContext): Exp
  * intentional reader action. It performs no fetch: it returns the validated navigation the host
  * browser executes, with the return-to-reading context preserved.
  */
-export function prepareOpen(assessment: ExploreAssessment, itemId: string): OpenShelfItemResult {
-  const item = assessment.items.find((candidate) => candidate.id === itemId);
+export function prepareOpen(assessment: ExploreAssessment, itemId: string, currentReturnTo: ReturnContext): OpenShelfItemResult {
+  const snapshot = issued.get(assessment);
+  if (!snapshot || assessment.parked !== true) return { ok: false, error: 'Shelf is not a host-held parked assessment.' };
+  const expected = snapshot.returnTo;
+  if (expected.sourceVersionId !== currentReturnTo.sourceVersionId ||
+      expected.anchor.exact !== currentReturnTo.anchor.exact ||
+      expected.anchor.prefix !== currentReturnTo.anchor.prefix ||
+      expected.anchor.suffix !== currentReturnTo.anchor.suffix)
+    return { ok: false, error: 'Reading context changed; reopen the shelf from its source.' };
+  const item = snapshot.items.find((candidate) => candidate.id === itemId);
   if (item === undefined) return { ok: false, error: `No parked item has id ${itemId}.` };
   if (!isPublicHttpsUrl(item.url)) return { ok: false, error: `Item ${itemId} URL failed the open policy.` };
   return {
     ok: true,
-    open: { url: item.url, timecodeSeconds: item.timecodeSeconds, returnTo: assessment.returnTo },
+    open: { url: item.url, timecodeSeconds: item.timecodeSeconds, returnTo: structuredClone(snapshot.returnTo) },
   };
 }
