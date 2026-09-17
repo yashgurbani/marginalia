@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_MESSAGE_BYTES = 1024 * 1024;
@@ -10,7 +11,23 @@ type PendingRequest = {
   timer: NodeJS.Timeout;
 };
 
+/** One serialization, one transport generation, one attempted send. Failure consumes the
+ * object too. A no-write error says nothing about a different invocation or grant refund. */
+export interface PreparedRpcRequest {
+  readonly id: number;
+  readonly generation: string;
+  readonly sha256: string;
+  send(finalize?: () => undefined): Promise<any>;
+}
+export class RpcNotSentError extends Error {
+  constructor(cause: unknown) { super('RPC rejected before transport write.', { cause }); this.name = 'RpcNotSentError'; }
+}
+export class RpcRequestUsedError extends Error {
+  constructor() { super('Prepared RPC request was already used.'); this.name = 'RpcRequestUsedError'; }
+}
 export interface RpcTransport {
+  /** Optional for observation-only transports; model adapters must fail closed without it. */
+  prepareRequest?(method: string, params?: unknown, options?: { onRequestId(id: number): void }): PreparedRpcRequest;
   request(method: string, params?: unknown, options?: { onRequestId(id: number): void }): Promise<any>;
   notify(method: string, params?: unknown): void;
   onNotification(listener: (method: string, params: any) => void): () => void;
@@ -44,7 +61,7 @@ function errorFromResponse(value: unknown): Error {
   return error;
 }
 
-export function createStdioTransport(options: StdioTransportOptions): RpcTransport {
+export function createStdioTransport(options: StdioTransportOptions): RpcTransport & Required<Pick<RpcTransport, 'prepareRequest'>> {
   if (typeof options.executable !== 'string' || options.executable.length === 0) throw new TypeError('executable is required.');
   if (!Array.isArray(options.args) || options.args.some(argument => typeof argument !== 'string')) throw new TypeError('args must contain only strings.');
   if (typeof options.cwd !== 'string' || options.cwd.length === 0) throw new TypeError('cwd is required.');
@@ -65,6 +82,8 @@ export function createStdioTransport(options: StdioTransportOptions): RpcTranspo
   const pending = new Map<number, PendingRequest>();
   const notificationListeners = new Set<(method: string, params: any) => void>();
   const disconnectListeners = new Set<() => void>();
+  const generation = randomUUID();
+  const write = child.stdin.write.bind(child.stdin);
   let nextId = 1;
   let input = Buffer.alloc(0);
   let disconnected = false;
@@ -179,30 +198,54 @@ export function createStdioTransport(options: StdioTransportOptions): RpcTranspo
   child.on('error', () => disconnect(new Error('RPC process could not be started.')));
   child.on('close', () => disconnect(new Error('RPC process disconnected.')));
 
-  return {
-    request(method: string, params?: unknown, requestOptions?: { onRequestId(id: number): void }): Promise<any> {
-      if (typeof method !== 'string' || method.length === 0) return Promise.reject(new TypeError('RPC method is required.'));
-      if (disconnected) return Promise.reject(new Error('RPC transport is disconnected.'));
-      const id = nextId++;
-      if (!Number.isSafeInteger(nextId)) nextId = 1;
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          if (!pending.delete(id)) return;
-          reject(new Error(`RPC request timed out after ${timeoutMs} ms.`));
-        }, timeoutMs);
-        timer.unref();
+  function prepareRequest(method: string, params?: unknown, requestOptions?: { onRequestId(id: number): void }): PreparedRpcRequest {
+    if (typeof method !== 'string' || method.length === 0) throw new RpcNotSentError(new TypeError('RPC method is required.'));
+    if (!Number.isSafeInteger(nextId)) throw new RpcNotSentError(new Error('RPC request identity exhausted.'));
+    const id = nextId++;
+    const message: JsonObject = { id, method };
+    if (protocol === 'jsonrpc') message.jsonrpc = '2.0';
+    if (params !== undefined) message.params = params;
+    let line: Buffer;
+    try { line = encodeMessage(message); }
+    catch (error) { throw new RpcNotSentError(error); }
+    const sha256 = createHash('sha256').update(line).digest('hex');
+    const onRequestId = requestOptions?.onRequestId;
+    let used = false;
+    return Object.freeze({ id, generation, sha256, send(finalize?: () => undefined): Promise<any> {
+      if (used) throw new RpcRequestUsedError();
+      used = true;
+      let resolve!: (value: any) => void, reject!: (reason: Error) => void;
+      const response = new Promise((yes, no) => { resolve = yes; reject = no; });
+      void response.catch(() => {});
+      const timer = setTimeout(() => {
+        if (!pending.delete(id)) return;
+        reject(new Error(`RPC request timed out after ${timeoutMs} ms.`));
+      }, timeoutMs);
+      timer.unref();
+      try {
+        onRequestId?.(id);
+        if (disconnected || child.stdin.destroyed || !child.stdin.writable) throw new Error('RPC transport is disconnected.');
+        if (child.stdin.writableLength + line.length > maxMessageBytes) throw new Error('RPC output buffer exceeds the configured size limit.');
         pending.set(id, { resolve, reject, timer });
-        const message: JsonObject = { id, method };
-        if (protocol === 'jsonrpc') message.jsonrpc = '2.0';
-        if (params !== undefined) message.params = params;
-        try { requestOptions?.onRequestId(id); writeMessage(message); }
-        catch (error) {
-          if (pending.delete(id)) {
-            clearTimeout(timer);
-            reject(error instanceof Error ? error : new Error('RPC request could not be sent.'));
-          }
-        }
-      });
+        const result: unknown = finalize?.();
+        if (result !== undefined) throw new Error('RPC finalization must return synchronously without a value.');
+      } catch (error) {
+        pending.delete(id); clearTimeout(timer);
+        const failure = new RpcNotSentError(error); reject(failure); throw failure;
+      }
+      // No await, reserialization or consumer callback between finalization and write.
+      // Once write is entered, even a synchronous throw may mean partial transmission.
+      try { write(line); }
+      catch { disconnect(new Error('RPC transmission outcome is unknown.'), true); }
+      return response;
+    } });
+  }
+
+  return {
+    prepareRequest,
+    request(method: string, params?: unknown, requestOptions?: { onRequestId(id: number): void }): Promise<any> {
+      try { return prepareRequest(method, params, requestOptions).send(); }
+      catch (error) { return Promise.reject(error); }
     },
     notify(method: string, params?: unknown): void {
       if (typeof method !== 'string' || method.length === 0) throw new TypeError('RPC method is required.');
