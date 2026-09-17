@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import {
+  canonicalReplyData,
   computeIndependentChecks,
   parseAndValidateReply,
   validateReply,
@@ -9,6 +12,7 @@ import {
   type ReplyCapability,
 } from '../contracts/reply.ts';
 import { classificationViews, runHostChecks, type HostCheckReport } from '../contracts/host-checks.ts';
+import { deriveSamplesBinding } from '../contracts/sample-provenance.ts';
 import { growthDefaultParameters, growthReply, growthSourceText } from '../fixtures/growth-reply.ts';
 
 const allCapabilities: ReplyCapability[] = ['samples', 'solver', 'media.audio', 'media.image', 'media.video', 'network.citations', 'network.shelf'];
@@ -178,4 +182,193 @@ test('capability-gated blocks require both a declaration and host availability',
   candidate.requiredCapabilities = ['media.image'];
   assert.match(validate(candidate, []).errors.join('\n'), /capability media\.image is unavailable/i);
   assert.equal(validate(candidate, ['media.image']).ok, true);
+});
+
+// These are contract regressions, not live provider, browser or retrieval evidence.
+function setField(candidate: CandidateReply, path: readonly (string | number)[], value: unknown) {
+  let target: unknown = candidate;
+  for (const key of path.slice(0, -1)) target = (target as Record<string | number, unknown>)[key];
+  (target as Record<string | number, unknown>)[path.at(-1)!] = value;
+}
+
+function withBlock(block: ReplyBlock): CandidateReply {
+  const candidate = cloneReply();
+  candidate.requiredCapabilities = allCapabilities;
+  candidate.blocks.push(structuredClone(block));
+  return candidate;
+}
+
+test('T03 F1 empty selectors terminate in an externally time-bounded process', () => {
+  // A node:test timeout cannot interrupt a synchronous infinite loop.
+  const child = spawnSync(process.execPath, [
+    ...process.execArgv.filter(arg => arg === '--experimental-strip-types'),
+    '--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { validateReply, parseAndValidateReply } from ${JSON.stringify(new URL('../contracts/reply.ts', import.meta.url).href)};
+      import { growthReply } from ${JSON.stringify(new URL('../fixtures/growth-reply.ts', import.meta.url).href)};
+      const candidate = structuredClone(growthReply);
+      candidate.sourceBindings = [{ ...candidate.sourceBindings[0], selector: { exact: '', prefix: 'z' } }];
+      for (const result of [validateReply(candidate, { sourceText: 'abc' }), parseAndValidateReply(JSON.stringify(candidate), { sourceText: 'abc' })]) {
+        assert.equal(result.ok, false);
+        assert.match(result.errors.join(' '), /selector.exact/);
+      }
+    `,
+  ], { encoding: 'utf8', timeout: 5_000 });
+  assert.equal(child.error, undefined, child.error?.message);
+  assert.equal(child.status, 0, child.stderr);
+});
+
+test('T03 F1 invalid selector text fails safely and repeated matches retain progress', () => {
+  for (const exact of [null, 42, {}, 'x'.repeat(4_001)]) {
+    const candidate = cloneReply();
+    setField(candidate, ['sourceBindings', 0, 'selector', 'exact'], exact);
+    assert.equal(validate(candidate).ok, false);
+  }
+  const candidate = cloneReply();
+  candidate.sourceBindings = [{ ...candidate.sourceBindings[0]!, selector: { exact: 'aa', prefix: 'b' } }];
+  assert.equal(validateReply(candidate, { sourceText: 'aaa baa' }).ok, true);
+  assert.equal(validateReply(candidate, { sourceText: 'aaaa' }).ok, false);
+  setField(candidate, ['sourceBindings', 0, 'selector', 'prefix'], {});
+  assert.match(validateReply(candidate, { sourceText: 'aaa baa' }).errors.join(' '), /selector.prefix/);
+});
+
+test('T03 F2 malformed nested data returns field errors through both validation entry points', () => {
+  const compare: ReplyBlock = { id: 'nested-compare', type: 'compare', variants: [{ id: 'a', label: 'A', blocks: ['explanation'] }, { id: 'b', label: 'B', blocks: ['growth-equation'] }] };
+  const solver: ReplyBlock = { id: 'nested-solver', type: 'solver', path: 'solver/main.ts', inputNames: ['gamma'], outputBlocks: ['growth-plot'] };
+  const modelIndex = growthReply.blocks.findIndex(block => block.type === 'model');
+  const extraIndex = growthReply.blocks.length;
+  const cases: { candidate: CandidateReply; path: (string | number)[]; value: unknown }[] = [
+    ...[null, [], 3, { gamma: null }].map(value => ({ candidate: cloneReply(), path: ['checks', 0, 'inputs'], value })),
+    ...[null, {}, 3, [null]].map(value => ({ candidate: withBlock(compare), path: ['blocks', extraIndex, 'variants'], value })),
+    { candidate: withBlock(compare), path: ['blocks', extraIndex, 'variants', 0, 'blocks'], value: null },
+    ...[null, {}, 3, [null]].map(value => ({ candidate: withBlock(solver), path: ['blocks', extraIndex, 'outputBlocks'], value })),
+    { candidate: cloneReply(), path: ['checks', 0], value: null },
+    { candidate: cloneReply(), path: ['blocks', modelIndex, 'rhs'], value: null },
+    { candidate: cloneReply(), path: ['blocks', modelIndex, 'state'], value: [null] },
+    { candidate: cloneReply(), path: ['blocks', modelIndex, 'events'], value: [{ id: 'stop', when: 'y', direction: { toString: null, valueOf: null }, terminal: true }] },
+    { candidate: withBlock({ id: 'bad-kind', type: 'media', kind: 'image', url: 'https://example.org/image', alt: 'Test' }), path: ['blocks', extraIndex, 'kind'], value: { toString: null, valueOf: null } },
+  ];
+  for (const { candidate, path, value } of cases) {
+    setField(candidate, path, value);
+    for (const run of [() => validate(candidate), () => parseAndValidateReply(JSON.stringify(candidate), context)]) {
+      let result: ReturnType<typeof validate> | undefined;
+      assert.doesNotThrow(() => { result = run(); }, path.join('.'));
+      assert.equal(result?.ok, false, path.join('.'));
+      assert.ok(result!.errors.length > 0, path.join('.'));
+      assert.ok(!result!.errors.some(error => error.includes('could not be read')), 'JSON data should receive a specific field error');
+    }
+  }
+});
+
+test('T03 F2 unreadable objects, cycles and sparse arrays fail closed', () => {
+  const cycle = cloneReply();
+  setField(cycle, ['unexpected'], cycle);
+  const sparse = cloneReply();
+  setField(sparse, ['blocks'], new Array(1));
+  sparse.checks = []; // Reject the hole itself, not a consequent missing check reference.
+  const unreadable = new Proxy({}, { getPrototypeOf() { throw new Error('not JSON'); } });
+  for (const candidate of [cycle, sparse, unreadable]) {
+    assert.doesNotThrow(() => assert.equal(validate(candidate).ok, false));
+  }
+});
+
+test('T03 F3 validator enforces every published array minimum without a schema dependency', () => {
+  const schema = JSON.parse(readFileSync(new URL('../contracts/reply.schema.json', import.meta.url), 'utf8'));
+  const extraIndex = growthReply.blocks.length;
+  const modelIndex = growthReply.blocks.findIndex(block => block.type === 'model');
+  const plotIndex = growthReply.blocks.findIndex(block => block.type === 'plot');
+  const single = cloneReply(); single.blocks = [single.blocks[0]!]; single.checks = [];
+  const cases: { candidate: CandidateReply; path: (string | number)[]; schema: { minItems: number }; size: number }[] = [
+    { candidate: single, path: ['blocks'], schema: schema.properties.blocks, size: 1 },
+    { candidate: cloneReply(), path: ['blocks', modelIndex, 'state'], schema: schema.$defs.stateNames, size: 1 },
+    { candidate: withBlock({ id: 'min-map', type: 'model', kind: 'map', state: ['x'], next: { x: 'x+1' }, initial: { x: 'y0' }, iterations: 1 }), path: ['blocks', extraIndex, 'state'], schema: schema.$defs.stateNames, size: 1 },
+    { candidate: cloneReply(), path: ['blocks', plotIndex, 'y'], schema: schema.$defs.plotBlock.properties.y, size: 1 },
+    { candidate: cloneReply(), path: ['blocks', plotIndex, 'yRange'], schema: schema.$defs.range, size: 2 },
+    { candidate: withBlock({ id: 'min-table', type: 'table', columns: [{ key: 'x', label: 'X' }], rows: [] }), path: ['blocks', extraIndex, 'columns'], schema: schema.$defs.tableBlock.properties.columns, size: 1 },
+    { candidate: withBlock({ id: 'min-steps', type: 'steps', steps: [{ id: 'first', text: 'First' }] }), path: ['blocks', extraIndex, 'steps'], schema: schema.$defs.stepsBlock.properties.steps, size: 1 },
+    { candidate: withBlock({ id: 'min-compare', type: 'compare', variants: [{ id: 'a', label: 'A', blocks: ['explanation'] }, { id: 'b', label: 'B', blocks: ['growth-equation'] }] }), path: ['blocks', extraIndex, 'variants'], schema: schema.$defs.compareBlock.properties.variants, size: 2 },
+    { candidate: withBlock({ id: 'min-samples', type: 'samples', model: 'growth-model', envelope: { axes: [{ name: 'gamma', min: 0, max: 1, count: 2 }], interpolation: 'linear', errorEvidence: 'Contract only', forbiddenRegions: [] }, samples: [] }), path: ['blocks', extraIndex, 'envelope', 'axes'], schema: schema.$defs.samplesBlock.properties.envelope.properties.axes, size: 1 },
+  ];
+  for (const { candidate, path, schema: fragment, size } of cases) {
+    assert.equal(fragment.minItems, size, path.join('.'));
+    assert.equal(validate(candidate).ok, true, path.join('.'));
+    let items: unknown = candidate;
+    for (const key of path) items = (items as Record<string | number, unknown>)[key];
+    assert.equal((items as unknown[]).length, size);
+    setField(candidate, path, (items as unknown[]).slice(0, size - 1));
+    const result = validate(candidate);
+    assert.equal(result.ok, false, path.join('.'));
+    assert.match(result.errors.join(' '), new RegExp(`at least ${size} item`), path.join('.'));
+  }
+});
+
+test('T03 F3 under-minimum arrays still validate present items', () => {
+  const candidate = withBlock({ id: 'small-compare', type: 'compare', variants: [{ id: 'a', label: 'A', blocks: [] }] });
+  const index = candidate.blocks.length - 1;
+  setField(candidate, ['blocks', index, 'variants', 0, 'label'], 42);
+  setField(candidate, ['blocks', index, 'variants', 0, 'blocks'], null);
+  const errors = validate(candidate).errors.join(' ');
+  assert.match(errors, /at least 2 item/);
+  assert.match(errors, /variants\[0\].label: expected a string/);
+  assert.match(errors, /variants\[0\].blocks: expected an array/);
+  const range = cloneReply();
+  setField(range, ['blocks', growthReply.blocks.findIndex(block => block.type === 'plot'), 'yRange'], ['bad']);
+  assert.match(validate(range).errors.join(' '), /yRange\[0\]: expected a finite number/);
+});
+
+test('T03 F4 shared headline admission preserves analytic pole guards without authorizing restricted models', () => {
+  const event = cloneReply();
+  const model = event.blocks.find(block => block.type === 'model');
+  assert.ok(model?.type === 'model' && model.kind === 'ode');
+  model.events = [{ id: 'stop', when: 'y-1', direction: 'rising', terminal: true }];
+  const wrongUnits = ['gamma', 'f', 'y0'].map(name => {
+    const candidate = cloneReply(); candidate.parameters.find(p => p.name === name)!.unit = 'arbitrary'; return candidate;
+  });
+  const partial = cloneReply(); partial.status = 'partial';
+  for (const candidate of [event, ...wrongUnits, partial]) {
+    assert.equal(validate(candidate).ok, true);
+    const check = computeIndependentChecks(candidate, growthDefaultParameters)[0]!;
+    assert.equal(check.status, 'pass', 'The unmodified renderer consumes the numerical pass to stop before a pole');
+    assert.deepEqual(check.outcome, computeIndependentChecks(growthReply, growthDefaultParameters)[0]!.outcome);
+    assert.equal(check.headline, undefined);
+    const report = runHostChecks(candidate, growthDefaultParameters);
+    assert.equal(report.results[0]?.headline, undefined);
+    assert.equal(classificationViews(candidate, growthDefaultParameters, report)[0]?.state, 'withheld');
+  }
+  const alternateUnits = cloneReply(); alternateUnits.parameters.find(p => p.name === 'f')!.unit = '1/s^2';
+  assert.equal(computeIndependentChecks(alternateUnits, growthDefaultParameters)[0]?.headline, computeIndependentChecks(growthReply, growthDefaultParameters)[0]?.headline);
+  const outOfRange = computeIndependentChecks(growthReply, { gamma: 1e-200, f: 0, y0: 0 })[0]!;
+  assert.notEqual(outOfRange.status, 'pass');
+  assert.equal(outOfRange.headline, undefined);
+});
+
+test('T03 F7 DNS prefixes are not IPv6 ranges; private literals including mapped IPv4 are rejected', () => {
+  const allowed = [
+    ...['fc', 'fd', 'fe8', 'fe9', 'fea', 'feb', '10', '100.64'].map(prefix => `https://${prefix}.example/paper`),
+    'https://8.8.8.8/paper', 'https://[2001:4860:4860::8888]/paper',
+    'https://[::ffff:8.8.8.8]/paper', 'https://[::ffff:808:808]/paper',
+    'https://172.15.1.1/paper', 'https://172.32.1.1/paper', 'https://100.63.1.1/paper', 'https://100.128.1.1/paper',
+  ];
+  const denied = [
+    'https://localhost/paper', 'https://localhost./paper', 'https://x.localhost/paper', 'https://x.local/paper', 'https://x.internal/paper',
+    ...['0.0.0.0', '127.0.0.1', '10.1.2.3', '192.168.1.2', '169.254.1.2', '172.16.1.1', '172.31.1.1', '100.64.1.1', '100.127.1.1', '2130706433', '0x7f000001'].map(ip => `https://${ip}/paper`),
+    ...['::', '::1', 'fc00::1', 'fdff::1', 'fe80::1', 'febf::1', '::ffff:127.0.0.1', '::ffff:7f00:1', '0:0:0:0:0:ffff:7f00:1', '::ffff:10.1.2.3', '::ffff:c0a8:102', '::ffff:a9fe:102', '::ffff:ac10:101', '::ffff:6440:101'].map(ip => `https://[${ip}]/paper`),
+  ];
+  for (const [urls, expected] of [[allowed, true], [denied, false]] as const) {
+    for (const url of urls) {
+      const candidate = withBlock({ id: 'address', type: 'media', kind: 'image', url, alt: 'Contract only; no request is sent.' });
+      const result = validate(candidate);
+      assert.equal(result.ok, expected, `${url}: ${result.errors.join(' ')}`);
+      if (!expected) assert.match(result.errors.join(' '), /local and private/);
+    }
+  }
+});
+
+test('T03 docs generic canonical serialization and the stricter sample hash boundary remain distinct', async () => {
+  assert.equal(canonicalReplyData({ text: '\ud800' }), '{"text":"\\ud800"}');
+  const candidate = withBlock({ id: 'unicode-grid', type: 'samples', model: 'growth-model', envelope: { axes: [{ name: 'gamma', min: 0, max: 1, count: 2 }], fixedInputs: { f: 0.07, y0: 0 }, interpolation: 'linear', errorEvidence: 'Contract only', forbiddenRegions: [] }, samples: [] });
+  const block = candidate.blocks.at(-1)!;
+  assert.ok(block.type === 'samples');
+  candidate.title = '\ud800';
+  await assert.rejects(deriveSamplesBinding(candidate, block), /unpaired Unicode surrogate/);
 });
