@@ -22,6 +22,7 @@ function cached(thread: Thread) {
 }
 test('reading-position editor is connected, anchored and single-map across save failure, collapse and suspend', async t => {
   const e = env(t); const api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false });
+  button(e.root, 'Settings').click(); assert.equal(e.root.querySelectorAll('button').some(node => node.textContent === 'Retry saving'), false, 'clean hydrated settings do not claim recovery is needed'); button(e.root, 'Close settings').click();
   api.setReadingPosition(21); const write = button(e.root, 'Write here\u2026'); write.focus();
   const field = e.root.querySelector('[aria-label="Your note"]')!; field.value = 'Frozen text?'; field.fire('input'); field.setSelectionRange(2, 5); field.scrollTop = 13;
   const compose = e.root.querySelector('.m-compose')!, before = e.root.querySelectorAll('.m-section-marker');
@@ -33,7 +34,7 @@ test('reading-position editor is connected, anchored and single-map across save 
   const map = e.root.querySelector('.m-map')!; assert.equal(e.root.querySelectorAll('.m-map').length, 1);
   button(e.root, 'Collapse').click(); assert.equal(map.parentElement!.className, 'm-rail'); button(e.root, 'Open margin').click(); assert.equal(e.root.querySelector('.m-map'), map);
   api.suspend(); api.setReadingPosition(34); api.resume(); assert.equal((e.data(e.namespace).get([...e.data(e.namespace).keys()].find(k => k.startsWith('draft:'))!) as any).position, 21);
-  e.onWrite(async () => {}); button(e.root, 'Retry saving').click(); await api.drain(); assert.equal((e.data(e.namespace).get('journal') as JournalState).threads[0].notes[0].text, 'Frozen text?');
+  e.onWrite(async () => {}); button(e.root, 'Settings').click(); button(e.root, 'Retry saving').click(); await api.drain(); assert.equal((e.data(e.namespace).get('journal') as JournalState).threads[0].notes[0].text, 'Frozen text?');
   api.destroy(); await api.drain();
 });
 test('startup restoration cannot overwrite an interim recovery editor and failed draft survives remount', async t => {
