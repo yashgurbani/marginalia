@@ -37,6 +37,7 @@ import {
   SolverExecutionService,
   type SolverAuthorizationDecision,
   type SolverAuthorizationInput,
+  type SolverClaimRelease,
   type SolverFinalizationDecision,
   type SolverFinalizationInput,
   type SolverGenerationLease,
@@ -336,6 +337,9 @@ type Harness = {
   log: string[];
   setObservation: (observation: SolverCommandObservation | (() => Promise<SolverCommandObservation>)) => void;
   cache: SolverResultCache;
+  /** Claims the gate committed and has not been asked to withdraw. */
+  claims: Map<string, 'dispatched' | 'settled'>;
+  releases: SolverClaimRelease[];
 };
 
 type HarnessOptions = {
@@ -350,6 +354,11 @@ type HarnessOptions = {
   lease?: (input: SolverFinalizationInput) => SolverGenerationLease;
   /** When true the gate reports durable at-most-once and remembers claims across attempts. */
   durable?: boolean;
+  /**
+   * How this gate withdraws a claim it committed for a handoff that never happened.
+   * `'none'` is a gate that offers no release at all.
+   */
+  release?: 'none' | 'ok' | 'throws';
   transport?: SolverCommandTransport | null;
   realExecution?: boolean;
   now?: () => number;
@@ -379,6 +388,7 @@ function harness(fix: Fixture, options: HarnessOptions = {}): Harness {
   const dispatches: SolverExecOptions[] = [];
   const authorizations: SolverAuthorizationInput[] = [];
   const finalizations: SolverFinalizationInput[] = [];
+  const releases: SolverClaimRelease[] = [];
   // Stands in for T06's durable at-most-once table. A committed claim is
   // remembered by request identity so a second attempt is refused, not dispatched.
   const claims = new Map<string, 'dispatched' | 'settled'>();
@@ -450,6 +460,16 @@ function harness(fix: Fixture, options: HarnessOptions = {}): Harness {
           },
         };
       },
+      // A gate that can withdraw a claim it wrote. `'none'` omits the method
+      // entirely, which is how a host with no release path is declared.
+      ...(options.release && options.release !== 'none' ? {
+        releaseClaim(release: SolverClaimRelease) {
+          log.push('releaseClaim');
+          releases.push(release);
+          if (options.release === 'throws') throw new Error('the claim table would not give the row back');
+          claims.delete(release.requestIdentity);
+        },
+      } : {}),
     },
     evidence: {
       async collect(policy) { return options.evidence ? options.evidence(policy) : evidenceFor(policy); },
@@ -461,7 +481,7 @@ function harness(fix: Fixture, options: HarnessOptions = {}): Harness {
     ...(options.now ? { now: options.now } : {}),
     ...(options.planTtlMs ? { planTtlMs: options.planTtlMs } : {}),
   });
-  return { service, calls, dispatches, authorizations, finalizations, log, cache, setObservation: (value) => { observation = value; } };
+  return { service, calls, dispatches, authorizations, finalizations, log, cache, claims, releases, setObservation: (value) => { observation = value; } };
 }
 
 function successfulStdout(requestId = 'req-1'): string {
@@ -918,6 +938,101 @@ test('a lease that does not cover what was hashed refuses the attempt', async (t
   expectStatus(manifest, 'rejected');
   if (manifest.status === 'rejected') assert.equal(manifest.code, 'generation-drift');
   assert.equal(wrongManifest.calls.length, 0);
+});
+
+/**
+ * The window between the commit and the handoff.
+ *
+ * `commit()` writes the durable claim and mints the lease; the service then makes its
+ * last synchronous checks and can still refuse. A workspace rebuilt between preparing
+ * the plan and committing is the reachable case: the gate mints a lease on the current
+ * generation, which is not the one this attempt hashed. Before this regression the
+ * service answered a clean `generation-drift` rejection and walked away from a claim
+ * that was already durable, so every later recompute of the same content came back as
+ * `already-claimed` — telling the reader a dispatch happened when none ever did.
+ */
+test('a durable claim committed for a handoff that never happened is withdrawn', async (t) => {
+  const fix = await fixture();
+  t.after(fix.cleanup);
+
+  const runner = harness(fix, {
+    durable: true,
+    release: 'ok',
+    lease: (input) => ({ ...leaseFor(input), workspaceGeneration: 'gen-rebuilt' }),
+  });
+  const outcome = await recompute(runner);
+  expectStatus(outcome, 'rejected');
+  if (outcome.status === 'rejected') assert.equal(outcome.code, 'generation-drift');
+  assert.equal(runner.calls.length, 0, 'nothing is dispatched');
+  assert.equal(runner.releases.length, 1, 'the committed claim is withdrawn');
+  assert.equal(runner.releases[0].requestIdentity, runner.finalizations[0].requestIdentity);
+  assert.equal(runner.releases[0].handoffToken, 'handoff-1');
+  assert.equal(runner.releases[0].leaseId, 'lease-1');
+  assert.match(runner.releases[0].reason, /generation lease/);
+  assert.equal(runner.claims.size, 0, 'the identity is free to be asked for again');
+  assert.deepEqual(
+    runner.log.filter((entry) => entry === 'commit' || entry === 'releaseClaim' || entry === 'exec'),
+    ['commit', 'releaseClaim'],
+    'the release runs after the commit and instead of the handoff',
+  );
+});
+
+test('an unreleasable durable claim is reported as unknown, not as a clean refusal', async (t) => {
+  const fix = await fixture();
+  t.after(fix.cleanup);
+
+  // A gate that writes durable claims but offers no way to withdraw one. The refusal
+  // is real, but the host is not back where it started, so it must not read that way.
+  const runner = harness(fix, {
+    durable: true,
+    release: 'none',
+    lease: (input) => ({ ...leaseFor(input), workspaceGeneration: 'gen-rebuilt' }),
+  });
+  const outcome = await recompute(runner);
+  expectStatus(outcome, 'outcome_unknown');
+  if (outcome.status === 'outcome_unknown') {
+    assert.match(outcome.reason, /generation lease/, 'it still says why the recompute was refused');
+    assert.match(outcome.reason, /cannot withdraw the attempt claim/);
+  }
+  assert.equal(runner.calls.length, 0, 'nothing is dispatched');
+  assert.equal(runner.claims.size, 1, 'the claim is still standing, which is what the reader is told');
+});
+
+test('a release that fails leaves the outcome unknown rather than reporting success', async (t) => {
+  const fix = await fixture();
+  t.after(fix.cleanup);
+
+  const runner = harness(fix, {
+    durable: true,
+    release: 'throws',
+    lease: (input) => ({ ...leaseFor(input), profileManifestSha256: 'c'.repeat(64) }),
+  });
+  const outcome = await recompute(runner);
+  expectStatus(outcome, 'outcome_unknown');
+  if (outcome.status === 'outcome_unknown') {
+    assert.match(outcome.reason, /Withdrawing the committed attempt claim failed/);
+    assert.match(outcome.reason, /would not give the row back/, 'the host reason is carried, not swallowed');
+  }
+  assert.equal(runner.calls.length, 0);
+  assert.equal(runner.releases.length, 1, 'the withdrawal was attempted');
+});
+
+test('a process-local claim needs no withdrawal and still refuses cleanly', async (t) => {
+  const fix = await fixture();
+  t.after(fix.cleanup);
+
+  // Nothing outside this process recorded the attempt, so a refusal really does
+  // leave the host where it started.
+  const runner = harness(fix, {
+    durable: false,
+    release: 'ok',
+    lease: (input) => ({ ...leaseFor(input), workspaceGeneration: 'gen-rebuilt' }),
+  });
+  const outcome = await recompute(runner);
+  expectStatus(outcome, 'rejected');
+  if (outcome.status === 'rejected') assert.equal(outcome.code, 'generation-drift');
+  assert.equal(runner.releases.length, 0, 'no durable claim exists to withdraw');
+  assert.equal(runner.calls.length, 0);
 });
 
 test('a lease that lapses while the solver runs is not accepted afterwards', async (t) => {

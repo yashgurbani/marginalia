@@ -269,7 +269,35 @@ export interface SolverExecutionGate {
    */
   readonly durableAtMostOnce: boolean;
   prepareCommit(input: SolverFinalizationInput): Promise<SolverPreparedCommit>;
+  /**
+   * Release a claim this service committed but never handed off.
+   *
+   * `commit` writes the durable attempt claim and mints the generation lease. The
+   * service then makes its last synchronous checks — that the committed grant
+   * revision, permission epoch and lease actually cover what this attempt hashed —
+   * and a gate that answered with a lease on a rebuilt workspace fails them. Without
+   * a release, that claim stays written for a dispatch that never happened, and every
+   * later recompute of the same content is refused as `already-claimed` forever.
+   *
+   * It is synchronous for the same reason `commit` is: it runs on the no-`await`
+   * path between the commit and the handoff, and a release that has to be awaited
+   * is not the same host operation as the commit it undoes.
+   *
+   * Optional, and honestly so. A gate that cannot release reports nothing here, and
+   * the service then answers `outcome_unknown` rather than a clean rejection, because
+   * a claim it cannot withdraw is a claim it cannot truthfully call undone.
+   */
+  releaseClaim?(input: SolverClaimRelease): void;
 }
+
+/** Identifies exactly the claim to withdraw, and why the handoff never happened. */
+export type SolverClaimRelease = {
+  requestIdentity: string;
+  executionAttemptId: string;
+  handoffToken: string;
+  leaseId: string;
+  reason: string;
+};
 
 /** Actual host observations for this exact policy. `undefined` means unavailable, never assumed good. */
 export interface SolverEvidenceSource {
@@ -745,6 +773,40 @@ export class SolverExecutionService {
     return { context, artifacts: artifacts.value, binding };
   }
 
+  /**
+   * Withdraw a committed claim whose handoff never happened, and report what is true.
+   *
+   * A gate that offers `releaseClaim` gets to undo the claim, so the refusal stays a
+   * clean rejection and the reader can try the same recompute again. A gate that does
+   * not — including every gate that only claims process-locally — leaves a claim
+   * standing for work that never ran, so the honest answer is `outcome_unknown`
+   * naming that fact, not a rejection that implies the host is back where it started.
+   *
+   * A throwing release is not swallowed into success. It means the claim's state is
+   * unknown, which is exactly what `outcome_unknown` says.
+   */
+  private abandonCommitted(
+    outcome: SolverOutcome,
+    claim: SolverAttemptClaim,
+    release: Omit<SolverClaimRelease, 'reason'>,
+  ): SolverOutcome {
+    // A process-local claim is this process's own memory. Nothing outside it
+    // recorded an attempt, so a refusal here really does leave the host where it
+    // started and the plain rejection is the truthful answer.
+    if (claim !== 'durable-host-journal') return outcome;
+    const reason = outcome.status === 'rejected' || outcome.status === 'unavailable' ? outcome.reason : 'The recompute was refused after its claim was committed.';
+    const gate = this.options.gate;
+    if (gate.releaseClaim) {
+      try {
+        gate.releaseClaim({ ...release, reason });
+        return outcome;
+      } catch (error) {
+        return { status: 'outcome_unknown', reason: `${reason} Withdrawing the committed attempt claim failed, so whether this recompute can be asked for again is unknown: ${error instanceof Error ? error.message : 'the host gave no reason'}.` };
+      }
+    }
+    return { status: 'outcome_unknown', reason: `${reason} Nothing was dispatched, but this host cannot withdraw the attempt claim it already committed, so the same recompute may be refused until the claim is cleared.` };
+  }
+
   private checkCapability(context: SolverRecomputeContext, limits: SolverLimits): SolverOutcome | undefined {
     const transport = this.options.transport;
     if (!transport) return unavailable('not-configured', 'Saved-solver recomputation is not configured.');
@@ -1078,20 +1140,28 @@ export class SolverExecutionService {
       // that could not make the claim durable reports `process-local` here even when it
       // advertises durability elsewhere, and the record carries the truthful value.
       const attemptClaim = finalized.attemptClaim;
+      // Every refusal below happens *after* the claim is durable. Withdrawing it is
+      // not optional tidying: an unreleased claim for an attempt that never ran makes
+      // this content permanently unrecomputable, and tells the reader a dispatch
+      // happened when none did. `abandonCommitted` withdraws it where the gate can,
+      // and reports the outcome honestly where it cannot.
+      const abandon = (outcome: SolverOutcome): SolverOutcome =>
+        this.abandonCommitted(outcome, attemptClaim, { requestIdentity: plan.requestIdentity, executionAttemptId,
+          handoffToken: finalized.handoffToken, leaseId: lease.leaseId });
       const handoffRefusal = this.checkAuthorization({ decision: 'allowed', authorization }, { grantId: plan.grantId, policyFingerprint });
-      if (handoffRefusal) return handoffRefusal;
+      if (handoffRefusal) return abandon(handoffRefusal);
       if (authorization.grantRevision !== reserved.grantRevision || authorization.sitePermissionEpoch !== reserved.sitePermissionEpoch) {
-        return rejected('authorization-refused', 'Permission for this site changed while the recompute was being prepared.');
+        return abandon(rejected('authorization-refused', 'Permission for this site changed while the recompute was being prepared.'));
       }
       // The lease is the only thing that makes the hashed generation immutable across
       // the awaits below. A lease for another generation or another reviewed manifest
       // is not a lease on what this attempt hashed. These checks are synchronous, so no
       // `await` runs between the committed decision and the handoff.
       if (lease.workspaceGeneration !== binding.workspaceGeneration) {
-        return rejected('generation-drift', 'The committed generation lease does not cover the workspace this recompute hashed.');
+        return abandon(rejected('generation-drift', 'The committed generation lease does not cover the workspace this recompute hashed.'));
       }
       if (lease.profileManifestSha256 !== policy.reviewedProfile.manifestSha256) {
-        return rejected('generation-drift', 'The committed generation lease does not cover the reviewed profile this policy pinned.');
+        return abandon(rejected('generation-drift', 'The committed generation lease does not cover the reviewed profile this policy pinned.'));
       }
 
       // The handoff. `cancellationFor` and both clock reads are synchronous, so this

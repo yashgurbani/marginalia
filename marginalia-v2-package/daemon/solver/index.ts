@@ -38,6 +38,7 @@ export {
   SolverExecutionService,
   type SolverAttemptClaim,
   type SolverAuthority,
+  type SolverClaimRelease,
   type SolverAuthorization,
   type SolverAuthorizationDecision,
   type SolverAuthorizationInput,
@@ -53,6 +54,19 @@ export {
   type SolverRecomputeContext,
   type SolverServiceOptions,
 } from './service.ts';
+export {
+  createConsentSolverAuthority,
+  createStoreSolverContextSource,
+  unavailableSolverArtifactBindings,
+  unavailableSolverEvidence,
+  unavailableSolverExecutionGate,
+  type ConsentSolverAuthorityOptions,
+  type SolverArtifactBindingSource,
+  type SolverJobReader,
+  type SolverPermissionReader,
+  type SolverReplyReader,
+  type StoreSolverContextOptions,
+} from './adapters.ts';
 export {
   SOLVER_ROUTE_PREFIX,
   createSolverRoutes,
