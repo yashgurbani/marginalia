@@ -4,7 +4,7 @@ Updated 17 September 2026. Chief task: 01a0adaf-dd71-7583-8307-b877547c9189.
 
 ## Current position
 
-C6 offline Disconnect now durably forgets the local pairing before attempting remote revocation, with truthful unconfirmed copy and protection for a newer pairing. Eleven focused helper tests, typecheck and both builds passed. Real Windows Chromium extension verification proved disconnect survives reload, preserves the note and stops Save from sending until paired again. See [Disconnect evidence](docs/evidence/t05-offline-disconnect/REPORT.md). C4 trusted helper management routes are in progress with the T01 Astra owner; helper-page UI still remains.
+C6 offline Disconnect now durably forgets the local pairing before attempting remote revocation, with truthful unconfirmed copy and protection for a newer pairing. Eleven focused helper tests, typecheck and both builds passed. Real Windows Chromium extension verification proved disconnect survives reload, preserves the note and stops Save from sending until paired again. See [Disconnect evidence](docs/evidence/t05-offline-disconnect/REPORT.md). C4 trusted helper management routes are integrated as `87b451d`; chief combined pairing/management/server/read tests pass 23/23 and typecheck passes. The existing T05 Astra Medium owner is implementing helper-page-only Show code, list and Forget controls; real browser entry verification remains.
 
 C5 startup recovery now handles an occupied configured port with the install-spec message and browser address guidance. Chief reproduced the old raw error, then verified 16 focused launch/server/read tests and full typecheck. The existing service stays running. Installers and Mac/Linux launch evidence remain open.
 
@@ -51,7 +51,7 @@ Integrated means committed for review, not that the full reader experience passe
 | Ticket | Capability | Current work and remaining gate |
 |---|---|---|
 | T00 | Numerical fixture | Foundation integrated; final rendered/live fixture remains |
-| T01 | Helper and pairing | Diagnostics and bundled runtime identity integrated; paired-browser management backend integrated14f46c5, chief14/14 pairing/server checks pass; trusted helper UI/routes and live recovery remain |
+| T01 | Helper and pairing | Diagnostics and bundled runtime identity integrated; paired-browser management backend integrated14f46c5, chief14/14 pairing/server checks pass; trusted helper routes integrated87b451d with23/23 combined checks; helper-page UI and actual browser recovery remain |
 | T02 | App-server and MCP adapters | Pro continuation/not-sent correction integrated as eefb8b6; 49/49 local focused checks pass; T06 integration and real authenticated asking/recovery remain |
 | T03 | Reply contract/host authority | Pro fixes integrated c14b351/7e6bf2c; 32/32 contract/renderer checks including Chrome pass; real host records and delivery remain |
 | T04 | Extension capture/private host | Reviewed routed-Sol fixes integrated 2cbe4d0; 9/9 tests and build pass; workspace correction integrated9efb2cf and browser rerun passes; backend aliases integrated3fc161e with15/15 chief checks and realextensionprobe; client mapping integrated4e6d211; bounded actual reader/background QA passed; broader design/provider/platform acceptance remains |
