@@ -1,0 +1,146 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
+import { ReaderJournal, type JournalState, type Persistence } from '../ui/journal.ts';
+import { wholePageAnchor, type ReaderMutation, type SourceCapture, type Thread } from '../contracts/reader.ts';
+import { HelperClient, HelperTransportError, forgetPairingIfCurrent, pairingCode, pairingIdentity } from '../ui/helper.ts';
+
+// Isolate the scientific-contract boundary; no test here validates or authorizes
+// a scientific reply. Journal, persistence lifecycle and transport are the actual modules.
+registerHooks({ resolve(specifier, context, next) {
+  if (specifier === '../contracts/reply.ts') return { url: 't05:canonical', shortCircuit: true };
+  return next(specifier, context);
+}, load(url, context, next) {
+  if (url === 't05:canonical') return { format: 'module', shortCircuit: true, source: `export function canonicalReplyData(v) { return Array.isArray(v) ? '['+v.map(canonicalReplyData).join(',')+']' : v && typeof v==='object' ? '{'+Object.entries(v).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>JSON.stringify(k)+':'+canonicalReplyData(v)).join(',')+'}' : JSON.stringify(v); } export const validateReply = () => ({ok:false,errors:['Scientific validation outside this fixture']});` };
+  return next(url, context);
+} });
+const { applyIntendedNote, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle,
+  documentJournal, documentDraft, documentQuestion, unsavedDrafts, unsavedQuestions, sourceBoundJournal, localPersistence } = await import('../ui/persistence.ts');
+const { marginItemSize, composerOffset, sectionMapState, threadContentKey } = await import('../ui/margin.ts');
+function deferred<T = void>() { let resolve!: (v: T) => void, reject!: (e: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
+const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+const capture: SourceCapture = { url: 'https://example.test/a', title: 'Original', text: 'alpha beta gamma', pageType: 'article', capturedAt: '2026-09-17T00:00:00Z', extractionVersion: 'test-v1' };
+const keep = (id = 'keep', c = capture): Extract<ReaderMutation, { kind:'keep' }> => ({ id, threadId: id+'-thread', kind: 'keep', capture: c, anchor: { exact:'alpha',prefix:'',suffix:' beta gamma',start:0,end:5 }, note: 'Reader words' });
+const view = (x: number) => ({ parameters: { x }, view: {} });
+function memory() {
+  let durable: JournalState | undefined, failing = false;
+  const backend: Persistence = { load: async () => structuredClone(durable), save: async value => { if (failing) throw new Error('quota fixture'); durable = structuredClone(value); } };
+  return { backend, journal: new ReaderJournal(backend), fail(value: boolean) { failing = value; }, state: () => structuredClone(durable), seed(value: JournalState) { durable = structuredClone(value); } };
+}
+const lock = async (action: () => Promise<void>) => action();
+
+test('A -> pending B -> A close enqueues final A and fences late renderer callbacks', async () => {
+  const gate = deferred(), writes: number[] = [];
+  const life = replySaveLifecycle(view(1), async state => { writes.push(state.parameters.x); if (writes.length === 1) await gate.promise; });
+  const b = life.save(view(2)); await tick(); const close = life.close(view(1)); await life.save(view(999));
+  assert.deepEqual(writes, [2]); assert.equal(life.status().pending, 2); gate.resolve(); await Promise.all([b, close]); assert.deepEqual(writes, [2,1]);
+});
+test('flush orders final snapshot after older saves; an untouched normalized mount never writes', async () => {
+  const gate = deferred(), writes: number[] = []; const life = replySaveLifecycle(view(1), async state => { if (state.parameters.x === 2) await gate.promise; writes.push(state.parameters.x); });
+  await life.flush(view(1)); assert.deepEqual(writes, []); const b = life.save(view(2)), a = life.flush(view(1)); gate.resolve(); await Promise.all([a,b]); assert.deepEqual(writes,[2,1]); await life.close(view(1)); assert.equal(writes.length,2);
+});
+test('failed save remains retryable; competing recovery is preserved, not active completion', async () => {
+  let failure: Error | undefined = new Error('quota'); const life = replySaveLifecycle(view(1), async () => { if (failure) throw failure; });
+  await assert.rejects(life.flush(view(2)),/quota/); const before = life.status().completed;
+  failure = Object.assign(new Error('recovery retained'), {name:'RecoveredViewConflict'}); await life.flush(view(2));
+  assert.equal(life.status().completed,before); assert.notEqual(life.status().preserved,before); failure = undefined; await life.flush(view(3)); assert.equal(life.status().completed,life.status().preserved);
+});
+test('note retry persists unrelated earlier work then applies THAT exact note once', async () => {
+  const m=memory(); await m.journal.load(); m.fail(true); await assert.rejects(m.journal.change(keep('earlier'))); m.fail(false);
+  await applyIntendedNote(m.journal,keep('intended')); await applyIntendedNote(m.journal,keep('intended'));
+  assert.deepEqual(m.state()!.pending.map(change=>change.id),['earlier','intended']); assert.equal(m.state()!.threads.length,2);
+});
+test('a durable conflict cannot clear a draft; a durable keep-device choice unlocks but does not apply it', async () => {
+  const m=memory(), original=keep(); await m.journal.change(original);
+  const mutation: ReaderMutation={kind:'note',id:'stale',threadId:original.threadId,noteId:'keep-note',text:'Unapplied',expectedRevision:0};
+  const draft={text:'Unapplied',anchor:original.anchor,source:capture,mutation,threadId:original.threadId,noteId:'keep-note',revision:0};
+  await assert.rejects(retryDraftMutation(m.journal,draft),/changed/); assert.equal(m.journal.unsaved,false); assert.equal(draftAfterResolution(m.journal,draft),undefined);
+  await keepDeviceConflict(m.journal,lock,'stale'); const result=await retryDraftMutation(m.journal,draft);
+  assert.equal(result.kind,'resolved'); if(result.kind==='resolved'){assert.equal(result.draft.text,'Unapplied');assert.equal(result.draft.mutation,undefined);assert.equal(result.draft.revision,1);}
+  assert.equal(m.journal.state.threads[0].notes[0].text,'Reader words');
+});
+test('keep-device save failure stays unsaved; retry recovers the choice without pretending the note applied',async()=>{
+  const m=memory(); await m.journal.change(keep()); const mutation:ReaderMutation={id:'stale',kind:'note',threadId:'keep-thread',noteId:'keep-note',text:'Draft',expectedRevision:0};
+  await assert.rejects(m.journal.change(mutation)); const draft={text:'Draft',anchor:keep().anchor,source:capture,mutation}; m.fail(true);
+  await assert.rejects(keepDeviceConflict(m.journal,lock,'stale'),/quota/); assert.equal(m.journal.unsaved,true); assert.equal(draftAfterResolution(m.journal,draft),undefined);
+  m.fail(false); const result=await retryDraftMutation(m.journal,draft); assert.equal(result.kind,'resolved'); assert.equal(m.journal.unsaved,false);
+  const reloaded=new ReaderJournal(m.backend); await reloaded.load(); assert.equal(reloaded.state.resolutions?.at(-1)?.resolution,'kept-device');
+});
+test('actual T07 kept version survives helper lists/reload without creating an upload',async()=>{
+  const m=memory();await m.journal.change(keep());const thread=structuredClone(m.journal.state.threads[0]);await m.journal.sync(async()=>{},async()=>[thread]);
+  await assert.rejects(m.journal.change({kind:'note',id:'bad',threadId:thread.id,noteId:'keep-note',text:'Draft',expectedRevision:0}));
+  await keepDeviceConflict(m.journal,lock,'bad');let sends=0;
+  const remote=structuredClone(thread);remote.notes[0].text='Remote different';remote.revision=9;
+  await m.journal.sync(async()=>{sends++;},async()=>[remote]);const reloaded=new ReaderJournal(m.backend);await reloaded.load();
+  assert.equal(reloaded.state.threads[0].notes[0].text,'Reader words');assert.equal(sends,0);assert.equal(reloaded.state.resolutions?.at(-1)?.deviceVersion?.id,thread.id);
+});
+test('actual T07 deliberate absence survives later helper resurrection',async()=>{
+  const m=memory();await m.journal.load();const mutation:ReaderMutation={id:'missing-note',kind:'note',threadId:'gone',noteId:'n',text:'Draft',expectedRevision:0};await assert.rejects(m.journal.change(mutation));
+  await keepDeviceConflict(m.journal,lock,mutation.id);assert.equal(m.journal.state.resolutions?.at(-1)?.deviceVersion,null);
+  const foreign=memory();await foreign.journal.change({...keep('x'),threadId:'gone'});await m.journal.sync(async()=>assert.fail('must not send'),async()=>foreign.journal.state.threads);await m.journal.load();assert.equal(m.journal.state.threads.length,0);
+});
+test('helper conflict fetch begins only inside the lock after loading current durable state',async()=>{
+  const m=memory();await m.journal.change(keep());await assert.rejects(m.journal.change({id:'stale',kind:'note',threadId:'keep-thread',noteId:'keep-note',text:'draft',expectedRevision:0}));
+  const gate=deferred(),order:string[]=[];const work=resolveHelperConflict(m.journal,async action=>{await gate.promise;order.push('lock');await action();},'stale',async()=>{order.push('read');assert.equal(m.journal.state.threads[0].revision,7);return m.state()!.threads;});
+  await tick();assert.deepEqual(order,[]);const next=m.state()!;next.threads[0].revision=7;m.seed(next);gate.resolve();await work;assert.deepEqual(order,['lock','read']);
+});
+test('same-document journal retains its private durable baseline when another tab changed storage',async()=>{
+  const m=memory(),ns=crypto.randomUUID();const first=documentJournal(ns,m.backend);await first.load();m.fail(true);await assert.rejects(first.change(keep()));m.fail(false);
+  const other=new ReaderJournal(m.backend);await other.change(keep('other'));
+  const second=documentJournal(ns,m.backend);assert.equal(second,first);await assert.rejects(second.retryPersistence(),/changed elsewhere/);assert.equal(m.state()!.threads[0].id,'other-thread');assert.equal(second.state.threads[0].id,'keep-thread');
+});
+test('draft hydration never overwrites interim typing and failed original-source draft survives remount',async()=>{
+  const gate=deferred<undefined>(),ns=crypto.randomUUID();let fail=true;
+  const io={read:()=>gate.promise,write:async()=>{if(fail)throw new Error('quota');}};
+  const first=documentDraft(ns,'draft',capture,io);const loading=first.load();await assert.rejects(first.save({text:'Typed',source:capture,anchor:wholePageAnchor()}));gate.resolve(undefined);assert.equal((await loading)?.text,'Typed');
+  const second=documentDraft(ns,'draft',{...capture,text:'Different page'},io);assert.equal(second,first);assert.equal(unsavedDrafts(ns,capture.url)[0].source.text,capture.text);assert.deepEqual(unsavedDrafts(ns,'https://other.test'),[]);
+  fail=false;await second.flush();assert.equal(second.unsaved(),false);
+});
+test('question hydration and cleanup failure retain exact draft or explicit unsaved tombstone',async()=>{
+  const gate=deferred<undefined>(),ns=crypto.randomUUID();let fail=true;const io={read:()=>gate.promise,write:async()=>{if(fail)throw new Error('quota');}};
+  const buffer=documentQuestion(ns,'q',capture.url,io),loading=buffer.load();await assert.rejects(buffer.save({capture,anchor:wholePageAnchor(),question:'Why?',context:'Reader context'}));gate.resolve(undefined);assert.equal((await loading)?.question,'Why?');
+  fail=false;await buffer.save(buffer.get());fail=true;await assert.rejects(buffer.save(undefined));assert.equal(unsavedQuestions(ns,capture.url)[0].draft,null);
+});
+test('orphan export includes source-bound resolution snapshots and exact retained draft, never unrelated page work',()=>{
+  const a=keep('a'),b=keep('b',{...capture,url:'https://other.test/private'});const state:JournalState={threads:[],pending:[],conflicts:[{change:a,message:'own'},{change:b,message:'other'}],resolutions:[]};
+  const own=sourceBoundJournal(state,capture.url);assert.deepEqual(own.conflicts.map(x=>x.change.id),['a']);assert.ok(!JSON.stringify(own).includes('other.test'));
+  const mutation:ReaderMutation={id:'orphan',kind:'note',threadId:'missing',noteId:'n',text:'Bound draft',expectedRevision:0};state.conflicts.push({change:mutation,message:'retained'});
+  assert.equal(sourceBoundJournal(state,capture.url,{text:'Bound draft',anchor:wholePageAnchor(),source:capture,mutation}).conflicts.length,2);
+  state.pending.push({...b,threadId:'a-thread'});assert.equal(sourceBoundJournal(state,capture.url).conflicts.length,0,'ambiguous association stays excluded');
+});
+test('reading-position and map data preserve individual marks/counts and content changes at equal revision',async()=>{
+  const m=memory();await m.journal.change(keep());const sections=[{title:'A',start:0,end:6},{title:'B',start:6,end:10},{title:'C',start:10,end:16}];const result=sectionMapState(sections,m.journal.state.threads,capture,1);
+  assert.deepEqual(result.map(x=>x.length),[6,4,6]);assert.equal(result[0].notes,1);assert.deepEqual(result[0].markPositions,[0]);assert.equal(result[1].current,true);
+  assert.equal(composerOffset({anchor:wholePageAnchor(),position:4,text:'Draft'},12),4);assert.deepEqual([0,1,2].map(i=>marginItemSize(i,0,false,false)),['full','line','tick']);assert.equal(marginItemSize(2,0,false,true),'full');
+  const thread=m.journal.state.threads[0];assert.notEqual(threadContentKey(thread),threadContentKey({...thread,sourceVersionId:'canonical'}));
+});
+test('offline Disconnect clears durable credential before remote revoke and retains new pairing',async t=>{
+  const client=new HelperClient('http://localhost:43120');client.token='old';let stored: {origin:string;token:string}|undefined={origin:client.origin,token:'old'};const order:string[]=[];
+  t.mock.method(globalThis,'fetch',async()=>{order.push('revoke');assert.equal(stored,undefined);throw new Error('raw secret');});
+  assert.equal(await client.disconnect(async()=>{stored=undefined;order.push('delete');}),'unconfirmed');assert.deepEqual(order,['delete','revoke']);assert.equal(client.token,'');
+});
+test('failed local credential deletion neither revokes remotely nor claims success',async t=>{
+  const client=new HelperClient('http://localhost:43120');client.token='old';let sends=0;t.mock.method(globalThis,'fetch',async()=>{sends++;return Response.json({revoked:true});});
+  await assert.rejects(client.disconnect(async()=>{throw new Error('quota');}),/quota/);assert.equal(client.token,'old');assert.equal(sends,0);
+});
+test('older Disconnect preserves newer durable pairing and fences late authenticated response',async t=>{
+  const gate=deferred<Response>(),client=new HelperClient('http://localhost:43120');client.token='old';
+  let stored={origin:client.origin,token:'new'};t.mock.method(globalThis,'fetch',async (url:string)=>url.endsWith('revoke')?Response.json({revoked:true}):gate.promise);
+  const outstanding=client.list(),rejected=assert.rejects(outstanding,/connection changed/);
+  const result=await client.disconnect(async()=>{client.token='new';assert.equal(await forgetPairingIfCurrent({read:async<T>()=>stored as T,write:async()=>assert.fail('new token must not be deleted')},client.origin,'old'),false);});
+  gate.resolve(Response.json({threads:[]}));await rejected;assert.equal(result,'replaced');assert.equal(client.token,'new');
+});
+test('pairing leading zeros and authenticated POST reads remain exact; transport errors remain unknown',async t=>{
+  assert.equal(pairingCode('001 234'),'001234');const calls:Array<{url:string;init:RequestInit}>=[];const client=new HelperClient('http://localhost:43120');client.token='paired';
+  t.mock.method(globalThis,'fetch',async(url:string,init:RequestInit)=>{calls.push({url,init});return Response.json({threads:[]});});await client.list();
+  assert.equal(calls[0].url,client.origin+'/api/read/threads?removed=true');assert.equal(calls[0].init.method,'POST');assert.equal(calls[0].init.body,'{}');assert.equal(new Headers(calls[0].init.headers).has('origin'),false);
+  await assert.rejects(client.read('/api/jobs'),/no supported/);assert.equal(calls.length,1);assert.notEqual(await pairingIdentity(client.origin,'a'),await pairingIdentity(client.origin,'b'));
+});
+test('network, timeout and unreadable success never become definitive application success',async t=>{
+  let mode=0;t.mock.method(globalThis,'fetch',async()=>{if(mode===0)throw new Error('secret');if(mode===1)throw new DOMException('raw','TimeoutError');return new Response('bad json');});const client=new HelperClient('http://localhost:43120');
+  for(const kind of ['network','timeout','response-unknown']) {await assert.rejects(client.request('/api/change',{}),e=>e instanceof HelperTransportError&&e.kind===kind&&!e.message.includes('secret')&&e.message.includes('unconfirmed'));mode++;}
+});
+test('EOF stays in the last section rather than jumping to the page head',async()=>{
+ const {sectionIndexAt}=await import('../ui/margin.ts');const sections=[{title:'A',start:0,end:10},{title:'B',start:15,end:20}];
+ assert.equal(sectionIndexAt(sections,20),1);assert.equal(sectionIndexAt(sections,12),0);assert.equal(sectionIndexAt(sections,-1),0);
+});

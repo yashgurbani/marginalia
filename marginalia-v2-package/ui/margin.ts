@@ -1,11 +1,13 @@
 import type { QuoteAnchor, ReaderMutation, SourceCapture, Thread } from '../contracts/reader.ts';
 import { wholePageAnchor, attachQuote } from '../contracts/reader.ts';
 import { el, button } from './dom.ts';
-import { ReaderJournal } from './journal.ts';
-import { localPersistence, type CachedReply } from './persistence.ts';
+import { localPersistence, documentJournal, documentDraft, documentQuestion, unsavedDrafts, unsavedQuestions, sourceBoundJournal, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle, type MarginDraft, type CachedReply } from './persistence.ts';
 import { anchorAt, orderedThreads, outgoingPreview, sourceLocation, pageDefinition, displayPosition } from './margin-model.ts';
-import { HelperClient } from './helper.ts';
-import { mountReply, type MountedReply } from '../renderer/index.ts';
+import { HelperClient, documentHelper, forgetPairingIfCurrent } from './helper.ts';
+import { mountHelperManagement } from './helper-management.ts';
+import { mountNoteEditor } from './note-editor.ts';
+import { createT08Mount, type AskingMountFactory, type AskingSelection } from './asking-host.ts';
+import type { MountedReply } from '../renderer/index.ts';
 import { canonicalReplyData, validateReply, type SourceBinding } from '../contracts/reply.ts';
 
 export type MarginSection = { title: string; start: number; end: number };
@@ -19,12 +21,44 @@ export type MarginOptions = {
   helperOrigin?: string;
   storageName?: string;
   initialOpen?: boolean;
+  /** Management is only admitted by the genuine top-level localhost document. */
+  helperManagement?: boolean;
+  /** Canonical library snapshot, not an inserted journal record. */
+  savedThread?: Thread;
+  draftScope?: string;
+  /** The default composes the separately owned T08 public module when installed. */
+  asking?: AskingMountFactory;
+  onLibrary?: () => void;
   /** Disable authenticated helper access in page-embedded, clickjackable hosts. */
   allowHelper?: boolean;
   /** Trusted host policy recheck immediately before each local outbox send. */
   authorizeHelperSend?: (sourceUrl: string) => Promise<void>;
 };
-type Draft = { anchor: QuoteAnchor; text: string; threadId?: string; noteId?: string; revision?: number; mutation?: ReaderMutation };
+type Draft = MarginDraft;
+
+export function sectionIndexAt(sections: MarginSection[], position: number): number {
+  const found = sections.findIndex(section => position >= section.start && position < section.end);
+  if (found >= 0) return found;
+  for (let index = sections.length - 1; index >= 0; index--) if (position >= sections[index].start) return index;
+  return 0;
+}
+
+export function marginItemSize(section: number, current: number, expanded: boolean, focused: boolean): 'full' | 'line' | 'tick' {
+  if (section < 0 || section === current || expanded || focused) return 'full';
+  return Math.abs(section - current) === 1 ? 'line' : 'tick';
+}
+export const composerOffset = (draft: Draft | undefined, readingStart: number) => draft?.position ?? draft?.anchor.start ?? readingStart;
+export const threadContentKey = (thread: Thread) => canonicalReplyData(thread);
+export function sectionMapState(sections: MarginSection[], threads: Thread[], capture: SourceCapture, current: number) {
+  const ordered = orderedThreads(threads, capture);
+  return sections.map((section, index) => {
+    const here = ordered.filter(thread => { const at = displayPosition(thread.anchor, capture); return at !== undefined && at >= section.start && at < section.end; });
+    const marked = here.filter(thread => thread.highlighted);
+    return { index, current: index === current, length: Math.max(1, section.end - section.start), threads: here.length,
+      notes: here.reduce((sum, thread) => sum + thread.notes.filter(note => !note.deletedAt).length, 0), marks: marked.length,
+      markPositions: marked.map(thread => Math.max(0, Math.min(1, ((displayPosition(thread.anchor, capture) ?? section.start) - section.start) / Math.max(1, section.end - section.start)))) };
+  });
+}
 const id = () => crypto.randomUUID();
 const excerpt = (text: string, length = 82) => text.length > length ? text.slice(0, length) + '…' : text;
 const label = (text: string, input: HTMLElement) => { const node = el('label', text); node.append(input); return node; };
@@ -40,8 +74,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   function track<T>(work: Promise<T>): Promise<T> { pendingOperations.add(work); void work.finally(() => pendingOperations.delete(work)).catch(() => {}); return work; }
   const alive = () => !destroyed;
   const instance = 'm-' + id();
-  const persistence = localPersistence(options.storageName);
-  const journal = new ReaderJournal(persistence.journal);
+  const namespace = options.storageName ?? 'marginalia-reader';
+  const persistence = localPersistence(namespace);
+  const journal = documentJournal(namespace, persistence.journal);
   const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(options.storageName ?? 'marginalia-reader') : null;
   const abort = new AbortController();
   const { signal } = abort;
@@ -54,40 +89,90 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     options.capture = page.capture; options.sections = page.sections;
     workspace.append(source);
   }
-  const capture = options.capture;
-  const sections = options.sections?.length ? options.sections : [{ title: 'Whole page', start: 0, end: capture.text.length }];
+  // Freeze the original capture and use its recorded section boundaries unless
+  // the host explicitly supplies a trusted replacement. UI ordering must not
+  // be confused with source attachment identity.
+  const capture = structuredClone(options.capture);
+  const recordedSections = options.sections ?? capture.sections;
+  const sections = recordedSections?.length ? structuredClone(recordedSections) : [{ title: 'Whole page', start: 0, end: capture.text.length }];
   const shell = el('aside', undefined, 'mg'); shell.setAttribute('aria-label', 'Marginalia'); shell.id = instance;
-  const rail = el('nav', undefined, 'm-rail'); rail.setAttribute('aria-label', 'Page map');
+  const rail = el('div', undefined, 'm-rail');
   const panel = el('div', undefined, 'm-panel');
   const bar = el('div', undefined, 'm-bar');
   const heading = el('header', undefined, 'm-head');
   heading.append(el('h1', capture.title), el('p', `${capture.pageType} · ${new URL(capture.url).hostname}`, 'm-meta'));
   const compose = el('div', undefined, 'm-compose');
-  const map = el('nav', undefined, 'm-map'); map.setAttribute('aria-label', 'Sections');
+  const map = el('nav', undefined, 'm-map'); map.setAttribute('aria-label', 'Page map: sections, notes and reading position');
   const reading = el('div', undefined, 'm-reading');
   const selectionCard = el('section', undefined, 'm-selection'); selectionCard.hidden = true;
+  const questionArea = el('section', undefined, 'm-question'); questionArea.hidden = true;
+  const questionForm = el('div'), askingHost = el('div'); askingHost.hidden = true; questionArea.append(questionForm, askingHost);
+  let askingMount: ReturnType<AskingMountFactory> | undefined;
   const threadList = el('div', undefined, 'm-threads');
   const footer = el('footer', undefined, 'm-footer');
   const status = el('p', '', 'm-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const toast = el('div', undefined, 'm-toast'); toast.hidden = true;
   const setup = el('section', undefined, 'm-settings'); setup.hidden = true;
-  const scroll = el('div', undefined, 'm-scroll'); scroll.append(map, reading, selectionCard, threadList, footer);
-  panel.append(bar, heading, compose, setup, scroll, status, toast); shell.append(rail, panel); workspace.append(shell); root.append(workspace);
+  const settingsBody = el('div'), managementHost = el('div'); setup.append(settingsBody, managementHost);
+  const mapSlot = el('div', undefined, 'm-map-slot'); mapSlot.append(map);
+  const scroll = el('div', undefined, 'm-scroll'); scroll.append(mapSlot, reading, selectionCard, threadList, footer);
+  panel.append(bar, heading, setup, scroll, status, toast); shell.append(rail, panel); workspace.append(shell); root.append(workspace);
+  const management = options.helperManagement && options.allowHelper !== false ? mountHelperManagement(managementHost) : undefined;
+  let suspended = false, readingPosition = 0, hydrationFinished = false, editorGeneration = 0;
+  let alignedReadingPosition = -1;
+  let pairingDraft = '', questionDraft: AskingSelection | undefined;
+  const updateManagement = () => { if (!suspended && !setup.hidden && !shell.classList.contains('is-collapsed')) management?.open(); else management?.close(); };
   let sectionIndex = 0, held = false, draft: Draft | undefined, selected: QuoteAnchor | undefined;
   let helper: HelperClient | undefined, storageReady = false, saving = false;
   let denied = false;
   let pendingNoteMutation: ReaderMutation | undefined;
   let pendingNoteCommitted = false;
+  let draftSaveFailed = false;
   let needsReconciliation = false;
   let lastOpener: HTMLElement | null = null;
   const expanded = new Set<string>();
-  const threadNodes = new Map<string, { revision: number; node: HTMLElement }>();
+  const threadNodes = new Map<string, { signature: string; node: HTMLElement }>();
   const replyMounts = new Map<string, { threadId: string; node: HTMLElement; mounted: MountedReply; flush(): Promise<void>; close(): void }>();
   const replyLoads = new Map<string, number>();
   const sessionKey = 'marginalia-draft-tab';
-  let tabKey = sessionStorage.getItem(sessionKey);
-  if (!tabKey) { tabKey = id(); sessionStorage.setItem(sessionKey, tabKey); }
-  const draftKey = 'draft:' + tabKey + ':' + capture.url;
+  let tabKey: string;
+  try { tabKey = sessionStorage.getItem(sessionKey) ?? id(); sessionStorage.setItem(sessionKey, tabKey); } catch { tabKey = id(); }
+  const draftKey = 'draft:' + tabKey + ':' + capture.url + (options.draftScope ? ':' + options.draftScope : '');
+  const draftBuffer = documentDraft(namespace, draftKey, capture, { read: () => persistence.read<Draft>(draftKey), write: value => persistence.write(draftKey, value) });
+  // Preserve the established source-bound key so existing question drafts
+  // remain readable across this reconciliation.
+  const questionKey = 'question:' + draftKey;
+  const questionBuffer = documentQuestion(namespace, questionKey, capture.url, { read: () => persistence.read<AskingSelection>(questionKey), write: value => persistence.write(questionKey, value) });
+  draft = draftBuffer.get(); pendingNoteMutation = draft?.mutation; questionDraft = questionBuffer.get();
+  const threadsNow = () => {
+    const saved = options.savedThread;
+    // A read-only helper preview must not resurrect a device-choice absence or
+    // override locally retained work. The journal remains the only reader authority.
+    if (!saved || journal.state.threads.some(t => t.id === saved.id)) return journal.state.threads;
+    // A deliberately retained device absence must not be undone by a library
+    // fallback snapshot while pending/conflict/resolution history names it.
+    const known = [...journal.state.pending, ...journal.state.conflicts.map(item => item.change), ...(journal.state.resolutions ?? []).map(item => item.change)].some(change => change.threadId === saved.id);
+    if (known) return journal.state.threads;
+    return [...journal.state.threads, saved];
+  };
+  const currentThread = (threadId: string) => threadsNow().find(thread => thread.id === threadId);
+  const sectionMarkers = sections.map((section, index) => { const marker = el('h3', section.title, 'm-section-marker'); marker.dataset.sectionMarker = String(index); return marker; });
+  function placeItems() {
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const items = sectionMarkers.map((node, index) => ({ node: node as HTMLElement, position: sections[index].start, rank: 0 }));
+    items.push({ node: compose, position: composerOffset(draft, readingPosition), rank: 1 });
+    items.push({ node: selectionCard, position: selected ? displayPosition(selected, capture) ?? readingPosition : readingPosition, rank: 1.2 });
+    const questionParent = questionDraft?.threadId ? threadNodes.get(questionDraft.threadId)?.node.querySelector<HTMLElement>('.m-thread-body') : undefined;
+    if (questionParent) { if (questionArea.parentElement !== questionParent) questionParent.append(questionArea); }
+    else items.push({ node: questionArea, position: questionDraft ? displayPosition(questionDraft.anchor, capture) ?? readingPosition : readingPosition, rank: 1.5 });
+    for (const thread of orderedThreads(threadsNow(), capture)) {
+      const node = threadNodes.get(thread.id)?.node;
+      if (node) items.push({ node, position: displayPosition(thread.anchor, capture) ?? Infinity, rank: 2 });
+    }
+    items.sort((a, b) => a.position - b.position || a.rank - b.rank);
+    items.forEach(({ node }, index) => { if (threadList.children[index] !== node) threadList.insertBefore(node, threadList.children[index] ?? null); });
+    if (focused?.isConnected && threadList.contains(focused) && document.activeElement !== focused) focused.focus({ preventScroll: true });
+  }
   const displayAnchor = (anchor: QuoteAnchor) => {
     if (anchor.kind === 'whole-page') return 'Whole page';
     const section = sections.find(s => s.start === anchor.start && anchor.exact.startsWith(s.title));
@@ -97,123 +182,155 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const changed = () => { if (alive()) channel?.postMessage('changed'); };
   const fail = (error: unknown) => {
     if (!alive()) return;
+    if (draft) draftSaveFailed = true;
     if (error instanceof Error && error.message.startsWith('Local storage changed elsewhere.')) needsReconciliation = true;
     announce(needsReconciliation ? 'Another tab saved work. Use Recover unsaved changes in Settings; your draft is still here.' : journal.unsaved ? 'Not saved yet. Keep this page open and use Retry saving in Settings.' : pendingNoteCommitted ? 'Your note is saved. Use Retry saving in Settings to clear its draft.' : error instanceof Error ? error.message : 'Your work could not be saved. Keep this page open and try again.'); renderSettings();
   };
   async function locked<T>(operation: () => Promise<T>) {
     if (!navigator.locks) throw new Error('Safe local saving needs a browser with Web Locks support.');
-    return navigator.locks.request(options.storageName ?? 'marginalia-reader', operation);
+    return await navigator.locks.request(namespace, operation);
   }
   async function change(mutation: ReaderMutation) {
     if (!alive()) throw new Error('This margin has closed.');
     if (!storageReady) throw new Error('Local saving is unavailable. Keep your draft open.');
     if (journal.unsaved) throw new Error('Retry saving in Settings before making another change.');
+    if (mutation.kind !== 'keep' && !journal.state.threads.some(t => t.id === mutation.threadId)) throw new Error('This is a helper snapshot. Explicitly save/synchronize before editing; it has not replaced local work.');
     try { await locked(async () => { await journal.load(); await journal.change(mutation); }); }
     catch (error) { if (!journal.unsaved) renderThreads(); throw error; }
     changed(); renderThreads();
   }
   function safely(operation: () => Promise<void>) { if (!alive()) return Promise.resolve(); return track((async () => { try { await operation(); } catch (error) { fail(error); } })()); }
   function currentAnchor() { const section = sections[sectionIndex]; return anchorAt(capture.text, section.start, section.end); }
-  function hold(index = sectionIndex) { if (!alive()) return; held = true; sectionIndex = index; renderPosition(); }
-  function showPanel(focus = false) { if (!alive()) return; shell.classList.remove('is-collapsed'); if (focus) writeButton.focus(); }
-  function closePanel() { if (!alive()) return; shell.classList.add('is-collapsed'); openButton.focus(); }
+  function hold(index = sectionIndex) { if (!alive()) return; held = true; if (sectionIndex !== index) readingPosition = sections[index].start; sectionIndex = index; renderPosition(); }
+  function showPanel(focus = false) { if (!alive()) return; shell.classList.remove('is-collapsed'); mapSlot.append(map); updateManagement(); if (focus) writeButton.focus(); }
+  function closePanel() { if (!alive()) return; shell.classList.add('is-collapsed'); rail.append(map); management?.close(); openButton.focus(); }
   const openButton = button('Open margin', () => showPanel(true)); openButton.className = 'm-open';
   rail.append(openButton);
   const collapse = button('Collapse', closePanel);
-  const settingsButton = button('Settings', () => { setup.hidden = !setup.hidden; if (!setup.hidden) setup.querySelector<HTMLElement>('input')?.focus(); });
+  const settingsButton = button('Settings', () => { setup.hidden = !setup.hidden; updateManagement(); if (!setup.hidden) setup.querySelector<HTMLElement>('input')?.focus(); });
   bar.append(el('span', 'Marginalia', 'm-wordmark'), actions(collapse, settingsButton));
   const writeButton = button('Write here…', () => beginDraft()); writeButton.className = 'm-write'; compose.append(writeButton);
+  writeButton.addEventListener('focus', () => { if (hydrationFinished && !draft) beginDraft(); });
   const readingTitle = el('h2'); readingTitle.tabIndex = -1;
   const followingLabel = el('span', 'Reading', 'm-meta');
   const followButton = button('Follow reading', () => { held = false; updateReading(); renderPosition(); readingTitle.focus(); });
   reading.append(readingTitle, followingLabel, followButton);
+  const activityButton = button('Work status', () => { showPanel(); if (questionDraft?.threadId) { expanded.add(questionDraft.threadId); renderPosition(); } if (askingMount) { questionArea.hidden = false; questionForm.hidden = true; askingMount.setVisible(true); } else if (questionDraft) showQuestion(questionDraft); });
+  activityButton.className = 'm-activity'; activityButton.hidden = true; map.append(activityButton);
   const footerCount = el('span', '', 'm-meta');
-  footer.append(footerCount, actions(button('Export JSON', exportWork)), el('span', 'Hear it · not available yet', 'm-meta'));
+  footer.append(footerCount, actions(button('Export JSON', exportWork), button('Think with it', () => pageQuestion('unsure', 'Help me reflect on this page and connect it to my own questions.')), button('Go further', () => pageQuestion('explore', 'Suggest useful further reading related to this page.'))), el('span', 'Hear it · not available yet', 'm-meta'));
   const skip = button('Go to margin', () => showPanel(true)); skip.className = 'm-skip'; root.prepend(skip);
 
+  const noteEditor = mountNoteEditor(compose, {
+    edit(text) { if (draft && !saving && !draft.mutation) { draft.text = text; persistDraft(); } },
+    save: () => { draftSaveFailed = true; void saveDraft(); },
+    discard: () => { void safely(async () => { if (saving || draft?.mutation) return; await draftBuffer.save(undefined); draft = undefined; editorGeneration++; renderCompose(); readingTitle.focus({ preventScroll: true }); }); },
+    ask: () => { void safely(async () => {
+      const committed = await saveDraftNow();
+      if (committed && alive()) { const thread = currentThread(committed.threadId); const noteId = committed.kind === 'note' ? committed.noteId : committed.id + '-note';
+        const note = thread?.notes.find(item => item.id === noteId && !item.deletedAt);
+        if (thread && note) ask(thread.anchor, thread, { noteId: note.id, text: note.text, revision: note.revision }); }
+    }); },
+    attachments: () => {
+      const changeTo = (anchor: QuoteAnchor) => { if (!draft || saving || draft.mutation) return; draft.anchor = structuredClone(anchor); draft.source = structuredClone(capture); draft.position = displayPosition(anchor, capture) ?? readingPosition; persistDraft(); renderCompose(true); };
+      return [...sections.map(section => ({ label: section.title, choose: () => changeTo(anchorAt(capture.text, section.start, section.end)) })),
+        { label: 'Whole page', choose: () => changeTo(wholePageAnchor()) },
+        ...(selected ? [{ label: 'Selected passage', choose: (() => { const frozen = structuredClone(selected); return () => changeTo(frozen); })() }] : [])];
+    },
+  });
   function renderPosition() {
     if (!alive()) return;
     readingTitle.textContent = sections[sectionIndex].title;
     followButton.hidden = !held; followingLabel.hidden = held;
-    for (const container of [map, rail]) for (const node of Array.from(container.querySelectorAll<HTMLElement>('[data-section]'))) {
-      const index = Number(node.dataset.section);
-      node.setAttribute('aria-current', String(index === sectionIndex));
-      const count = orderedThreads(journal.state.threads, capture).filter(t => { const position = displayPosition(t.anchor, capture); return position !== undefined && position >= sections[index].start && position < sections[index].end; }).length;
-      node.dataset.marked = String(count > 0); node.title = `${sections[index].title}${count ? ` · ${count} saved` : ''}`;
+    const overview = sectionMapState(sections, threadsNow(), capture, sectionIndex);
+    for (const node of Array.from(map.querySelectorAll<HTMLElement>('[data-section]'))) {
+      const index = Number(node.dataset.section), item = overview[index];
+      node.setAttribute('aria-current', String(item.current)); node.dataset.marked = String(item.marks > 0); node.dataset.notes = String(item.notes);
+      const text = `${sections[index].title}: ${item.notes} notes, ${item.marks} marks${item.current ? ', current reading position' : ''}`;
+      node.title = text; node.setAttribute('aria-label', text);
+      const density = node.querySelector<HTMLElement>('.m-density')!; density.textContent = String(item.notes); density.hidden = !item.notes;
+      node.style.setProperty('--note-density', String(Math.min(1, item.notes / Math.max(1, item.length / 500))));
+      node.querySelector('.m-map-marks')!.replaceChildren(...item.markPositions.map(position => { const tick = el('span', '', 'm-map-mark'); tick.style.setProperty('--mark-position', `${position * 100}%`); return tick; }));
+      const cue = node.querySelector<HTMLElement>('.m-map-position')!; cue.hidden = !item.current;
+      cue.style.setProperty('--reading-position', `${Math.max(0, Math.min(1, (readingPosition - sections[index].start) / item.length)) * 100}%`);
     }
-    for (const thread of orderedThreads(journal.state.threads, capture)) {
-      const node = threadNodes.get(thread.id)?.node;
-      if (!node) continue;
-      const position = displayPosition(thread.anchor, capture);
-      const index = position === undefined ? -1 : sectionFor(position);
-      const compact = index >= 0 && index !== sectionIndex && !expanded.has(thread.id);
-      if (!compact || !node.contains(document.activeElement)) node.classList.toggle('is-compact', compact);
+    for (const thread of orderedThreads(threadsNow(), capture)) {
+      const node = threadNodes.get(thread.id)?.node; if (!node) continue;
+      const at = displayPosition(thread.anchor, capture);
+      const size = marginItemSize(at === undefined ? -1 : sectionFor(at), sectionIndex, expanded.has(thread.id), node.contains(document.activeElement));
+      node.dataset.size = size; node.classList.toggle('is-compact', size !== 'full'); node.classList.toggle('is-tick', size === 'tick');
+    }
+    placeItems();
+    // Follow only the margin viewport while idle, never the source document.
+    // A draft or focused item retains its position and a library return does not jump.
+    if (!suspended && !held && !draft && alignedReadingPosition !== readingPosition && scroll.clientHeight > 0) {
+      scroll.scrollTop = Math.max(0, compose.offsetTop - scroll.clientHeight * .25);
+      alignedReadingPosition = readingPosition;
     }
   }
   function sectionFor(start: number) { const index = sections.findIndex(s => start >= s.start && start < s.end); return index < 0 ? 0 : index; }
   sections.forEach((section, index) => {
-    for (const container of [map, rail]) {
-      const segment = button(section.title, () => { hold(index); showPanel(); sourceAction(anchorAt(capture.text, section.start, section.end)); });
-      segment.dataset.section = String(index); segment.className = `m-segment m-colour-${index % 6 + 1}`;
-      segment.setAttribute('aria-label', section.title); segment.style.flexGrow = String(Math.max(1, section.end - section.start)); container.append(segment);
-    }
+    const segment = button('', () => { hold(index); showPanel(); sourceAction(anchorAt(capture.text, section.start, section.end)); });
+    segment.dataset.section = String(index); segment.className = `m-segment m-colour-${index % 6 + 1}`;
+    const relativeLength = Math.max(1, section.end - section.start) / Math.max(1, ...sections.map(item => item.end - item.start));
+    segment.style.flexGrow = String(Math.max(1, section.end - section.start));
+    segment.style.flexBasis = `${Math.max(40, relativeLength * 112)}px`;
+    segment.style.setProperty('--section-relative', String(relativeLength));
+    const density = el('span', '', 'm-density'), marks = el('span', '', 'm-map-marks'), cue = el('span', '', 'm-map-position');
+    for (const child of [density, marks, cue]) child.setAttribute('aria-hidden', 'true');
+    segment.append(density, marks, cue); map.append(segment);
   });
-
-  function persistDraft() { if (draft && alive()) void track(persistence.write(draftKey, draft)).catch(fail); }
-  function beginDraft(anchor = selected ?? currentAnchor(), thread?: Thread, noteId?: string) {
+  function persistDraft() { if (draft && alive()) { editorGeneration++; void track(draftBuffer.save(draft)).catch(error => { draftSaveFailed = true; fail(error); }); } }
+  function beginDraft(explicitAnchor?: QuoteAnchor, thread?: Thread, noteId?: string) {
     if (!alive()) return;
-    if (draft) { compose.querySelector('textarea')?.focus(); announce('Finish or discard your current note before starting another.'); return; }
-    const note = thread?.notes.find(item => item.id === noteId);
-    draft = { anchor: structuredClone(anchor), text: note?.text ?? '', ...(thread ? { threadId: thread.id, noteId: note?.id ?? id(), revision: note?.revision ?? 0 } : {}) };
-    hold(sectionFor(displayPosition(anchor, capture) ?? sections[sectionIndex].start)); persistDraft(); renderCompose(true);
+    if (!hydrationFinished) { announce('Restoring saved work. The editor will be available when the read finishes.'); return; }
+    if (draft) { noteEditor.focus(); announce('Finish or discard your current note before starting another.'); return; }
+    if (thread && !journal.state.threads.some(t => t.id === thread.id)) { announce('This helper snapshot is read-only until you explicitly synchronize it.'); return; }
+    const anchor = explicitAnchor ?? selected ?? currentAnchor(), note = thread?.notes.find(item => item.id === noteId);
+    const position = explicitAnchor || selected ? displayPosition(anchor, capture) ?? readingPosition : readingPosition;
+    draft = { anchor: structuredClone(anchor), source: structuredClone(capture), position, text: note?.text ?? '', ...(thread ? { threadId: thread.id, noteId: note?.id ?? id(), revision: note?.revision ?? 0 } : {}) };
+    hold(sectionFor(position)); persistDraft(); renderCompose(true);
   }
   function renderCompose(focus = false) {
     if (!alive()) return;
-    compose.replaceChildren();
-    if (!draft) { compose.append(writeButton); return; }
-    const attachment = el('div', undefined, 'm-attachment');
-    attachment.append(el('span', draft.anchor.kind === 'whole-page' ? 'Note on the whole page' : `Note on “${excerpt(displayAnchor(draft.anchor), 66)}”`));
-    if (!draft.threadId) attachment.append(button('Change', () => {
-      const choose = el('div', undefined, 'm-choose-anchor');
-      for (const section of sections) choose.append(button(section.title, () => { draft!.anchor = anchorAt(capture.text, section.start, section.end); persistDraft(); renderCompose(true); }));
-      choose.append(button('Whole page', () => { draft!.anchor = wholePageAnchor(); persistDraft(); renderCompose(true); }));
-      if (selected) choose.append(button('Selected passage', () => { draft!.anchor = structuredClone(selected!); persistDraft(); renderCompose(true); }));
-      attachment.replaceChildren(el('span', 'Choose where this note belongs'), choose);
-      choose.querySelector('button')?.focus();
-    }));
-    const field = el('textarea'); field.id = instance + '-note'; field.value = draft.text; field.placeholder = 'Your note'; field.setAttribute('aria-label', 'Your note'); field.disabled = saving || pendingNoteCommitted || !!draft.mutation || !!pendingNoteMutation && journal.unsaved;
-    field.addEventListener('input', () => { draft!.text = field.value; persistDraft(); });
-    field.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void saveDraft(); } });
-    compose.append(attachment, field, actions(button('Save note', saveDraft), button('Discard draft', () => safely(async () => { await persistence.write(draftKey, undefined); draft = undefined; renderCompose(); writeButton.focus(); }))), el('small', 'Enter saves · Shift+Enter for a new line', 'm-meta'));
-    if (draft.mutation) {
-      compose.append(el('p', 'Finish saving this note before editing it.', 'm-meta'));
-      for (const control of Array.from(compose.querySelectorAll('button'))) if (control.textContent !== 'Save note') control.disabled = true;
-    }
-    if (saving || pendingNoteCommitted || pendingNoteMutation && journal.unsaved) for (const control of Array.from(compose.querySelectorAll('button'))) control.disabled = true;
-    if (focus) field.focus();
+    writeButton.hidden = !!draft; writeButton.disabled = !hydrationFinished;
+    noteEditor.update(draft ? { text: draft.text,
+      attachment: draft.anchor.kind === 'whole-page' ? 'Note on the whole page' : `Note on "${excerpt(displayAnchor(draft.anchor), 66)}"`,
+      saving, locked: pendingNoteCommitted || !!draft.mutation, canChange: !draft.threadId,
+      message: !storageReady ? 'Local storage is unavailable. Export this memory-only draft before closing.' : draft.source && draft.source.text !== capture.text ? 'The original captured passage is retained. Change explicitly adopts the current capture.' : draft.mutation ? 'This exact change is retained. Retry saving or resolve its conflict before editing.' : '' } : undefined);
+    placeItems(); if (focus && draft) noteEditor.focus();
   }
   function saveDraft() { return track(saveDraftNow()); }
-  async function saveDraftNow() {
-    if (!alive()) return;
-    if (!draft || saving || !draft.text.trim()) return;
-    saving = true;
-    renderCompose();
+  async function saveDraftNow(): Promise<Extract<ReaderMutation, { kind: 'keep' | 'note' }> | undefined> {
+    if (!alive() || !draft || saving || !draft.text.trim()) return;
+    saving = true; renderCompose();
+    // A save attempt remains retryable until its mutation and draft cleanup
+    // are both durable.
+    draftSaveFailed = true;
     try {
       const saved = structuredClone(draft);
-      pendingNoteMutation ??= saved.mutation ?? (saved.threadId ? { id: id(), kind: 'note', threadId: saved.threadId, noteId: saved.noteId!, text: saved.text, expectedRevision: saved.revision! } : { id: id(), kind: 'keep', threadId: id(), capture, anchor: saved.anchor, note: saved.text });
-      // Persist identity before the journal commit, so a reload can replay the same
-      // mutation after a successful save followed by failed draft cleanup.
-      draft!.mutation = structuredClone(pendingNoteMutation);
-      await persistence.write(draftKey, draft);
-      if (!pendingNoteCommitted) { await change(pendingNoteMutation); pendingNoteCommitted = true; }
-      if (!alive()) return;
-      await persistence.write(draftKey, undefined); draft = undefined; pendingNoteMutation = undefined; pendingNoteCommitted = false; renderCompose(); writeButton.focus(); announce('Note saved on this device.');
-    } catch (error) { if (!journal.unsaved && !pendingNoteCommitted) { pendingNoteMutation = undefined; if (draft) { delete draft.mutation; persistDraft(); } } fail(error); } finally { saving = false; if (draft) renderCompose(!journal.unsaved); }
+      if (!saved.threadId && !saved.mutation && !saved.source) throw new Error('Choose the attachment again. This older draft has no recorded original capture; its text is retained.');
+      pendingNoteMutation ??= saved.mutation ?? (saved.threadId ? { id: id(), kind: 'note', threadId: saved.threadId, noteId: saved.noteId!, text: saved.text, expectedRevision: saved.revision! } : { id: id(), kind: 'keep', threadId: id(), capture: saved.source!, anchor: saved.anchor, note: saved.text });
+      if (pendingNoteMutation.kind !== 'keep' && pendingNoteMutation.kind !== 'note') throw new Error('The retained note identity is invalid. Export it before recovery.');
+      const mutation = pendingNoteMutation;
+      draft.mutation = structuredClone(mutation); await draftBuffer.save(draft);
+      const result = await locked(() => retryDraftMutation(journal, draft!));
+      if (result?.kind === 'resolved') {
+        draft = result.draft; pendingNoteMutation = undefined; pendingNoteCommitted = false; await draftBuffer.save(draft);
+        announce('Your choice is saved, not uploaded. The note draft is retained and editable; save it as a new deliberate change.'); return;
+      }
+      pendingNoteCommitted = true;
+      const returnToReading = compose.contains(document.activeElement);
+      await draftBuffer.save(undefined); draft = undefined; editorGeneration++; pendingNoteMutation = undefined; pendingNoteCommitted = false;
+      if (alive()) { changed(); renderThreads(); renderCompose(); if (returnToReading && (compose.contains(document.activeElement) || document.activeElement === document.body)) readingTitle.focus({ preventScroll: true }); announce('Note saved on this device.'); }
+      return mutation;
+    } catch (error) { draftSaveFailed = true; fail(error); }
+    finally { saving = false; if (draft) draftSaveFailed = true; if (alive()) { renderCompose(); renderSettings(); } }
   }
 
   async function keep(anchor: QuoteAnchor, parked = false) {
     await safely(async () => {
-      const existing = orderedThreads(journal.state.threads, capture).find(t => t.anchor.start === anchor.start && t.anchor.exact === anchor.exact);
+      const existing = orderedThreads(threadsNow(), capture).find(t => t.anchor.start === anchor.start && t.anchor.exact === anchor.exact);
       const threadId = existing?.id ?? id();
       if (!existing) await change({ id: id(), kind: 'keep', threadId, capture, anchor });
       if (parked) { const thread = journal.state.threads.find(t => t.id === threadId)!; await change({ id: id(), kind: 'thread-state', threadId, state: 'parked', expectedRevision: thread.revision }); }
@@ -227,7 +344,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     hold(sectionFor(anchor.start)); showPanel(); selectionCard.hidden = false;
     const definition = pageDefinition(anchor.exact, capture.text);
     selectionCard.replaceChildren(el('blockquote', displayAnchor(anchor)), el('p', definition ? `${definition} · from this page` : 'No definition found for this selection. Ask about a word or phrase.', 'm-meta'), actions(button('Keep', () => keep(anchor)), button('Ask', () => ask(anchor)), button('Park', () => keep(anchor, true)), button('Write a note', () => beginDraft(anchor)), button('Close selection', closeSelection)), el('p', 'Nothing sent.', 'm-meta'));
-    announce('Selection in the margin. Nothing sent.');
+    placeItems(); announce('Selection in the margin. Nothing sent.');
   }
   function closeSelection() { if (!alive()) return; selectionCard.hidden = true; selectionCard.replaceChildren(); selected = undefined; if (lastOpener?.isConnected) lastOpener.focus(); }
   selectionCard.addEventListener('keydown', event => {
@@ -237,29 +354,157 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (selected && event.key.toLowerCase() === 'p') { event.preventDefault(); void keep(selected, true); }
     if (selected && event.key === '/') { event.preventDefault(); ask(selected); }
   });
-  function ask(anchor: QuoteAnchor, thread?: Thread, answeredNote?: {text: string; revision: number}) {
-    hold(sectionFor(displayPosition(anchor, capture) ?? sections[sectionIndex].start)); showPanel(); selectionCard.hidden = false;
-    if (!selectionCard.contains(document.activeElement)) lastOpener = document.activeElement as HTMLElement;
-    const note = answeredNote ?? thread?.notes.filter(n => !n.deletedAt).at(-1);
-    const question = el('textarea'); question.setAttribute('aria-label', 'Your question'); question.placeholder = 'What would help you here?';
-    const context = el('textarea'); context.setAttribute('aria-label', 'Context to attach'); context.placeholder = 'Only what you choose to share';
-    const extra = el('details'); extra.append(el('summary', 'Attach context'), label('Context to attach', context));
-    const suggestions = actions(...['Define this', 'Show me an example', 'Explain step by step'].map(text => button(text, () => { question.value = text; question.focus(); })));
-    const more = el('details'); more.append(el('summary', 'All help'), el('p', 'Define · Show me · Derive · Diagram · Check this · Go further. Asking is unavailable until Codex is connected.', 'm-meta'));
-    selectionCard.replaceChildren(el('blockquote', displayAnchor(anchor)), ...(note ? [el('p', `Your note (version ${note.revision}): ${note.text}`, 'm-note')] : []), suggestions, question, extra, more,
-      el('p', denied ? 'Asking is blocked for this site. You can change this in Settings.' : 'Codex is not connected. You can prepare a question and review exactly what it would send.', 'm-meta'),
-      actions(button('Review outgoing text', () => { if (!question.value.trim()) { question.focus(); return; } review(anchor, question.value, note, context.value); }), button('Close question', closeSelection)));
-    question.focus();
+  let questionRequest = 0, questionSaving = false;
+  function saveQuestion(value: AskingSelection) {
+    questionDraft = structuredClone(value);
+    return track(questionBuffer.save(questionDraft));
   }
-  function review(anchor: QuoteAnchor, question: string, note: { text: string; revision: number } | undefined, context: string) {
-    const packet = outgoingPreview(capture, anchor, question, note, context);
-    const payload = el('pre', JSON.stringify(packet, null, 2));
-    const details = el('details'); details.open = true; details.append(el('summary', 'Exact outgoing text'), payload);
-    const once = button('This time', () => {}); once.disabled = true;
-    const always = button(`Always on ${new URL(capture.url).hostname}`, () => {}); always.disabled = true;
-    selectionCard.replaceChildren(el('h2', 'Send this passage to Codex'), el('p', 'Recipient: your Codex. Scope: this question only.'), details, el('p', 'Sending is unavailable. Nothing has left this page.', 'm-meta'),
-      actions(once, always, button(`Never on ${new URL(capture.url).hostname}`, () => safely(async () => { await persistence.write('denied:' + new URL(capture.url).origin, true); denied = true; renderSettings(); closeSelection(); announce('Asking blocked for this site.'); })), button('Back to question', () => { ask(anchor, undefined, note); const fields = selectionCard.querySelectorAll('textarea'); fields[0].value = question; fields[1].value = context; })));
-    const title = selectionCard.querySelector('h2')!; title.tabIndex = -1; title.focus();
+  function ask(anchor: QuoteAnchor, thread?: Thread, answeredNote?: { noteId: string; text: string; revision: number }, resumeReplyId?: string) {
+    if (!alive()) return;
+    if (!hydrationFinished) { announce('Restoring saved work. No question was sent.'); return; }
+    if (questionSaving) { announce('The question draft is being preserved. Its text remains here.'); return; }
+    // Closing hides a draft; it is not permission to overwrite the reader's text.
+    if (questionDraft) {
+      if (questionArea.hidden) showQuestion(questionDraft);
+      else questionArea.querySelector<HTMLElement>('textarea,button')?.focus();
+      announce('Your retained question is still attached to its original context. Retain it in history before starting another.'); return;
+    }
+    const note = answeredNote ?? (() => { const n = thread?.notes.filter(n => !n.deletedAt).at(-1); return n && { noteId: n.id, revision: n.revision, text: n.text }; })();
+    const saved: AskingSelection = { capture: structuredClone(capture), anchor: structuredClone(anchor), question: '', context: '',
+      ...(thread ? { threadId: thread.id, sourceVersionId: thread.sourceVersionId } : {}), ...(note ? { answeredNote: note } : {}), ...(resumeReplyId ? { resumeReplyId } : {}) };
+    void saveQuestion(saved).catch(fail); showQuestion(saved);
+  }
+  function pageQuestion(intent: 'unsure' | 'explore', question: string) {
+    const existing = questionDraft; ask(wholePageAnchor());
+    if (!existing && questionDraft) { questionDraft.intent = intent; questionDraft.question = question; void saveQuestion(questionDraft).catch(fail); showQuestion(questionDraft); }
+  }
+  function showQuestion(value: AskingSelection) {
+    questionDraft = structuredClone(value); questionArea.hidden = false; askingHost.hidden = true; questionForm.hidden = false;
+    askingMount?.setVisible(false); showPanel(); hold(sectionFor(displayPosition(value.anchor, capture) ?? readingPosition));
+    const question = el('textarea'); question.setAttribute('aria-label', 'Your question'); question.maxLength = 20000; question.value = value.question; question.placeholder = 'What would help you here?';
+    const context = el('textarea'); context.setAttribute('aria-label', 'Context to attach'); context.maxLength = 20000; context.value = value.context;
+    const details = el('details'); details.append(el('summary', 'Attach context'), label('Context to attach', context));
+    const message = el('p', 'Draft only. Preparing a review is separate from authorizing a model request.', 'm-meta'); message.setAttribute('role', 'status');
+    const persist = () => { if (!questionDraft) return; questionDraft.question = question.value; questionDraft.context = context.value; void saveQuestion(questionDraft).catch(fail); };
+    question.addEventListener('input', persist); context.addEventListener('input', persist);
+    const suggestions = actions(...(['define', 'instantiate', 'derive'] as const).map((intent, index) => button(['Define this', 'Show me an example', 'Explain step by step'][index], () => { questionDraft!.intent = intent; question.value = ['Define this passage in context.', 'Show a worked example of this passage.', 'Explain this passage step by step.'][index]; persist(); question.focus(); })));
+    const contextOnDevice = button('Keep this context on this device', () => { void safely(async () => {
+      if (!questionDraft || questionSaving) return; questionSaving = true; contextOnDevice.disabled = true;
+      const selection = structuredClone(questionDraft);
+      try {
+        if (!selection.threadId) {
+          selection.keepMutation ??= { id: id(), kind: 'keep', threadId: id(), capture: selection.capture, anchor: selection.anchor };
+          await saveQuestion(selection); await change(selection.keepMutation);
+          selection.threadId = selection.keepMutation.threadId; selection.sourceVersionId = currentThread(selection.threadId)?.sourceVersionId;
+          await saveQuestion(selection);
+        }
+        message.textContent = 'Context is saved on this device. Explicitly save queued changes to the local helper before preparing a review.';
+      } finally { questionSaving = false; contextOnDevice.disabled = false; }
+    }); });
+    const saveHelper = button('Save all queued device changes to local helper', () => { void safely(async () => {
+      await sync();
+      if (!questionDraft) return;
+      const current = questionDraft.threadId ? currentThread(questionDraft.threadId) : undefined;
+      if (current?.sourceVersionId) { questionDraft.sourceVersionId = current.sourceVersionId; await saveQuestion(questionDraft); message.textContent = 'Saved context can now be reviewed. Pairing and local saving do not authorize inference.'; }
+    }); });
+    const reviewButton = button(value.resumeJobId || value.resumeReplyId ? 'Check saved request or reply' : 'Review with local helper', () => { void openQuestionWithHelper(message, reviewButton); });
+    if (options.allowHelper === false) {
+      saveHelper.disabled = true; reviewButton.disabled = true;
+      message.textContent = 'Open the browser-owned margin or localhost page to review sending. This embedded surface can save local drafts but cannot use pairing credentials.';
+    }
+    questionForm.replaceChildren(el('blockquote', value.anchor.kind === 'whole-page' ? 'Whole page' : value.anchor.exact),
+      ...(value.answeredNote ? [el('p', `Your note, version ${value.answeredNote.revision}: ${value.answeredNote.text}`, 'm-note')] : []),
+      suggestions, question, details, message, actions(contextOnDevice, saveHelper, reviewButton, button('Close question', closeQuestion), button('Retain draft in history and start another', () => { void archiveQuestion(); })));
+    placeItems(); question.focus({ preventScroll: true });
+  }
+  function closeQuestion() {
+    if (!alive()) return;
+    ++questionRequest; questionArea.hidden = true; askingMount?.destroy(); askingMount = undefined;
+    if (lastOpener?.isConnected) lastOpener.focus({ preventScroll: true }); else readingTitle.focus({ preventScroll: true });
+  }
+  function archiveQuestion() {
+    return safely(async () => {
+      if (!questionDraft || questionSaving) return;
+      questionSaving = true;
+      try {
+        closeQuestion(); // Snapshot the peer before preserving and clearing this draft.
+        const retained = structuredClone(questionDraft);
+        await persistence.write('question-history:' + draftKey + ':' + id(), retained);
+        await questionBuffer.save(undefined); questionDraft = undefined;
+        announce('Question draft retained in history and export. Choose a passage or note for another question.');
+      } finally { questionSaving = false; }
+    });
+  }
+  footer.append(button('Earlier question drafts', () => safely(async () => {
+    const retained = await persistence.values<AskingSelection>('question-history:' + draftKey + ':');
+    if (!alive()) return;
+    const history = el('details'); history.open = true; history.append(el('summary', 'Earlier question drafts'));
+    for (const saved of retained) {
+      if (!saved || saved.capture?.url !== capture.url) continue;
+      history.append(button(excerpt(saved.question || saved.anchor.exact || 'Whole-page question'), () => {
+        if (questionDraft) { announce('Retain the current question in history before reopening another.'); return; }
+        void saveQuestion(saved).catch(fail); showQuestion(saved);
+      }));
+    }
+    if (!retained.length) history.append(el('p', 'No earlier question drafts saved on this device.', 'm-meta'));
+    footer.querySelector('.m-question-history')?.remove(); history.className = 'm-question-history'; footer.append(history);
+  })));
+  async function openQuestionWithHelper(message: HTMLElement, button: HTMLButtonElement) {
+    if (!questionDraft || questionSaving || !alive()) return;
+    const request = ++questionRequest; questionSaving = true; button.disabled = true;
+    try {
+      if (denied) throw new Error('Question previews are blocked on this device for this site. Change that preference in Settings.');
+      const selected = structuredClone(questionDraft), thread = selected.threadId && currentThread(selected.threadId);
+      if (!thread || !thread.sourceVersionId || thread.deletedAt) throw new Error('Keep this context, then explicitly save queued changes to the helper. No inference has been prepared.');
+      selected.sourceVersionId = thread.sourceVersionId;
+      await saveQuestion(selected);
+      if (!alive() || request !== questionRequest) return;
+      askingMount ??= (options.asking ?? createT08Mount())(askingHost, {
+        helper: trustedHelper, signal,
+        authorize: async url => {
+          if (!alive() || options.allowHelper === false || denied) throw new Error('This surface cannot authorize sending.');
+          await options.authorizeHelperSend?.(url);
+          if (!alive() || denied) throw new Error('The source interaction changed. Nothing is automatically sent.');
+        },
+        currentThread,
+        ensureContextSaved: async selection => {
+          await locked(() => journal.load());
+          const current = selection.threadId && currentThread(selection.threadId);
+          if (!current || current.deletedAt || !current.sourceVersionId || current.sourceVersionId !== selection.sourceVersionId || canonicalReplyData(current.anchor) !== canonicalReplyData(selection.anchor)) throw new Error('The saved source identity changed. Reopen the question without changing its retained draft.');
+          if (journal.unsaved || journal.state.pending.some(m => m.threadId === current.id) || journal.state.conflicts.some(c => c.change.threadId === current.id)) throw new Error('This context has unsaved or unsynchronized changes. Save or resolve them explicitly before reviewing a question.');
+        },
+        persistence, track,
+        read: <T>(key: string) => persistence.read<T>('asking:' + draftKey + ':' + key),
+        write: (key, value) => persistence.write('asking:' + draftKey + ':' + key, value),
+        retainedQuestion: value => { void saveQuestion(value).catch(fail); },
+        onClosed: () => { if (alive()) {
+          askingHost.hidden = true; questionForm.hidden = false;
+          const fields = questionForm.querySelectorAll<HTMLTextAreaElement>('textarea');
+          if (fields[0] && questionDraft) fields[0].value = questionDraft.question;
+          if (fields[1] && questionDraft) fields[1].value = questionDraft.context;
+        } },
+        highlight: (binding, original) => highlight(binding ? bindingAnchor(binding, original) ?? null : null),
+        navigate: (binding, original) => { const anchor = bindingAnchor(binding, original); if (anchor) sourceAction(anchor); else announce('This original source passage is uncertain on the current page; no navigation was attempted.'); },
+        prepareReplyView: async (threadId, replyId) => {
+          for (const [key, entry] of replyMounts) if (entry.threadId === threadId && entry.node.dataset.replyVersion === replyId) { await entry.flush(); entry.close(); entry.node.remove(); replyMounts.delete(key); }
+        },
+        activity: value => {
+        if (!alive()) return;
+        const working = ['queued', 'working', 'provisional', 'validating', 'loading-reply', 'cancel_requested'].includes(value.phase);
+        const text = value.sending ? 'Sending' : working ? 'Working' : value.phase === 'committed' ? 'Ready' : value.phase === 'unknown' || value.phase === 'timed_out' ? 'Outcome unconfirmed' : value.phase === 'failed' ? 'Failed' : value.phase === 'cancelled' ? 'Cancelled' : '';
+        activityButton.hidden = !text; activityButton.dataset.sending = String(value.sending);
+        activityButton.setAttribute('aria-label', (text || 'Work status') + (value.elapsedSeconds !== undefined && value.elapsedSeconds >= 30 ? `, ${Math.floor(value.elapsedSeconds)} seconds` : '') + '. Open the question.');
+        activityButton.title = text; activityButton.textContent = text;
+      },
+      onCommitted: threadId => { if (alive()) { changed(); announce('A validated reply is available. Your notes remain above it.'); } },
+      });
+      questionForm.hidden = true; askingMount.setVisible(!suspended && !questionArea.hidden);
+      const opening = askingMount;
+      await opening.open(selected);
+      if (!alive() || request !== questionRequest) opening.setVisible(false);
+    } catch (error) {
+      if (alive() && request === questionRequest) { askingMount?.setVisible(false); questionForm.hidden = false; message.textContent = error instanceof Error ? error.message : 'The review could not be opened. The draft is retained; request outcome is unconfirmed.'; }
+    } finally { questionSaving = false; button.disabled = false; }
   }
 
   function renderThreads() {
@@ -268,27 +513,25 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const focusKey = active?.dataset.focusKey;
     const focusedThreadId = active?.closest<HTMLElement>('[data-thread]')?.dataset.thread;
     if (focusKey && focusedThreadId) expanded.add(focusedThreadId);
-    const threads = orderedThreads(journal.state.threads, capture);
+    const threads = orderedThreads(threadsNow(), capture);
     for (const [key, entry] of threadNodes) if (!threads.some(t => t.id === key)) { closeReplies(key); replyLoads.set(key, (replyLoads.get(key) ?? 0) + 1); entry.node.remove(); threadNodes.delete(key); }
     const empty = threadList.querySelector('.m-empty'); empty?.remove();
     if (!threads.length) threadList.append(el('p', 'Keep a passage or write a note. Your work stays here, even without the local helper.', 'm-empty'));
     threads.forEach(thread => {
       let entry = threadNodes.get(thread.id);
-      if (entry?.revision !== thread.revision) {
+      if (entry?.signature !== threadContentKey(thread)) {
         const node = renderThread(thread);
         if (entry) {
           // The reply subtree stays connected while reader notes and thread controls change.
           entry.node.querySelector('.m-thread-content')!.replaceWith(node.querySelector('.m-thread-content')!);
           entry.node.querySelector('.m-excerpt')!.replaceWith(node.querySelector('.m-excerpt')!);
-          entry.revision = thread.revision;
+          entry.signature = threadContentKey(thread);
         } else {
-          entry = { node, revision: thread.revision }; threadNodes.set(thread.id, entry);
-          void loadReplies(thread);
+          entry = { node, signature: threadContentKey(thread) }; threadNodes.set(thread.id, entry);
+          void loadReplies(thread.id);
         }
       }
-      // Move only when order changed; unchanged focused nodes are left in place.
-      const index = threads.indexOf(thread); const at = threadList.children[index];
-      if (at !== entry.node) threadList.insertBefore(entry.node, at ?? null);
+      // placeItems maintains source order without rebuilding reply/editor subtrees.
     });
     footerCount.textContent = `${threads.length} ${threads.length === 1 ? 'thread' : 'threads'} on this page`;
     renderPosition(); paintHighlights();
@@ -301,8 +544,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   function renderThread(thread: Thread) {
     const node = el('section', undefined, 'm-thread'); node.id = instance + '-' + thread.id; node.dataset.thread = thread.id;
     const location = sourceLocation(thread, capture);
-    const currentSection = () => sectionFor(displayPosition(thread.anchor, capture) ?? sections[sectionIndex].start);
-    const preview = button(excerpt(thread.notes.find(n => !n.deletedAt)?.text ?? thread.anchor.exact), () => { expanded.add(thread.id); hold(currentSection()); renderPosition(); requestAnimationFrame(() => { if (alive()) threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); }); }); preview.className = 'm-excerpt'; preview.dataset.focusKey = thread.id + ':excerpt';
+    const currentSection = () => { const current = currentThread(thread.id); return current ? sectionFor(displayPosition(current.anchor, capture) ?? readingPosition) : sectionIndex; };
+    const preview = button(excerpt(thread.notes.find(n => !n.deletedAt)?.text ?? thread.anchor.exact), () => { expanded.add(thread.id); hold(currentSection()); renderPosition(); requestAnimationFrame(() => { if (alive()) threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); }); }); preview.setAttribute('aria-label', 'Open thread: ' + (thread.notes.find(note => !note.deletedAt)?.text ?? thread.anchor.exact)); preview.className = 'm-excerpt'; preview.dataset.focusKey = thread.id + ':excerpt';
     const body = el('div', undefined, 'm-thread-content');
     const sourceText = thread.anchor.kind === 'whole-page' ? 'Whole page' : `“${excerpt(displayAnchor(thread.anchor))}”`;
     const sourceButton = button(sourceText, () => sourceAction(thread.anchor)); sourceButton.className = 'm-source-action'; sourceButton.setAttribute('aria-label', 'Source passage: ' + sourceText); sourceButton.dataset.focusKey = thread.id + ':source';
@@ -312,7 +555,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (location.state !== 'exact') body.append(el('p', `Attachment ${location.state}. Saved quote preserved.`, 'm-meta'));
     for (const note of thread.notes.filter(note => !note.deletedAt)) {
       const edit = button('Edit note', () => beginDraft(thread.anchor, thread, note.id)); edit.dataset.focusKey = thread.id + ':note:' + note.id;
-      const noteBlock = el('div', undefined, 'm-reader-note'); noteBlock.append(el('p', note.text, 'm-note'), edit); body.append(noteBlock);
+      const noteBlock = el('div', undefined, 'm-reader-note'); noteBlock.append(el('p', note.text, 'm-note'), edit, button('Ask about this note', () => ask(thread.anchor, currentThread(thread.id), { noteId: note.id, revision: note.revision, text: note.text }))); body.append(noteBlock);
     }
     const state = el('select'); state.setAttribute('aria-label', 'Thread state');
     for (const value of ['open', 'parked', 'done', 'archived'] as const) { const option = el('option', value[0].toUpperCase() + value.slice(1)); option.value = value; state.append(option); } state.value = thread.state;
@@ -322,11 +565,15 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       toast.hidden = false; const undo = button('Undo', () => safely(async () => { const current = journal.state.threads.find(t => t.id === thread.id)!; await change({ id: id(), kind: 'remove', threadId: thread.id, removed: false, expectedRevision: current.revision }); toast.hidden = true; threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); announce('Thread restored.'); }));
       toast.replaceChildren(el('span', 'Thread removed.'), undo); undo.focus();
     }))));
+    if (!journal.state.threads.some(item => item.id === thread.id)) {
+      for (const control of Array.from(body.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('button:not(.m-source-action),select'))) control.disabled = true;
+      body.append(el('p', 'Saved helper snapshot. Local work is not replaced; explicitly synchronize before editing or asking.', 'm-meta'));
+    }
     const replyArea = el('section', undefined, 'm-saved-replies'); replyArea.setAttribute('aria-label', 'Saved replies');
     const replyStatus = el('p', '', 'm-reply-status m-meta'); replyStatus.setAttribute('role', 'status');
     const replyList = el('div', undefined, 'm-reply-list');
-    const replyActions = actions(button('Reload saved views', () => loadReplies(thread, false, true)), button('Export saved replies and views', () => exportReplies(thread)));
-    if (options.allowHelper !== false) replyActions.append(button('Load replies from helper', () => loadReplies(thread, true)));
+    const replyActions = actions(button('Reload saved views', () => loadReplies(thread.id, false, true)), button('Export saved replies and views', () => exportReplies(thread.id)));
+    if (options.allowHelper !== false) replyActions.append(button('Load replies from helper', () => loadReplies(thread.id, true)));
     replyArea.append(replyStatus, replyList, replyActions);
     const bodyGroup = el('div', undefined, 'm-thread-body'); bodyGroup.append(body, replyArea); node.append(preview, bodyGroup);
     for (const control of Array.from(node.querySelectorAll<HTMLElement>('button,select'))) control.dataset.focusKey ??= thread.id + ':' + (control.getAttribute('aria-label') ?? control.textContent);
@@ -337,11 +584,13 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   function closeReplies(threadId?: string) {
     for (const [key, entry] of replyMounts) if (!threadId || entry.threadId === threadId) { entry.close(); entry.node.remove(); replyMounts.delete(key); }
   }
-  async function replyClient(thread: Thread) {
+  async function replyClient(threadId: string) {
     if (!alive() || options.allowHelper === false || !helper?.token) throw new Error('Open the browser margin and pair with the helper to use this action.');
-    const client = helper;
+    const thread = currentThread(threadId);
+    if (!thread || thread.deletedAt) throw new Error('This thread is unavailable.');
+    const client = helper, epoch = client.connectionVersion;
     await options.authorizeHelperSend?.(thread.sourceUrl);
-    if (!alive() || helper !== client || !client.token) throw new Error('The helper connection changed.');
+    if (!alive() || helper !== client || client.connectionVersion !== epoch || !client.token) throw new Error('The helper connection changed.');
     return client;
   }
   function bindingAnchor(binding: SourceBinding, original: string): QuoteAnchor | undefined {
@@ -354,8 +603,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (!['exact', 'moved'].includes(attachment.state)) return;
     return anchor;
   }
-  async function loadReplies(thread: Thread, remote = false, reopen = false) {
+  function loadReplies(threadId: string, remote = false, reopen = false) { return track(readReplies(threadId, remote, reopen)); }
+  async function readReplies(threadId: string, remote = false, reopen = false) {
     if (!alive()) return;
+    const thread = currentThread(threadId); if (!thread || thread.deletedAt) return;
     const generation = (replyLoads.get(thread.id) ?? 0) + 1; replyLoads.set(thread.id, generation);
     const current = () => alive() && replyLoads.get(thread.id) === generation && !!threadNodes.get(thread.id);
     const area = () => threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-saved-replies');
@@ -363,14 +614,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     try {
       if (remote) {
         message('Loading saved replies from the local helper…');
-        const client = await replyClient(thread);
+        const client = await replyClient(thread.id);
         await persistence.replies.refresh(client.origin, thread.id, async () => {
           if (!current()) return;
-          const currentClient = await replyClient(thread);
+          const currentClient = await replyClient(thread.id);
           if (currentClient !== client) throw new Error('The helper connection changed.');
           const bundle = await client.replies(thread.id);
           if (!current()) return;
-          if (bundle.source.id !== thread.sourceVersionId) throw new Error('The helper returned a different source version.');
+          if (bundle.source.id !== currentThread(thread.id)?.sourceVersionId) throw new Error('The helper returned a different source version.');
           await persistence.replies.cache(client.origin, thread.id, bundle.source, bundle.replies, bundle.views);
         });
       }
@@ -401,17 +652,12 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         const viewStatus = el('p', saved.conflict ? 'This view changed elsewhere. Your local inputs are preserved.' : '', 'm-meta'); viewStatus.setAttribute('role', 'status');
         const canvas = el('div'); wrapper.append(canvas);
         let closed = false;
-        let lastPersisted = JSON.stringify(saved.local);
-        let reportRequest = 0;
+        let reportRequest = 0, viewSaves: ReturnType<typeof replySaveLifecycle> | undefined;
         const persistView = (state: ReturnType<MountedReply['getState']>) => {
-          if (closed) return Promise.resolve();
-          const snapshotKey = JSON.stringify(state);
-          return track(session.save(state)).then(() => { lastPersisted = snapshotKey; }, error => {
-            if (error instanceof Error && error.name === 'RecoveredViewConflict') lastPersisted = snapshotKey;
-            if (!closed && alive()) viewStatus.textContent = error instanceof Error ? error.message : 'The current view is not saved. Keep this margin open or export it.';
-            throw error;
-          });
+          if (closed || !viewSaves) return Promise.resolve();
+          return track(viewSaves.save(state)).catch(error => { if (!closed && alive()) viewStatus.textContent = error instanceof Error ? error.message : 'View inputs remain unsaved. Export before closing.'; throw error; });
         };
+        const { mountReply } = await import('../renderer/index.ts'); if (!current()) return;
         const mounted: MountedReply = mountReply(canvas, saved.version.reply, {
           sourceText: saved.source.text, initialState: saved.local,
           capabilities: ['samples'],
@@ -433,7 +679,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
               const request = ++reportRequest;
               const parameterKey = canonicalReplyData(parameters);
               const isCurrent = () => !closed && alive() && request === reportRequest && canonicalReplyData(mounted.getState().parameters) === parameterKey;
-              const client = await replyClient(thread);
+              const client = await replyClient(thread.id);
               if (client.origin !== saved.origin) return undefined;
               const report = await client.checkReply(thread.id, saved.version.id, parameters);
               if (!isCurrent()) return undefined;
@@ -442,18 +688,13 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
             },
           } : {}),
         });
-        lastPersisted = JSON.stringify(mounted.getState());
-        const flush = async () => {
-          if (JSON.stringify(mounted.getState()) === lastPersisted) return;
-          try { await persistView(mounted.getState()); }
-          catch (error) { if (!(error instanceof Error && error.name === 'RecoveredViewConflict')) throw error; }
-        };
+        // Renderer normalization is an untouched baseline, never an implicit save.
+        viewSaves = replySaveLifecycle(mounted.getState(), state => session.save(state));
+        const flush = () => track(viewSaves!.flush(mounted.getState()));
         const entry = { threadId: thread.id, node: wrapper, mounted, flush, close() {
           if (closed) return;
-          // Drain the renderer's latest buffered snapshot before a replacement opens.
-          const finalState = mounted.getState();
-          if (JSON.stringify(finalState) !== lastPersisted) void persistView(finalState).catch(fail);
-          mounted.destroy(); closed = true;
+          const final = viewSaves!.close(mounted.getState()); closed = true;
+          mounted.destroy(); void track(final).catch(fail);
         } };
         replyMounts.set(key, entry);
         const controls = actions();
@@ -462,11 +703,11 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
             if (closed) return;
             await persistView(mounted.getState());
             if (closed || !alive()) return;
-            const client = await replyClient(thread);
+            const client = await replyClient(thread.id);
             if (client.origin !== saved.origin) throw new Error('Pair with the helper that owns this reply.');
             await persistence.replies.sync(saved, async change => {
               if (closed) throw new Error('This reply view has closed. Its inputs remain on this device.');
-              const currentClient = await replyClient(thread);
+              const currentClient = await replyClient(thread.id);
               if (currentClient !== client) throw new Error('The helper connection changed.');
               return client.saveReplyView(thread.id, change);
             });
@@ -474,28 +715,30 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
             if (!closed && alive()) viewStatus.textContent = latest?.dirty ? 'An earlier saved view reached the helper. Newer inputs remain saved on this device; save again to send them.' : 'The saved view was sent to the local helper.';
           })), button('Use helper view', () => safely(async () => {
             if (closed) return;
-            const client = await replyClient(thread);
+            const client = await replyClient(thread.id);
             if (client.origin !== saved.origin) throw new Error('Pair with the helper that owns this reply.');
             if (closed || !alive()) return;
             await persistence.replies.useRemote(saved, mounted.getState(), async () => {
-                const currentClient = await replyClient(thread);
+                const currentClient = await replyClient(thread.id);
                 if (currentClient !== client) throw new Error('The helper connection changed.');
                 return client.replyView(thread.id, saved.version.id);
             });
             if (closed || !alive()) return;
             entry.close(); replyMounts.delete(key); wrapper.remove();
-            await loadReplies(thread);
+            await loadReplies(thread.id);
             announce('Helper view restored. Previous local inputs remain in the recovery export.');
           })));
         }
-        wrapper.append(viewStatus, controls, el('p', 'Follow-up sending and saved-solver execution are not connected in this margin yet.', 'm-meta'));
+        if (options.allowHelper !== false) controls.append(button('Open saved reply and follow-up', () => { const current = currentThread(thread.id); if (!current) return; const note = saved.version.answeredNote; ask(current.anchor, current, note ? { noteId: note.noteId, revision: note.revision, text: note.text } : undefined, saved.version.id); }));
+        wrapper.append(viewStatus, controls, el('p', 'Saved-solver execution is not connected here. Follow-ups require a separate host-prepared review.', 'm-meta'));
         area()?.querySelector('.m-reply-list')?.append(wrapper);
       }
       message(persistence.replies.unsaved(thread.id).length ? 'Some view inputs are still only in memory after a failed save. Export them before closing this page.' : unavailable ? `${unavailable} saved ${unavailable === 1 ? 'reply could' : 'replies could'} not be safely displayed. Original records remain available in the export.` : visible.some(record => record.conflict) ? 'The helper has a different view. Local controls are preserved; use the helper view explicitly to replace them.' : visible.some(record => record.recovered?.length) ? 'Saved replies are available. Earlier view inputs are preserved in the recovery export.' : visible.length ? `${visible.length} saved ${visible.length === 1 ? 'reply' : 'replies'}. Notes stay above replies.` : 'No saved replies on this device.');
     } catch (error) { message(error instanceof Error ? error.message : 'Saved replies could not be loaded.'); }
   }
-  function exportReplies(thread: Thread) {
+  function exportReplies(threadId: string) {
     return safely(async () => {
+      const thread = currentThread(threadId); if (!thread) return;
       await Promise.allSettled([...replyMounts.values()].filter(entry => entry.threadId === thread.id).map(entry => entry.flush()));
       let records: CachedReply[] = [];
       const memoryOnly = persistence.replies.unsaved(thread.id);
@@ -522,6 +765,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function highlight(anchor: QuoteAnchor | null) {
     if (!alive()) return;
+    if (suspended) return;
     options.onHighlight?.(anchor);
     const highlights = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
     const HighlightClass = (window as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
@@ -529,23 +773,25 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const range = anchor && sourceRange(anchor); highlights.set('marginalia-focus', new HighlightClass(...(range ? [range] : [])));
   }
   function paintHighlights() {
-    if (!alive()) return;
+    if (!alive() || suspended) return;
     const highlights = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
     const HighlightClass = (window as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
-    if (highlights && HighlightClass) highlights.set('marginalia-kept', new HighlightClass(...orderedThreads(journal.state.threads, capture).map(t => sourceRange(t.anchor)).filter((r): r is Range => !!r)));
+    if (highlights && HighlightClass) highlights.set('marginalia-kept', new HighlightClass(...orderedThreads(threadsNow(), capture).map(t => sourceRange(t.anchor)).filter((r): r is Range => !!r)));
   }
   function sourceAction(anchor: QuoteAnchor) {
     if (!alive()) return;
+    const attachment = sourceLocation({ anchor } as Thread, capture);
+    if (anchor.kind !== 'whole-page' && !['exact', 'moved'].includes(attachment.state)) { announce('Attachment is uncertain. The original quote is retained; no source navigation was attempted.'); return; }
     options.onSource?.(anchor); const range = sourceRange(anchor);
     const node = range?.startContainer.parentElement;
     node?.scrollIntoView({ block: 'center', behavior: 'instant' }); highlight(anchor);
     if (source && matchMedia('(max-width: 899px)').matches) closePanel();
   }
   function updateReading() {
-    if (held || !source) return;
+    if (held || suspended || !source) return;
     const blocks = Array.from(source.querySelectorAll<HTMLElement>('[data-reading-section]'));
     const index = blocks.reduce((chosen, node, i) => node.getBoundingClientRect().top <= innerHeight * .4 ? i : chosen, 0);
-    sectionIndex = Math.min(index, sections.length - 1); renderPosition();
+    sectionIndex = Math.min(index, sections.length - 1); readingPosition = sections[sectionIndex].start; renderPosition();
   }
   function captureSelection() {
     const selection = document.getSelection();
@@ -559,116 +805,168 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   source?.addEventListener('keyup', event => { if (event.key === 'Shift') captureSelection(); }, { signal });
   window.addEventListener('scroll', updateReading, { passive: true, signal });
   compose.addEventListener('focusin', () => hold());
-  root.addEventListener('keydown', event => { if (event.key === 'Escape') { if (!selectionCard.hidden) closeSelection(); else if (matchMedia('(max-width: 899px)').matches) closePanel(); } }, { signal });
+  root.addEventListener('keydown', event => { if (event.defaultPrevented) return; if (event.key === 'Escape') { if (!questionArea.hidden) { closeQuestion(); return; } if (!selectionCard.hidden) closeSelection(); else if (matchMedia('(max-width: 899px)').matches) closePanel(); } }, { signal });
 
   async function sync() {
     if (!alive()) return;
-    if (!helper?.token) { announce('Pair with the local helper first. Your notes remain on this device.'); return; }
-    announce('Saving to the local helper…');
-    await safely(async () => {
-      await locked(async () => {
-        await journal.load();
-        await journal.sync(async mutation => {
-          const sourceUrl = mutation.kind === 'keep' ? mutation.capture.url : journal.state.threads.find(thread => thread.id === mutation.threadId)?.sourceUrl;
-          if (!sourceUrl) throw new Error('This change has no source address. It stays on this device.');
-          await options.authorizeHelperSend?.(sourceUrl);
-          await helper!.change(mutation);
-        }, () => helper!.list());
-      });
-      changed(); renderThreads(); renderSettings(); announce(journal.state.conflicts.length ? 'Updated elsewhere. Your changes are preserved for review in Settings.' : 'Saved to the local helper. Codex is not connected.');
+    const client = trustedHelper(), epoch = client.connectionVersion;
+    const assertCurrent = () => { if (!alive() || client !== helper || epoch !== client.connectionVersion || !client.token) throw new Error('The helper connection changed. Earlier request outcomes are unconfirmed; queued identities remain retained.'); };
+    announce('Saving queued changes to the local helper...');
+    await locked(async () => {
+      assertCurrent(); await journal.load();
+      await journal.sync(async mutation => {
+        const sourceUrl = mutation.kind === 'keep' ? mutation.capture.url : journal.state.threads.find(thread => thread.id === mutation.threadId)?.sourceUrl;
+        if (!sourceUrl) throw new Error('This change has no recorded source address. It remains on this device.');
+        await options.authorizeHelperSend?.(sourceUrl); assertCurrent(); await client.change(mutation);
+      }, async () => { assertCurrent(); return client.list(); });
     });
+    changed(); renderThreads(); renderSettings();
+    announce(journal.state.conflicts.length ? 'Changes need review. Local choices and note drafts are retained.' : 'Queued work saved to the local helper. Inference has not been authorized by saving.');
   }
   function renderSettings() {
     if (!alive()) return;
-    const focusedAction = setup.contains(document.activeElement) ? document.activeElement?.textContent : null;
-    setup.replaceChildren(el('h2', 'Settings'));
-    if (journal.unsaved && needsReconciliation) setup.append(el('p', 'Another tab saved a different version. Recovering keeps that version and saves your changes separately for review.', 'm-error'), button('Recover unsaved changes', () => safely(async () => {
-      await locked(() => journal.reconcilePersistence());
-      needsReconciliation = false; pendingNoteCommitted = false;
-      changed(); renderThreads(); renderCompose(); renderSettings();
-      announce('Saved work recovered. Your changes and editor draft are preserved. Review them in Settings.');
+    const focused = settingsBody.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+    const pairingFocused = focused?.getAttribute('aria-label') === 'Pairing code';
+    const caret = pairingFocused && focused instanceof HTMLInputElement ? [focused.selectionStart, focused.selectionEnd] : undefined;
+    settingsBody.replaceChildren(el('h2', 'Settings'));
+    if (journal.unsaved && needsReconciliation) settingsBody.append(el('p', 'Another tab saved a different version. Recovering preserves it and retains your changes for review.', 'm-error'), button('Recover unsaved changes', () => safely(async () => {
+      await locked(() => journal.reconcilePersistence()); needsReconciliation = false; pendingNoteCommitted = false;
+      changed(); renderThreads(); renderCompose(); renderSettings(); announce('Recovered changes need deliberate review. Your note and question drafts are retained.');
     })));
-    if (journal.unsaved || pendingNoteCommitted) setup.append(el('p', journal.unsaved ? 'Changes are still in memory. Keep this page open.' : 'Your note is saved. Its draft still needs to be cleared.', 'm-error'), button('Retry saving', () => safely(async () => { await locked(() => journal.retryPersistence()); needsReconciliation = false; if (pendingNoteMutation) { pendingNoteCommitted = true; await persistence.write(draftKey, undefined); pendingNoteMutation = undefined; pendingNoteCommitted = false; draft = undefined; renderCompose(); } changed(); renderThreads(); renderSettings(); announce('Changes saved on this device.'); })));
-    if (options.allowHelper === false) setup.append(el('p', 'Open the browser margin to connect the local helper.', 'm-meta'));
+    if (hydrationFinished && (journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() || pendingNoteMutation || pendingNoteCommitted || draftSaveFailed || !!draft)) settingsBody.append(el('p', 'Some work needs saving or conflict review. Memory-only recovery lasts only while this document stays open; export before closing.', 'm-error'), button('Retry saving', () => safely(async () => {
+      if (draft || pendingNoteMutation) await saveDraftNow();
+      else { await locked(() => journal.retryPersistence()); await draftBuffer.flush(); }
+      if (questionBuffer.unsaved()) await questionBuffer.save(questionBuffer.get());
+      draftSaveFailed = false;
+      changed(); renderThreads(); renderCompose(); renderSettings();
+    })));
+    if (options.allowHelper === false) settingsBody.append(el('p', 'Open the browser-owned margin or localhost page to connect the local helper.', 'm-meta'));
     else {
-    const code = el('input'); code.autocomplete = 'off'; code.setAttribute('aria-label', 'Pairing code'); code.placeholder = 'Code from the local helper';
-    setup.append(el('p', 'Reading and notes work on this device without an account. Pairing also saves them in the local helper.', 'm-meta'), label('Pairing code', code), actions(button('Pair', () => safely(async () => {
-      if (!helper) throw new Error('Open this page at the local helper address to pair.');
-      if (!code.value.trim()) { code.focus(); return; }
-      await helper.pair(code.value.trim()); await persistence.write('pairing', { origin: helper.origin, token: helper.token }); code.value = ''; announce('Paired.'); await sync();
-    })), button('Save to local helper', sync), button('Disconnect', () => safely(async () => {
-      const forget = () => persistence.write('pairing', undefined);
-      const result = helper ? await helper.disconnect(forget) : (await forget(), 'not-paired');
-      announce(result === 'replaced' ? 'A newer pairing is active. Revocation of the previous pairing may be unconfirmed.' : result === 'unconfirmed'
-        ? 'Disconnected on this device. Revocation at the local helper is unconfirmed. The helper may still list this browser as paired.'
-        : 'Disconnected from the local helper.');
-    }))));
+      const code = el('input'); code.type = 'text'; code.inputMode = 'numeric'; code.autocomplete = 'one-time-code'; code.maxLength = 16; code.setAttribute('aria-label', 'Pairing code'); code.placeholder = 'Six-digit helper code'; code.value = pairingDraft;
+      code.addEventListener('input', () => { pairingDraft = code.value; });
+      settingsBody.append(el('p', 'Reading and notes work without an account. Pairing does not establish model login, readiness or permission to send.', 'm-meta'), label('Pairing code', code), actions(
+        button('Pair', () => safely(async () => {
+          const client = helper; if (!client) throw new Error('The trusted helper connection is unavailable.');
+          const previousToken = client.token;
+          await client.pair(code.value, signal); const epoch = client.connectionVersion;
+          try { await locked(async () => { if (!alive() || client !== helper || client.connectionVersion !== epoch || !client.token) throw new Error('Pairing changed before local saving.'); await persistence.write('pairing', { origin: client.origin, token: client.token }); }); }
+          catch {
+            // A failed atomic local write must not leave an unsaved new token
+            // masking the stored old one when the reader next disconnects.
+            if (client.connectionVersion === epoch) client.token = previousToken;
+            throw new Error('The new pairing was not saved on this device. The earlier local pairing is retained. The helper may still list the new pairing; inspect its paired browsers before retrying.');
+          }
+          if (!alive() || client !== helper || client.connectionVersion !== epoch) return;
+          pairingDraft = ''; code.value = ''; channel?.postMessage('pairing-changed'); renderSettings(); announce('Paired with the local helper. No queued work or model request was sent.');
+        })),
+        button('Save all queued device changes to local helper', () => safely(sync)),
+        button('Disconnect', () => safely(async () => {
+          const client = helper; if (!client) throw new Error('The local connection is unavailable.');
+          const token = client.token; let removed = false;
+          const result = await client.disconnect(async () => { await locked(async () => { removed = await forgetPairingIfCurrent(persistence, client.origin, token); }); if (removed) channel?.postMessage('pairing-changed'); });
+          announce(result === 'replaced' || !removed ? 'A newer pairing is retained. The earlier revocation may be unconfirmed.' : result === 'unconfirmed' ? 'Local pairing removed. Remote revocation is unconfirmed; the helper may still list this browser.' : 'Local pairing removed. ' + (result === 'revoked' ? 'The helper confirmed revocation.' : 'There was no active token to revoke.'));
+        }))));
     }
     const theme = el('select'); theme.setAttribute('aria-label', 'Theme');
     for (const value of ['system', 'light', 'dark']) { const option = el('option', value[0].toUpperCase() + value.slice(1)); option.value = value; theme.append(option); }
     theme.value = document.documentElement.dataset.theme ?? 'system';
-    theme.addEventListener('change', () => { if (theme.value === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme.value; void persistence.write('theme', theme.value).catch(fail); });
-    setup.append(label('Theme', theme), el('p', denied ? 'Asking is blocked for this site.' : 'No permission to send has been given.', 'm-meta'), button(denied ? 'Allow review of future questions' : 'Block asking on this site', () => safely(async () => { denied = !denied; await persistence.write('denied:' + new URL(capture.url).origin, denied); renderSettings(); announce(denied ? 'Asking blocked.' : 'Future questions still require review.'); })), button('Close settings', () => { setup.hidden = true; settingsButton.focus(); }));
-    for (const conflict of journal.state.conflicts) {
-      const detail = el('details'); detail.append(el('summary', 'Updated elsewhere · review your change'), el('p', conflict.message));
-      const change = conflict.change;
-      detail.append(el('pre', change.kind === 'note' ? change.text : change.kind === 'keep' ? change.note ?? change.anchor.exact : JSON.stringify(change)));
+    theme.addEventListener('change', () => { if (theme.value === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme.value; void track(persistence.write('theme', theme.value)).catch(fail); });
+    settingsBody.append(label('Theme', theme), el('p', 'Model choices, actual grants, exclusions and vocabulary are managed in the local library and settings.', 'm-meta'),
+      button(denied ? 'Allow question previews here' : 'Block question previews here', () => safely(async () => { const next = !denied; await persistence.write('denied:' + new URL(capture.url).origin, next); denied = next; renderSettings(); announce('Local preview preference saved. Helper permission records are unchanged.'); })),
+      button('Close settings', () => { setup.hidden = true; updateManagement(); settingsButton.focus({ preventScroll: true }); }));
+    for (const conflict of sourceBoundJournal(journal.state, capture.url).conflicts) {
+      const item = el('details'), mutation = conflict.change;
+      item.append(el('summary', 'Review a retained change'), el('p', conflict.message), el('pre', mutation.kind === 'note' ? mutation.text : mutation.kind === 'keep' ? mutation.note ?? mutation.anchor.exact : JSON.stringify(mutation)));
       const resolve = (useHelper: boolean) => safely(async () => {
-        const remote = useHelper ? await helper!.list() : undefined;
-        await locked(async () => {
-          await journal.load();
-          if (useHelper) await journal.resolveConflict(change.id, remote!);
-          else await journal.acceptCurrentConflict(change.id);
+        if (useHelper) await resolveHelperConflict(journal, locked, mutation.id, async latest => {
+          const client = trustedHelper(), epoch = client.connectionVersion;
+          const sourceUrl = latest.kind === 'keep' ? latest.capture.url : currentThread(latest.threadId)?.sourceUrl;
+          if (!sourceUrl) throw new Error('This conflict has no recorded source address. Export before resolving.');
+          await options.authorizeHelperSend?.(sourceUrl);
+          if (!alive() || client !== helper || client.connectionVersion !== epoch) throw new Error('The helper connection changed.');
+          const remote = await client.list(); if (!alive() || client.connectionVersion !== epoch) throw new Error('The helper connection changed.'); return remote;
         });
-        if (draft?.mutation?.id === change.id) {
-          delete draft.mutation; pendingNoteMutation = undefined; pendingNoteCommitted = false;
-          const saved = journal.state.threads.find(thread => thread.id === change.threadId && !thread.deletedAt);
-          if (saved && draft.threadId) { const note = saved.notes.find(n => n.id === draft!.noteId && !n.deletedAt); draft.revision = note?.revision ?? 0; if (!note) draft.noteId = id(); }
-          else { delete draft.threadId; delete draft.noteId; delete draft.revision; }
-          await persistence.write(draftKey, draft); renderCompose();
-        }
-        changed(); renderThreads(); renderSettings(); announce('Chosen version kept. Your change remains in history and your editor draft is preserved.');
+        else await keepDeviceConflict(journal, locked, mutation.id);
+        const released = draftAfterResolution(journal, draft);
+        if (released) { draft = released; pendingNoteMutation = undefined; pendingNoteCommitted = false; await draftBuffer.save(draft); }
+        changed(); renderThreads(); renderCompose(); renderSettings();
+        announce(useHelper ? 'Helper version selected. Original changes remain in history; your note draft is retained.' : 'Device version kept locally, including deliberate absence. Nothing was uploaded or accepted remotely; your note draft is retained.');
       });
-      detail.append(button('Keep device version; keep my change in history', () => resolve(false)));
-      if (helper?.token) detail.append(button('Use helper version; keep my change in history', () => resolve(true)));
-      setup.append(detail);
+      item.append(button('Keep device version; keep my change in history', () => resolve(false)));
+      if (options.allowHelper !== false && helper?.token) item.append(button('Use helper version; keep my change in history', () => resolve(true)));
+      settingsBody.append(item);
     }
-    if (focusedAction) Array.from(setup.querySelectorAll('button')).find(b => b.textContent === focusedAction)?.focus();
+    if (pairingFocused) { const next = settingsBody.querySelector<HTMLInputElement>('[aria-label="Pairing code"]'); next?.focus({ preventScroll: true }); if (next && caret) next.setSelectionRange(caret[0], caret[1]); }
+    else if (focused && !focused.isConnected) Array.from(settingsBody.querySelectorAll<HTMLElement>('button,select')).find(node => node.textContent === focused.textContent)?.focus({ preventScroll: true });
   }
   function exportWork() {
-    const threads = journal.state.threads.filter(t => t.sourceUrl === capture.url);
-    const threadIds = new Set(threads.map(t => t.id));
-    const state = { threads, pending: journal.state.pending.filter(m => threadIds.has(m.threadId)), conflicts: journal.state.conflicts.filter(c => threadIds.has(c.change.threadId)), resolutions: journal.state.resolutions?.filter(c => threadIds.has(c.change.threadId)), draft };
-    const blob = new Blob([JSON.stringify({ version: 1, source: capture, ...state }, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob); const link = el('a'); link.href = url; link.download = 'marginalia-notes.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return safely(async () => {
+      const state = sourceBoundJournal(journal.state, capture.url);
+      let requests: unknown[] = [], earlierQuestions: AskingSelection[] = [], requestHistoryAvailable = true;
+      try { [requests, earlierQuestions] = await Promise.all([persistence.values('asking:' + draftKey + ':request:'), persistence.values<AskingSelection>('question-history:' + draftKey + ':')]); earlierQuestions = earlierQuestions.filter(q => q.capture?.url === capture.url); }
+      catch { requestHistoryAvailable = false; }
+      const blob = new Blob([JSON.stringify({ version: 1, source: capture, ...state, draft, question: questionDraft,
+        journalDurable: !journal.unsaved, requests, earlierQuestions, requestHistoryAvailable,
+        memoryOnlyDrafts: unsavedDrafts(namespace, capture.url), memoryOnlyQuestions: unsavedQuestions(namespace, capture.url) }, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob), link = el('a'); link.href = url; link.download = 'marginalia-notes.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
   }
   function destroy() {
     if (destroyed) return;
-    closeReplies(); highlight(null); destroyed = true; abort.abort(); channel?.close();
+    askingMount?.destroy(); management?.destroy(); closeReplies(); highlight(null); destroyed = true; abort.abort(); channel?.close();
     workspace.remove(); skip.remove();
     if (mountedMargins.get(root)?.destroy === destroy) root.classList.remove('m-app', 'm-host-only');
   }
   const lifecycle = { destroy, async drain() { await predecessorDrain; while (pendingOperations.size) await Promise.allSettled([...pendingOperations]); } };
   mountedMargins.set(root, lifecycle);
-  const api = { select: showSelection, setReadingPosition: (start: number) => { if (alive() && !held) { sectionIndex = sectionFor(start); renderPosition(); } }, destroy };
+  function trustedHelper() {
+    if (!alive() || options.allowHelper === false || !helper?.token) throw new Error('Pair in the browser-owned margin or localhost Settings to use this action.');
+    return helper;
+  }
+  const api = {
+    sourceUrl: capture.url, connection: trustedHelper, exportWork, drain: lifecycle.drain,
+    getThread: currentThread,
+    focusThread(threadId: string) { expanded.add(threadId); renderThreads(); const thread = currentThread(threadId); if (thread) hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); },
+    select: showSelection,
+    setReadingPosition(start: number) { if (alive() && !suspended && !held) { readingPosition = Math.max(0, Math.min(capture.text.length, start)); sectionIndex = sectionFor(readingPosition); renderPosition(); } },
+    suspend() { highlight(null); suspended = true; management?.close(); askingMount?.setVisible(false); },
+    resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); renderSettings(); paintHighlights(); },
+    async openThread(threadId: string) { await locked(() => journal.load()); const thread = currentThread(threadId); if (!thread || thread.deletedAt || thread.sourceUrl !== capture.url) throw new Error('The current thread is unavailable; local work is unchanged.'); expanded.add(threadId); renderThreads(); hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); threadNodes.get(threadId)?.node.querySelector<HTMLElement>('.m-source-action')?.focus({ preventScroll: true }); },
+    destroy,
+  };
+  const startupGeneration = editorGeneration;
+  announce('Restoring saved work. Nothing is being sent.'); renderCompose(); renderPosition();
   try {
-    await predecessorDrain;
-    if (!alive()) return api;
+    await predecessorDrain; if (!alive()) return api;
+    if (options.allowHelper !== false) helper = documentHelper(namespace, options.helperOrigin ?? location.origin);
+    const connectionEpoch = helper?.connectionVersion;
     await locked(() => journal.load()); storageReady = true;
-    const [savedDraft, pairing, block, theme] = await Promise.all([persistence.read<Draft>(draftKey), options.allowHelper === false ? undefined : persistence.read<{ origin: string; token: string }>('pairing'), persistence.read<boolean>('denied:' + new URL(capture.url).origin), persistence.read<string>('theme')]);
+    const [savedDraft, pairing, block, theme, savedQuestion] = await Promise.all([draftBuffer.load(), options.allowHelper === false ? undefined : persistence.read<{ origin: string; token: string }>('pairing'), persistence.read<boolean>('denied:' + new URL(capture.url).origin), persistence.read<string>('theme'), questionBuffer.load()]);
     if (!alive()) return api;
-    draft = savedDraft; pendingNoteMutation = draft?.mutation; if (draft) { held = true; sectionIndex = sectionFor(displayPosition(draft.anchor, capture) ?? 0); } denied = !!block;
-    if (theme && theme !== 'system') document.documentElement.dataset.theme = theme;
-    if (options.allowHelper !== false) {
-      helper = new HelperClient(options.helperOrigin ?? location.origin);
-      if (pairing?.origin === helper.origin) helper.token = pairing.token;
-    }
-    announce('Notes are saved on this device. Codex is not connected.');
-  } catch (error) { fail(error); }
+    if (startupGeneration === editorGeneration) { draft = savedDraft; pendingNoteMutation = draft?.mutation; }
+    questionDraft = savedQuestion;
+    if (draft) { held = true; readingPosition = composerOffset(draft, 0); sectionIndex = sectionFor(readingPosition); }
+    denied = !!block; if (theme && theme !== 'system') document.documentElement.dataset.theme = theme;
+    if (helper && connectionEpoch === 0 && helper.connectionVersion === connectionEpoch && pairing?.origin === helper.origin) helper.token = pairing.token;
+    announce(journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() ? 'Unsaved work recovered in this document. Retry saving or export before closing.' : 'Local storage is available. Model readiness has not been checked; asking requires a separate review.');
+  } catch { announce('Local storage could not be restored. Current drafts remain in this document only; export before closing.'); }
   if (!alive()) return api;
-  renderCompose(); renderThreads(); renderSettings();
-  if (options.initialOpen === false || (options.initialOpen !== true && matchMedia('(max-width: 899px)').matches)) shell.classList.add('is-collapsed');
-  channel?.addEventListener('message', () => void safely(async () => { await locked(() => journal.load()); renderThreads(); announce(journal.unsaved ? 'Another tab saved work. Your unsaved changes are still here; review Settings.' : 'Saved work updated in another tab. Your draft is unchanged.'); }), { signal });
+  hydrationFinished = true; renderCompose(); renderThreads(); renderSettings();
+  if (questionDraft) footer.append(button('Return to retained question', () => { if (questionDraft) showQuestion(questionDraft); }));
+  if (options.initialOpen === false || (options.initialOpen !== true && matchMedia('(max-width: 899px)').matches)) { shell.classList.add('is-collapsed'); rail.append(map); }
+  channel?.addEventListener('message', event => {
+    if (event.data === 'pairing-changed') {
+      if (options.allowHelper === false || !helper) return;
+      const client = helper, epoch = client.connectionVersion;
+      void safely(async () => { await locked(async () => {
+        const pairing = await persistence.read<{ origin: string; token: string }>('pairing');
+        if (!alive() || client !== helper || epoch !== client.connectionVersion) return;
+        const token = pairing?.origin === client.origin ? pairing.token : ''; if (client.token !== token) client.token = token;
+      }); announce('Pairing changed in another margin. Earlier outcomes may be unconfirmed; nothing was automatically retried.'); });
+      return;
+    }
+    void safely(async () => { await locked(() => journal.load()); renderThreads(); renderSettings(); announce(journal.unsaved ? 'Another margin saved work; your unsaved changes remain here.' : 'Saved work updated. Your note and question drafts are unchanged.'); });
+  }, { signal });
   return api;
 }
 
@@ -679,7 +977,7 @@ function demoPage() {
     { title: 'Keep what catches you', paragraphs: ['Select a passage in this article to open Keep and Ask. Keeping a passage saves it on this device. Asking first lets you prepare a question and inspect what it would share.', 'Nothing is sent just because you select text. You can read, highlight, and write without an account or a connection to Codex.'] },
     { title: 'Write in your own words', paragraphs: ['A note belongs to a place in the text. When you begin writing, that place holds still. Moving down the page does not move the note’s attachment.', 'An unfinished thought can be parked. A question can stay a question. Your own words come first, and they remain yours when you return.'] },
     { title: 'Return to the thread', paragraphs: ['Work saved in the margin stays in page order. The coloured map gives each section a place, and marks the sections where you have left something.', 'Choose a section to hold it in view. Follow reading brings the margin back to the page. Hovering a saved passage only highlights it; opening its source is a deliberate action.'] },
-    { title: 'What is available here', paragraphs: ['This local reading page supports keeping passages, writing and editing notes, parking threads, and removing with undo. Your saved work survives a reload in this browser.', 'Codex replies are not connected yet. You can inspect the outgoing text of a question, but this page will not send it. Pairing with the local helper is a separate, explicit step in Settings.'] },
+    { title: 'What is available here', paragraphs: ['This local reading page supports keeping passages, writing and editing notes, parking threads, and removing with undo. Your saved work survives a reload in this browser.', 'Reading and local saving do not send questions. An installed asking module and a working local helper are needed for an explicit sending review; pairing alone does not establish model readiness.'] },
   ];
   article.append(el('p', 'Marginalia · A reading page', 'm-source-meta'), el('h1', 'Leave room for your thoughts'), el('p', 'A short page to try the margin. Select a sentence, or write beside the section you are reading.', 'm-source-intro'));
   const sections: MarginSection[] = [];
