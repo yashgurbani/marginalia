@@ -84,7 +84,7 @@ export async function startServer(options: { database: string; port?: number; we
         response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
         response.writeHead(204); response.end(); return;
       }
-      if (url.pathname === '/health' && request.method === 'GET') return send(response, 200, { status: 'ready', storage: 'ready', codex: await diagnostics() });
+      if (url.pathname === '/health' && request.method === 'GET') return send(response, 200, { status: 'ready', storage: 'ready' });
       if (url.pathname === '/pair' && request.method === 'POST') {
         if (!requestOrigin) return send(response, 403, { error: 'Origin required.' });
         const input = await body(request);
@@ -101,7 +101,7 @@ export async function startServer(options: { database: string; port?: number; we
         // page JavaScript, and the token must still be bound to this exact host.
         const authOrigin = requestOrigin ?? (request.method === 'GET' && request.headers['sec-fetch-site'] === 'same-origin' ? origin : undefined);
         const token = tokenFrom(request);
-        const requireCurrentPairing = () => authOrigin && pairing.valid(token, authOrigin);
+        const requireCurrentPairing = () => !!authOrigin && pairing.valid(token, authOrigin);
         if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to reopen saved work.' });
         const principal = { surface: authOrigin === origin ? 'localhost-settings' as const : 'browser-owned-margin' as const,
           pairingId: token, origin: authOrigin! };
@@ -193,13 +193,13 @@ export async function startServer(options: { database: string; port?: number; we
         if (url.pathname === '/api/jobs/prepare' && request.method === 'POST') {
           const input = await body(request) as PrepareJobInput;
           if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to review outgoing content.' });
-          const prepared = await jobs.prepare(input), result = prepareConsentForTrustedHost(consent, prepared.consent);
+          const prepared = await jobs.prepare(input, requireCurrentPairing), result = prepareConsentForTrustedHost(consent, prepared.consent);
           return send(response, result.status, { ...(result.body as Record<string, unknown>), job: prepared.job });
         }
         if (url.pathname === '/api/jobs' && request.method === 'POST') {
           const input = await body(request) as StartJobInput;
           if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to ask for help.' });
-          return send(response, 202, await jobs.create(input));
+          return send(response, 202, await jobs.create(input, requireCurrentPairing));
         }
         const jobRoute = /^\/api\/jobs\/([\w-]{1,100})(?:\/(cancel|retry|followups|prepare-retry|prepare-followup))?$/.exec(url.pathname);
         if (jobRoute) {
@@ -216,23 +216,23 @@ export async function startServer(options: { database: string; port?: number; we
           if (request.method === 'POST' && action === 'retry') {
             const input = await body(request) as RetryJobInput;
             if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to try this work again.' });
-            return send(response, 202, await jobs.retry(jobId, input));
+            return send(response, 202, await jobs.retry(jobId, input, requireCurrentPairing));
           }
           if (request.method === 'POST' && action === 'prepare-retry') {
             const input = await body(request) as PrepareRetryJobInput;
             if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to review this retry.' });
-            const prepared = await jobs.prepareRetry(jobId, input), result = prepareConsentForTrustedHost(consent, prepared.consent);
+            const prepared = await jobs.prepareRetry(jobId, input, requireCurrentPairing), result = prepareConsentForTrustedHost(consent, prepared.consent);
             return send(response, result.status, { ...(result.body as Record<string, unknown>), job: prepared.job });
           }
           if (request.method === 'POST' && action === 'followups') {
             const input = await body(request) as FollowupJobInput;
             if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to continue this thread.' });
-            return send(response, 202, await jobs.followup(jobId, input));
+            return send(response, 202, await jobs.followup(jobId, input, requireCurrentPairing));
           }
           if (request.method === 'POST' && action === 'prepare-followup') {
             const input = await body(request) as PrepareFollowupJobInput;
             if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to review this follow-up.' });
-            const prepared = await jobs.prepareFollowup(jobId, input), result = prepareConsentForTrustedHost(consent, prepared.consent);
+            const prepared = await jobs.prepareFollowup(jobId, input, requireCurrentPairing), result = prepareConsentForTrustedHost(consent, prepared.consent);
             return send(response, result.status, { ...(result.body as Record<string, unknown>), job: prepared.job });
           }
         }

@@ -2,7 +2,7 @@ import type { ProviderHandle, ProviderKind } from './job-runner.ts';
 import type { CandidateReply, Intent, ReplyCapability } from './reply.ts';
 import type { NoteVersionRef } from './reader.ts';
 
-export type JobState = 'queued' | 'running' | 'validating' | 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'outcome_unknown' | 'cancel_requested';
+export type JobState = 'queued' | 'preparing' | 'sending' | 'running' | 'validating' | 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'outcome_unknown' | 'cancel_requested';
 
 export type StartJobInput = {
   id: string;
@@ -25,6 +25,7 @@ export type StartJobInput = {
 /** Browser request shape before permission. Provider, model, policy and capabilities remain host-owned. */
 export type PrepareJobInput = Pick<StartJobInput, 'id' | 'idempotencyKey' | 'threadId' | 'intent' | 'question' | 'answeredNote' | 'parentReplyId'>;
 export type PreparedJobPlan = Omit<StartJobInput, 'grantId'>;
+export type PreparedJobResult = { consent: import('./consent.ts').PrepareConsentInput; job: PreparedJobPlan };
 
 export type FollowupJobInput = {
   id: string;
@@ -71,6 +72,8 @@ export type ProviderJobPacket = {
   adjacentContext: { before: string; after: string; basis: 'section-adjacent-context' | 'bounded-character-context' | 'whole-page-opening' };
   answeredNote?: { noteId: string; revision: number; text: string; originalCharacters: number; omittedCharacters: number };
   parentReplyId?: string;
+  /** Host-frozen excerpt of the immutable accepted parent reply for a provider fork. */
+  parentReply?: { replyVersionId: string; excerpt: string; omittedBytes: number };
   availableCapabilities: ReplyCapability[];
   omissions: string[];
 };

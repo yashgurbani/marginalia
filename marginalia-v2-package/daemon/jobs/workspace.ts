@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, realpath, rename, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { REPLY_LIMITS, parseAndValidateReply, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
@@ -23,7 +23,7 @@ export async function prepareWorkspace(root: string, attemptId: string, packet: 
 }
 
 export async function prepareContinuationWorkspace(workspace: string, completedAttemptId: string, packet: ProviderJobPacket, schema: string): Promise<string> {
-  const root = await realpath(workspace);
+  const root = await verifyContinuationWorkspace(workspace, schema);
   const owner = await realpath(dirname(root));
   const historyRoot = resolve(owner, '.history');
   const history = resolve(historyRoot, basename(root), completedAttemptId);
@@ -44,9 +44,42 @@ export async function prepareContinuationWorkspace(workspace: string, completedA
     }
   }
   await atomicWrite(join(root, 'packet.json'), canonicalReplyData(packet));
-  const schemaPath = join(root, 'reply.schema.json');
-  try { await lstat(schemaPath); } catch { await atomicWrite(schemaPath, schema); }
   return root;
+}
+
+export async function verifyContinuationWorkspace(workspace: string, schema: string): Promise<string> {
+  if ((await lstat(workspace)).isSymbolicLink()) throw new Error('Continuation workspace link is unsafe.');
+  const root = await realpath(workspace);
+  const rootInfo = await lstat(root);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error('Continuation workspace is unsafe.');
+  // T20 has no reviewed saved-solver manifest here. Reject every extra provider-readable artifact.
+  const allowed = new Set(['packet.json', 'reply.partial.json', 'reply.json', 'reply.schema.json', 'SKILL.md']);
+  for (const name of await readdir(root)) {
+    if (!allowed.has(name)) throw new Error(`Undeclared continuation artifact: ${name}`);
+    const info = await lstat(join(root, name));
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error('Continuation artifact is unsafe.');
+  }
+  for (const [name, expected] of [['reply.schema.json', schema], ['SKILL.md', JOB_WORKSPACE_INSTRUCTIONS]] as const) {
+    if ((await lstat(join(root, name))).size !== Buffer.byteLength(expected)) throw new Error(`Continuation ${name} differs from reviewed content.`);
+    if ((await readFile(join(root, name), 'utf8')) !== expected) throw new Error(`Continuation ${name} differs from reviewed content.`);
+  }
+  return root;
+}
+
+export async function restoreCompletedWorkspace(workspaceRoot: string, workspace: string, packet: ProviderJobPacket): Promise<string> {
+  const root = await realpath(workspaceRoot);
+  if ((await lstat(workspace)).isSymbolicLink()) throw new Error('Completed workspace link is unsafe.');
+  const actual = await realpath(workspace);
+  assertInside(root, actual);
+  const info = await lstat(actual);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Completed workspace is unsafe.');
+  const packetPath = join(actual, 'packet.json');
+  const expected = canonicalReplyData(packet), packetInfo = await lstat(packetPath);
+  if (!packetInfo.isFile() || packetInfo.isSymbolicLink() || packetInfo.size !== Buffer.byteLength(expected) ||
+    (await readFile(packetPath, 'utf8')) !== expected) {
+    throw new Error('Completed workspace packet differs from the persisted request.');
+  }
+  return actual;
 }
 
 export async function readReplyFile(workspace: string, name: 'reply.partial.json' | 'reply.json', sourceText: string,

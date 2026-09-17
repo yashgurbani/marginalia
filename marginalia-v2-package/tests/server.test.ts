@@ -32,7 +32,7 @@ test('helper rejects hostile origins, pairs once, binds tokens to origin and sup
   try {
     const health = await fetch(helper.origin + '/health');
     assert.equal(health.status, 200);
-    assert.deepEqual(await health.json(), { status: 'ready', storage: 'ready', codex: diagnostics() });
+    assert.deepEqual(await health.json(), { status: 'ready', storage: 'ready' });
     assert.equal((await fetch(helper.origin + '/health', { headers: { Origin: 'https://evil.example' } })).status, 403);
     const hostileHostStatus = await new Promise<number | undefined>((resolve, reject) => {
       const req = request(helper.origin + '/health', { headers: { Host: 'evil.example' } }, response => { response.resume(); resolve(response.statusCode); });
@@ -58,6 +58,20 @@ test('five bad pairing attempts exhaust the challenge', async () => {
   try {
     for (let i = 0; i < 5; i++) assert.throws(() => helper.pairing.exchange('not-a-code', helper.origin));
     assert.throws(() => helper.pairing.exchange(helper.challenge, helper.origin), /expired/);
+  } finally { await helper.close(); }
+});
+
+test('diagnostics rejection does not break liveness or pairing', async () => {
+  const helper = await startServer({ database: ':memory:', port: 0, diagnostics: async () => { throw new Error('probe failed'); } });
+  try {
+    assert.deepEqual(await (await fetch(helper.origin + '/health')).json(), { status: 'ready', storage: 'ready' });
+    const response = await fetch(helper.origin + '/pair', { method: 'POST', headers: { Origin: extensionOrigin },
+      body: JSON.stringify({ challenge: helper.challenge }) });
+    assert.equal(response.status, 200);
+    const payload = await response.json() as { token: string; codex: { status: string; login: string } };
+    assert.equal(payload.codex.status, 'unavailable');
+    assert.equal(payload.codex.login, 'unknown');
+    assert.ok(payload.token);
   } finally { await helper.close(); }
 });
 

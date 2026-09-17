@@ -1,44 +1,74 @@
-import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
 import { startServer } from './server.ts';
 import { createInterface } from 'node:readline';
 import { createDiagnostics } from './diagnostics.ts';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AuthorizedRuntimeFactory } from './jobs/runtime.ts';
 import { randomUUID } from 'node:crypto';
 import { createCodexRuntimeFactory } from './jobs/runtime.ts';
 import { createConsentProviderAuthorization, createObservedPolicyEvidenceCollector, unavailablePolicyHostEvidence } from './consent/index.ts';
+import { createCodexPolicy, PINNED_CODEX_VERSION } from './codex-policy.ts';
+import { policyFingerprint } from './providers/policy-gate.ts';
 
-const dataDir = resolve(process.env.MARGINALIA_DATA_DIR ?? '.local');
+const userDataRoot = process.platform === 'win32' ? process.env.LOCALAPPDATA
+  : process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support')
+    : process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
+const dataDir = process.env.MARGINALIA_DATA_DIR ?? (userDataRoot && isAbsolute(userDataRoot) ? join(userDataRoot, 'Marginalia') : join(homedir(), '.marginalia'));
+if (!isAbsolute(dataDir)) throw new Error('MARGINALIA_DATA_DIR must be absolute.');
 mkdirSync(dataDir, { recursive: true });
+const canonicalDataDir = realpathSync(dataDir);
 const port = Number(process.env.MARGINALIA_PORT ?? 43120);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MARGINALIA_PORT must be between 1 and 65535.');
-const diagnostics = createDiagnostics();
+function dedicatedRuntimeIdentity() {
+  const executable = process.env.MARGINALIA_CODEX_EXECUTABLE, home = process.env.MARGINALIA_CODEX_HOME;
+  if (!executable || !home || !isAbsolute(executable) || !isAbsolute(home) ||
+    (process.platform === 'win32' && !/\.exe$/i.test(executable))) return undefined;
+  try {
+    const identity = { executable: realpathSync(executable), codexHome: realpathSync(home) };
+    if (!statSync(identity.executable).isFile() || !statSync(identity.codexHome).isDirectory()) return undefined;
+    const ambient = [join(homedir(), '.codex'), process.env.CODEX_HOME].filter((v): v is string => !!v);
+    if (ambient.some(value => {
+      try { return realpathSync(value).toLowerCase() === identity.codexHome.toLowerCase(); }
+      catch { return resolve(value).toLowerCase() === identity.codexHome.toLowerCase(); }
+    })) return undefined;
+    return identity;
+  } catch { return undefined; }
+}
+const runtimeIdentity = dedicatedRuntimeIdentity();
 const runtimeModule = process.env.MARGINALIA_AUTHORIZED_RUNTIME_MODULE;
+const diagnostics = createDiagnostics(runtimeModule ? undefined : runtimeIdentity);
 const runtimeFactoryBuilder = async ({ store, consent }: Parameters<NonNullable<Parameters<typeof startServer>[0]['runtimeFactoryBuilder']>>[0]) => {
   if (runtimeModule) {
     const module = await import(pathToFileURL(resolve(runtimeModule)).href) as { createAuthorizedRuntime?: (input: { dataDir: string; store: typeof store; consent: typeof consent }) => Promise<AuthorizedRuntimeFactory> | AuthorizedRuntimeFactory };
     if (typeof module.createAuthorizedRuntime !== 'function') throw new Error('The authorized runtime module must export createAuthorizedRuntime().');
-    return module.createAuthorizedRuntime({ dataDir, store, consent });
+    return module.createAuthorizedRuntime({ dataDir: canonicalDataDir, store, consent });
   }
-  const executable = process.env.MARGINALIA_CODEX_EXECUTABLE;
-  if (!executable) return undefined;
+  if (!runtimeIdentity) return undefined;
   const evidence = createObservedPolicyEvidenceCollector({ auditEpoch: randomUUID(), host: unavailablePolicyHostEvidence() });
   const authorization = createConsentProviderAuthorization({ consent, platform: process.platform as 'win32' | 'linux' | 'darwin', evidence });
-  return createCodexRuntimeFactory({ executable: resolve(executable), codexHome: resolve('D:/MarginaliaRuntime/T02'), consent, authorization,
+  return createCodexRuntimeFactory({ ...runtimeIdentity, consent, authorization,
     dispatchReady: false, unavailableReason: 'The bundled policy evidence source is intentionally unavailable until dedicated sign-in and host confinement evidence are verified.' });
 };
-const policyKey = process.env.MARGINALIA_POLICY_KEY;
-const jobDefaults = policyKey && /^[a-f0-9]{64}$/.test(policyKey)
-  ? { provider: 'app-server' as const, mode: 'structured-final' as const, policyKey, capabilities: [] } : undefined;
-const server = await startServer({ database: resolve(dataDir, 'marginalia.sqlite'), port, webRoot: resolve('webapp/dist'), diagnostics,
-  jobWorkspaceRoot: resolve(dataDir, 'jobs'), runtimeFactoryBuilder, jobDefaults });
+const policyAuditEpoch = randomUUID();
+const jobDefaults = runtimeIdentity && !runtimeModule ? {
+  provider: 'app-server' as const, mode: 'workspace-files' as const, capabilities: [],
+  policyFor: (workspace: string, mode: 'structured-final' | 'workspace-files', model: string, provider: 'app-server' | 'mcp-server') => {
+    if (mode !== 'workspace-files') throw new Error('Unsupported bundled policy mode.');
+    return policyFingerprint(createCodexPolicy({ version: PINNED_CODEX_VERSION, platform: process.platform as 'win32' | 'linux' | 'darwin',
+      adapter: provider, operation: 'generation', model, workspace, codexHome: runtimeIdentity.codexHome, auditId: policyAuditEpoch }));
+  },
+} : undefined;
+const server = await startServer({ database: join(canonicalDataDir, 'marginalia.sqlite'), port, webRoot: fileURLToPath(new URL('../webapp/dist', import.meta.url)), diagnostics,
+  jobWorkspaceRoot: join(canonicalDataDir, 'jobs'), runtimeFactoryBuilder, jobDefaults });
 console.log(`Marginalia local helper: ${server.origin}`);
 console.log(`Pairing code: ${server.challenge} (valid for five minutes, one use)`);
 console.log(server.jobs.available ? 'Reading and notes are ready. Codex execution is configured but remains subject to current consent and runtime checks.'
   : 'Reading and notes are ready. Codex execution is unavailable until an authorized runtime is configured.');
 console.log('Enter pair here to renew the pairing code. This replaces any unused code.');
-void diagnostics().then(result => console.log(`Codex: ${result.status}; sign-in: ${result.login}. Execution remains unverified.`));
+void diagnostics().then(result => console.log(`Codex: ${result.status}; sign-in: ${result.login}. Execution remains unverified.`))
+  .catch(() => console.log('Codex diagnostics are unavailable. Execution remains unverified.'));
 const terminal = createInterface({ input: process.stdin });
 terminal.on('line', line => {
   if (line.trim() === 'pair') console.log(`Pairing code: ${server.pairing.issue()} (valid for five minutes, one use)`);

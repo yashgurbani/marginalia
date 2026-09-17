@@ -18,7 +18,7 @@ type AttemptRow = {
 };
 
 const terminal = new Set<JobState>(['succeeded', 'failed', 'cancelled', 'timed_out', 'outcome_unknown']);
-export const packetDigest = (value: unknown) => createHash('sha256').update(canonicalReplyData(value)).digest('hex');
+export const packetDigest = (value: unknown) => createHash('sha256').update(canonicalReplyData(JSON.parse(JSON.stringify(value)))).digest('hex');
 
 export class JobConflictError extends Error { override name = 'JobConflict'; }
 
@@ -182,6 +182,9 @@ export class JobStore {
       if (terminal.has(a.state)) throw new JobConflictError('This provider attempt is already terminal.');
       if (a.dispatchClaimed) {
         if (!current || incoming.revision !== a.revision || incoming.providerInstanceId !== current.providerInstanceId) throw new JobConflictError('Stale or duplicate provider dispatch checkpoint.');
+        if (a.state === 'validating' && incoming.state !== 'completed' && !incoming.tombstone && !job.cancelRequested) {
+          throw new JobConflictError('A completed provider checkpoint cannot return to working.');
+        }
         for (const key of ['workspace', 'threadId', 'turnId'] as const) {
           if (current[key] && !incoming[key]) throw new JobConflictError('Provider identity cannot be erased.');
           if (current[key] && incoming[key] && current[key] !== incoming[key]) throw new JobConflictError('Provider identity changed.');
@@ -207,6 +210,19 @@ export class JobStore {
       if (currentAttempt && !terminal.has(job.state)) this.event('job-state', { jobId: job.id, attemptId, state: mapped, reason: canonical.reason });
       return canonical;
     })();
+  }
+  /** Adapter stop may acknowledge an already durable host fence, without revising or reopening it. */
+  acknowledgeStopFence(attemptId: string, incoming: ProviderHandle): ProviderHandle | undefined {
+    const job = this.jobForAttempt(attemptId), attempt = job?.attempts.find(a => a.id === attemptId);
+    const current = attempt?.providerHandle;
+    if (!job || !attempt || !current || !incoming.tombstone || incoming.jobId !== attemptId ||
+      incoming.provider !== current.provider || incoming.providerInstanceId !== current.providerInstanceId ||
+      incoming.workspace !== current.workspace || incoming.policyKey !== current.policyKey ||
+      incoming.model !== current.model || incoming.mode !== current.mode ||
+      incoming.threadId !== current.threadId || incoming.turnId !== current.turnId ||
+      incoming.revision !== current.revision || job.latestAttemptId !== attemptId ||
+      !job.cancelRequested || !['timed_out', 'cancelled', 'outcome_unknown'].includes(job.state)) return;
+    return { ...incoming, revision: current.revision, tombstone: true, output: undefined };
   }
   private claimThreadLease(job: JobSnapshot, attempt: AttemptRow, handle: ProviderHandle) {
     if (!handle.threadId) return;
@@ -239,6 +255,17 @@ export class JobStore {
       return { job: this.get(jobId)!, handle: attempt?.providerHandle };
     })();
   }
+  cancelBeforeHandoff(jobId: string, attemptId: string): boolean {
+    return this.db.transaction(() => {
+      const job = this.get(jobId), attempt = job?.attempts.find(a => a.id === attemptId);
+      if (!job || !attempt || job.latestAttemptId !== attemptId || !job.cancelRequested || attempt.handoffMarked || attempt.dispatchClaimed || terminal.has(job.state)) return false;
+      const now = new Date().toISOString();
+      this.db.prepare("UPDATE jobs SET state='cancelled',reason='cancelled-before-provider-handoff',updatedAt=? WHERE id=?").run(now, jobId);
+      this.db.prepare("UPDATE job_attempts SET state='cancelled',endedAt=?,reason='cancelled-before-provider-handoff' WHERE id=?").run(now, attemptId);
+      this.event('job-state', { jobId, attemptId, state: 'cancelled', reason: 'cancelled-before-provider-handoff' });
+      return true;
+    })();
+  }
   markTimedOut(jobId: string, attemptId: string): ProviderHandle | undefined {
     return this.db.transaction(() => {
       const job = this.get(jobId), attempt = job?.attempts.find(a => a.id === attemptId);
@@ -257,7 +284,7 @@ export class JobStore {
       const serialized = JSON.stringify(reply);
       const previous = this.db.prepare('SELECT provisional FROM jobs WHERE id=?').get(jobId) as { provisional: string | null };
       if (previous.provisional === serialized) return;
-      this.db.prepare("UPDATE jobs SET provisional=?,state='running',updatedAt=? WHERE id=?").run(serialized, new Date().toISOString(), jobId);
+      this.db.prepare('UPDATE jobs SET provisional=?,updatedAt=? WHERE id=?').run(serialized, new Date().toISOString(), jobId);
       this.event('job-provisional', { jobId, attemptId, status: 'partial' });
     })();
   }
@@ -289,12 +316,30 @@ export class JobStore {
       return this.get(jobId);
     })();
   }
+  markPreparing(jobId: string, attemptId: string) {
+    this.db.transaction(() => {
+      const job = this.get(jobId), attempt = job?.attempts.find(a => a.id === attemptId);
+      if (!job || !attempt || job.latestAttemptId !== attemptId || job.cancelRequested || job.state !== 'queued' || attempt.handoffMarked) return;
+      this.db.prepare("UPDATE jobs SET state='preparing',updatedAt=? WHERE id=?").run(new Date().toISOString(), jobId);
+      this.db.prepare("UPDATE job_attempts SET state='preparing' WHERE id=?").run(attemptId);
+      this.event('job-state', { jobId, attemptId, state: 'preparing' });
+    })();
+  }
   releaseUndispatchedContinuation(attemptId: string) {
     this.db.transaction(() => {
       const attempt = this.db.prepare('SELECT * FROM job_attempts WHERE id=?').get(attemptId) as AttemptRow | undefined;
       const predecessor = attempt?.predecessorAttemptId ?? undefined;
       if (!attempt || !predecessor || attempt.dispatchClaimed || attempt.workspacePrepared) return;
       this.db.prepare('UPDATE provider_thread_leases SET successorAttemptId=NULL WHERE attemptId=? AND successorAttemptId=?').run(predecessor, attemptId);
+    })();
+  }
+  forkUndispatchedContinuation(attemptId: string) {
+    this.db.transaction(() => {
+      const attempt = this.db.prepare('SELECT * FROM job_attempts WHERE id=?').get(attemptId) as AttemptRow | undefined;
+      if (!attempt || !attempt.predecessorAttemptId || attempt.dispatchClaimed || attempt.workspacePrepared || attempt.handoffMarked) return;
+      this.db.prepare('UPDATE provider_thread_leases SET successorAttemptId=NULL WHERE attemptId=? AND successorAttemptId=?')
+        .run(attempt.predecessorAttemptId, attemptId);
+      this.db.prepare('UPDATE job_attempts SET predecessorAttemptId=NULL WHERE id=?').run(attemptId);
     })();
   }
   markWorkspacePrepared(jobId: string, attemptId: string) {
@@ -351,7 +396,8 @@ function ensureColumn(db: Database.Database, table: string, name: string, declar
 
 function mapProviderState(state: ProviderHandle['state'], tombstone: boolean, cancelled: boolean): JobState {
   if (cancelled || tombstone) return state === 'outcome_unknown' ? 'outcome_unknown' : state === 'cancel_requested' || state === 'starting' || state === 'running' ? 'cancel_requested' : 'cancelled';
-  if (state === 'starting' || state === 'running') return 'running';
+  if (state === 'starting') return 'sending';
+  if (state === 'running') return 'running';
   if (state === 'completed') return 'validating';
   return state;
 }
