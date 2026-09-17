@@ -1,5 +1,11 @@
 # Chief consolidation checkpoint
 
+## Accepted group 3 — Evidence and Explore modules
+
+Chief reviewed and integrated original transform9443074 plus Sol Evidence053a203, Explorebead552 and saved-shelf correction184c12a. Final behavior: retrieval is not semantic support, no support headline is minted; requested/final attribution and partial reply status remain explicit. Explore accepts valid serialized saved shelves and preserves original return context when reading elsewhere; no WeakMap identity grant or blanket freshness rule. These address the earlier chief holds. Fresh integrated32transform tests pass and full package typecheck exit0. Module acceptance only: real retrieval/reader click mounting and stage5a remain open.
+
+Opus5 finished/pushedfda8dba4d6af544355d98e393c98a36103e75403. Two concrete public-read adapters, committed-claim refusal correction; execution gate/confinement evidence remain unavailable and no recompute can run. Combined isolated candidatef9007e6 passed184focused transform/solver tests and typecheck. T20 remains unmerged while Luna Max independently reviews the delta versus c4a6744; exec29, report docs/evidence/T20/OPUS5-INDEPENDENT-REVIEW.md on Opus branch. Existing152solver passes are supplied evidence, not reason for duplicate full tests. Artifact binding at reply commit and non-egress gate must be coordinated with T06 before mounting; do not reuse cloud finalizeDispatch.
+
 ## Accepted group 2 and overall position
 
 All four Luna regression branches are now consolidated. Capture source380c51c was applied as eebf770, followed by Sol repair8daa4f5 applied as14b63c7. Chief reviewed the narrow anchor control-flow fix and reuse of existing ambient declarations. Repair removes undeclared/extraneous linkedom reliance. Fresh integration checks at14b63c7:16capture/protocol tests pass, full package typecheck exit0. Earlier T07/T11/T18 eight-test checkpoint remains valid. These are local contract regressions, not real-browser/platform acceptance.
