@@ -29,6 +29,11 @@ test('message failures use an explicit bounded envelope', async () => {
   assert.deepEqual(readReply(await new Promise<unknown>(resolve => respondAsync(() => ({ allowed: true }), resolve))), { allowed: true });
   assert.throws(() => readReply(null), /did not answer/);
 });
+test('page exclusion errors pass through the public allow-list unchanged', async () => {
+  const literal = 'This page is excluded or changed.';
+  const reply = await new Promise<unknown>(resolve => respondAsync(() => { throw new Error(literal); }, resolve));
+  assert.throws(() => readReply(reply), error => error instanceof Error && error.message === literal);
+});
 test('embedded margin separates capture identity from stable browser document identity', async () => {
   const targeted: string[] = [];
   const stableFrame = async () => ({ documentId: 'browser-document-1', documentLifecycle: 'active' });

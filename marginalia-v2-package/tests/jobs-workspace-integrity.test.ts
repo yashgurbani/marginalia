@@ -1,11 +1,12 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, rm, link, symlink, rename, readdir, unlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, link, symlink, rename, readdir, unlink, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { archiveWorkspace, assertInside, directoryIdentity, readWorkspaceBytes } from '../daemon/jobs/workspace-integrity.ts';
+import { prepareWorkspace } from '../daemon/jobs/workspace.ts';
 
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 't06-files-')), workspace = join(root, 'job'); await mkdir(workspace);
@@ -19,6 +20,16 @@ async function boundedRead(read: Promise<Buffer | undefined>) {
   const settled = read.then(value => ({ kind: 'settled' as const, value }), error => ({ kind: 'rejected' as const, error }));
   const result = await Promise.race([settled, blocked]); clearTimeout(timer!); return result;
 }
+test('workspace files use owner-only permissions on POSIX', async t => {
+  if (process.platform === 'win32') { t.skip('File modes are ACL-controlled on Windows.'); return; }
+  const { root } = await fixture(t);
+  const packet = { schema: 'marginalia.job-packet.v1' as const, intent: 'explore' as const, question: 'Question',
+    source: { url: 'https://example.org', title: 'Example', pageType: null, capturedAt: null, sourceHash: 'hash', sourceVersionId: 'source' },
+    selection: { exact: 'Start', prefix: '', suffix: '', start: 0, end: 5, originalEnd: 5, omittedCharacters: 0 },
+    adjacentContext: { before: '', after: '', basis: 'bounded-character-context' as const }, availableCapabilities: [], omissions: [] };
+  const workspace = await prepareWorkspace(root, 'attempt', packet, '{}');
+  assert.equal((await stat(join(workspace, 'packet.json'))).mode & 0o777, 0o600);
+});
 test('bounded descriptor read rejects links, extra bytes and stale directory identity', async t => {
   const { root, workspace } = await fixture(t), identity = await directoryIdentity(workspace);
   await writeFile(join(workspace, 'packet.json'), 'reviewed');
