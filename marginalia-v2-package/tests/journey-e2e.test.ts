@@ -31,11 +31,17 @@ async function start(daemon: Daemon, submission: Submission, grant: ConsentGrant
 
 async function waitForRecovery(trip: Awaited<ReturnType<typeof journey>>, jobId: string): Promise<void> {
   const deadline = Date.now() + 5_000;
+  let incompleteRecord: SyntaxError | undefined;
   while (Date.now() < deadline) {
-    if ((await trip.calls()).some(call => call.lifetime === 'second' && call.kind === 'inspect' && call.jobId === jobId)) return;
+    try {
+      if ((await trip.calls()).some(call => call.lifetime === 'second' && call.kind === 'inspect' && call.jobId === jobId)) return;
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      incompleteRecord = error;
+    }
     await new Promise(resolveDelay => setTimeout(resolveDelay, 25));
   }
-  throw new Error(`Recovery did not inspect ${jobId}.`);
+  throw new Error(`Recovery did not inspect ${jobId}.`, { cause: incompleteRecord });
 }
 
 test('the reader journey completes end to end through the real daemon and saves the reply', async () => {

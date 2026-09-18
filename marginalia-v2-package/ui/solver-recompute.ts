@@ -173,19 +173,21 @@ export function createSolverRecompute(options: SolverRecomputeOptions): SolverRe
   };
 
   return {
-    async run(request, signal) {
-      const stateKey = await solverStateKeyFrom(request.stateKey);
-      const identity = recomputeIdentity({ replyVersionId: options.replyVersionId,
-        blockId: request.blockId, solverId: request.solverId, stateKey });
-      const active = inFlight.get(identity);
+    run(request, signal) {
+      const flightIdentity = recomputeIdentity({ replyVersionId: options.replyVersionId,
+        blockId: request.blockId, solverId: request.solverId, stateKey: request.stateKey });
+      const active = inFlight.get(flightIdentity);
       if (active) return active;
-      let requestId = ids.get(identity);
-      if (!requestId) {
-        requestId = REQUEST_ID.test(request.requestId) ? request.requestId
-          : (options.newRequestId?.() ?? globalThis.crypto.randomUUID());
-        ids.set(identity, requestId);
-      }
       const work = (async (): Promise<SolverRecomputeView> => {
+        const stateKey = await solverStateKeyFrom(request.stateKey);
+        const identity = recomputeIdentity({ replyVersionId: options.replyVersionId,
+          blockId: request.blockId, solverId: request.solverId, stateKey });
+        let requestId = ids.get(identity);
+        if (!requestId) {
+          requestId = REQUEST_ID.test(request.requestId) ? request.requestId
+            : (options.newRequestId?.() ?? globalThis.crypto.randomUUID());
+          ids.set(identity, requestId);
+        }
         if (attempted.has(identity)) {
           try {
             const earlier = await options.transport.result(requestId!, signal);
@@ -215,8 +217,10 @@ export function createSolverRecompute(options: SolverRecomputeOptions): SolverRe
           return finish(identity, outcome, stateKey);
         } catch { return unknownView(); }
       })();
-      inFlight.set(identity, work);
-      void work.finally(() => { if (inFlight.get(identity) === work) inFlight.delete(identity); }).catch(() => {});
+      inFlight.set(flightIdentity, work);
+      void work.finally(() => {
+        if (inFlight.get(flightIdentity) === work) inFlight.delete(flightIdentity);
+      }).catch(() => {});
       return work;
     },
     idle: () => baseView('idle', 'Nothing has been recomputed yet.',

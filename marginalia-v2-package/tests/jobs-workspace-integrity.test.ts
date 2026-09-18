@@ -1,10 +1,10 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { AsyncLocalStorage, createHook } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, link, symlink, rename, readdir, unlink, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { archiveWorkspace, assertInside, directoryIdentity, readWorkspaceBytes } from '../daemon/jobs/workspace-integrity.ts';
 import { prepareWorkspace } from '../daemon/jobs/workspace.ts';
 
@@ -19,6 +19,28 @@ async function boundedRead(read: Promise<Buffer | undefined>) {
   });
   const settled = read.then(value => ({ kind: 'settled' as const, value }), error => ({ kind: 'rejected' as const, error }));
   const result = await Promise.race([settled, blocked]); clearTimeout(timer!); return result;
+}
+async function swapAfterValidation(
+  read: () => Promise<Buffer | undefined>, swap: () => Promise<void> | void,
+) {
+  const scope = new AsyncLocalStorage<boolean>();
+  let signalReady!: () => void;
+  const ready = new Promise<void>(resolve => { signalReady = resolve; });
+  const hook = createHook({ init(_asyncId, type) {
+    if (type === 'Timeout' && scope.getStore() === true) signalReady();
+  } });
+  hook.enable();
+  try {
+    const pending = scope.run(true, read);
+    const gate = await Promise.race([
+      ready.then(() => ({ kind: 'ready' as const })),
+      pending.then(value => ({ kind: 'settled' as const, value }), error => ({ kind: 'rejected' as const, error })),
+    ]);
+    if (gate.kind === 'rejected') throw gate.error;
+    if (gate.kind === 'settled') throw new Error('Workspace read settled before its post-validation gate.');
+    await swap();
+    return boundedRead(pending);
+  } finally { hook.disable(); }
 }
 test('workspace files use owner-only permissions on POSIX', async t => {
   if (process.platform === 'win32') { t.skip('File modes are ACL-controlled on Windows.'); return; }
@@ -84,18 +106,20 @@ test('a linked history directory is rejected before creating descendants through
 test('a reply path swapped for a FIFO is rejected without blocking', { skip: process.platform === 'win32' && 'POSIX FIFO only' }, async t => {
   const { workspace } = await fixture(t), path = join(workspace, 'reply.json'), identity = await directoryIdentity(workspace);
   await writeFile(path, '{}');
-  const read = readWorkspaceBytes(identity, 'reply.json', 100, 100);
-  await delay(20, undefined, { ref: false }); await unlink(path); execFileSync('mkfifo', ['-m', '600', path]);
-  const result = await boundedRead(read);
+  const result = await swapAfterValidation(
+    () => readWorkspaceBytes(identity, 'reply.json', 100, 100),
+    async () => { await unlink(path); execFileSync('mkfifo', ['-m', '600', path]); },
+  );
   assert.notEqual(result.kind, 'blocked');
   if (result.kind === 'settled') assert.equal(result.value, undefined);
 });
 test('a directory swapped onto a reply path is rejected after open without blocking', async t => {
   const { workspace } = await fixture(t), path = join(workspace, 'reply.json'), identity = await directoryIdentity(workspace);
   await writeFile(path, '{}');
-  const read = readWorkspaceBytes(identity, 'reply.json', 100, 100);
-  await delay(20, undefined, { ref: false }); await unlink(path); await mkdir(path);
-  const result = await boundedRead(read);
+  const result = await swapAfterValidation(
+    () => readWorkspaceBytes(identity, 'reply.json', 100, 100),
+    async () => { await unlink(path); await mkdir(path); },
+  );
   assert.notEqual(result.kind, 'blocked');
   if (result.kind === 'settled') assert.equal(result.value, undefined);
 });

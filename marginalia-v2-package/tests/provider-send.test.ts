@@ -108,6 +108,12 @@ function adapter(kind: ProviderKind) {
   const request = { jobId: 'attempt', workspace: audit.workspace, policyKey: 'policy', model: 'synthetic', mode: 'structured-final' as const,
     prompt: 'a reviewed synthetic question', outputSchema: { type: 'object' } };
   const saved = new Map<string, ProviderHandle>(); let finalizations = 0;
+  const stateListeners = new Set<(handle: ProviderHandle) => void>();
+  const publish = (handle: ProviderHandle) => {
+    saved.set(handle.jobId, handle);
+    for (const listener of [...stateListeners]) listener(handle);
+    return handle;
+  };
   const hooks: ProviderHooks = {
     authorize: async r => ({ policyKey: r.policyKey, workspace: r.workspace, thread: { cwd: r.workspace, approvalPolicy: 'never' },
       turn: { cwd: r.workspace, approvalPolicy: 'never' }, mcp: { cwd: r.workspace, 'approval-policy': 'never' } }),
@@ -115,16 +121,32 @@ function adapter(kind: ProviderKind) {
     finalizeSend: (r, h) => {
       assert.equal(r.jobId, h.jobId); assert.equal(h.state, 'starting');
       assert.equal(saved.has(h.jobId), false, 'no canonical checkpoint before actual send');
-      finalizations++; const next = { ...h, revision: 1 }; saved.set(h.jobId, next); return next;
+      finalizations++; return publish({ ...h, revision: 1 });
     },
     checkpoint: async h => {
       const before = saved.get(h.jobId); assert.ok(before, 'a dispatched attempt must have been finalized');
-      assert.equal(h.revision, before.revision); const next = { ...h, revision: before.revision! + 1 }; saved.set(h.jobId, next); return next;
+      assert.equal(h.revision, before.revision); return publish({ ...h, revision: before.revision! + 1 });
     },
     authorizeRecovery: async () => {}, verifyThread: async () => {}, validateOutput: async text => JSON.parse(text).ok === true,
   };
   const runner = kind === 'app-server' ? new AppServerRunner(rpc, audit, hooks) : new McpServerRunner(rpc, audit, hooks);
-  return { rpc, hooks, runner, request, audit, saved, finalizations: () => finalizations };
+  const waitForState = (jobId: string, state: ProviderHandle['state']) => {
+    const current = saved.get(jobId);
+    if (current?.state === state) return Promise.resolve(current);
+    return new Promise<ProviderHandle>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        stateListeners.delete(listener);
+        reject(new Error(`Timed out waiting for ${jobId} to reach ${state}; last state: ${saved.get(jobId)?.state ?? 'missing'}.`));
+      }, 2_000);
+      timer.unref();
+      const listener = (handle: ProviderHandle) => {
+        if (handle.jobId !== jobId || handle.state !== state) return;
+        clearTimeout(timer); stateListeners.delete(listener); resolve(handle);
+      };
+      stateListeners.add(listener);
+    });
+  };
+  return { rpc, hooks, runner, request, audit, saved, waitForState, finalizations: () => finalizations };
 }
 
 for (const kind of ['app-server', 'mcp-server'] as const) {
@@ -187,7 +209,7 @@ for (const kind of ['app-server', 'mcp-server'] as const) {
     const f = adapter(kind);
     try {
       await f.runner.start({ ...f.request, prompt: 'EXIT_ON_SEND' });
-      for (let i = 0; i < 30 && f.saved.get('attempt')?.state !== 'outcome_unknown'; i++) await new Promise(r => setTimeout(r, 10));
+      await f.waitForState('attempt', 'outcome_unknown');
       assert.equal(f.saved.get('attempt')?.state, 'outcome_unknown'); assert.equal(f.finalizations(), 1);
       await assert.rejects(f.runner.start(f.request), /already-dispatched/);
     } finally { f.rpc.close(); }
