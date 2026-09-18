@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy — Marginalia</title>
+<meta name="description" content="What Marginalia stores, where it stores it, and what has to happen before anything leaves your machine.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='none'/%3E%3Cpath d='M11.5 1.5v13' stroke='%23566' stroke-width='1'/%3E%3Cpath d='M2 4h7M2 6.5h7M2 9h7M2 11.5h5' stroke='%23334' stroke-width='1.2'/%3E%3C/svg%3E">
+<style>
+:root {
+  --m-page: oklch(0.990 0.004 255);
+  --m-margin: oklch(0.968 0.007 255);
+  --m-sunken: oklch(0.940 0.008 255);
+  --m-ink: oklch(0.245 0.016 255);
+  --m-ink-2: oklch(0.400 0.014 255);
+  --m-ink-3: oklch(0.475 0.012 255);
+  --m-rule: oklch(0.895 0.008 255);
+  --m-rule-strong: oklch(0.800 0.010 255);
+  --m-accent: oklch(0.470 0.120 255);
+  --m-serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --m-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --m-mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --m-page: oklch(0.185 0.010 255);
+    --m-margin: oklch(0.215 0.011 255);
+    --m-sunken: oklch(0.230 0.010 255);
+    --m-ink: oklch(0.925 0.008 255);
+    --m-ink-2: oklch(0.800 0.010 255);
+    --m-ink-3: oklch(0.720 0.010 255);
+    --m-rule: oklch(0.320 0.012 255);
+    --m-rule-strong: oklch(0.440 0.012 255);
+    --m-accent: oklch(0.790 0.095 255);
+    color-scheme: dark;
+  }
+}
+/* Same dark values, reachable for checking without changing the system setting. */
+:root[data-theme="dark"] {
+  --m-page: oklch(0.185 0.010 255);
+  --m-margin: oklch(0.215 0.011 255);
+  --m-sunken: oklch(0.230 0.010 255);
+  --m-ink: oklch(0.925 0.008 255);
+  --m-ink-2: oklch(0.800 0.010 255);
+  --m-ink-3: oklch(0.720 0.010 255);
+  --m-rule: oklch(0.320 0.012 255);
+  --m-rule-strong: oklch(0.440 0.012 255);
+  --m-accent: oklch(0.790 0.095 255);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--m-page); color: var(--m-ink); font: 1.0625rem/1.65 var(--m-serif); }
+:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 3px; border-radius: 2px; }
+a { color: var(--m-accent); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+code { font: 0.875em/1.5 var(--m-mono); background: var(--m-sunken); padding: 0.1em 0.35em; border-radius: 3px; overflow-wrap: anywhere; }
+
+.skip { position: absolute; left: -9999px; top: 0; background: var(--m-page); color: var(--m-ink); border: 1px solid var(--m-rule-strong); border-radius: 4px; padding: 8px 12px; font: 0.875rem/1.4 var(--m-sans); z-index: 5; }
+.skip:focus { left: 12px; top: 12px; }
+
+.sheet { max-width: 70rem; margin: 0 auto; padding: 0 1rem 4rem; position: relative; }
+@media (min-width: 60rem) {
+  .sheet { padding: 0 2.5rem 6rem; }
+  .sheet::after { content: ""; position: absolute; top: 0; bottom: 0; right: calc(2.5rem + 15rem + 1.25rem); width: 1px; background: var(--m-rule); pointer-events: none; }
+}
+.band { padding: 2.25rem 0; border-top: 1px solid var(--m-rule); }
+.band:first-of-type { border-top: 0; }
+@media (min-width: 60rem) {
+  .band { display: grid; grid-template-columns: minmax(0, 1fr) 15rem; column-gap: 2.5rem; align-items: start; padding: 3rem 0; }
+  .band > * { grid-column: 1; }
+  .band > .note { grid-column: 2; grid-row: 2; margin: 0; padding: 0; border: 0; }
+}
+h1, h2 { font-weight: 400; margin: 0; text-wrap: balance; letter-spacing: -0.015em; }
+h1 { font-size: 2rem; line-height: 1.2; margin-bottom: 1rem; }
+h2 { font-size: 1.3rem; line-height: 1.3; margin-bottom: 0.9rem; }
+p { margin: 0 0 1rem; max-width: 40rem; }
+p:last-child { margin-bottom: 0; }
+ul.plain { margin: 0 0 1rem; padding-left: 1.25rem; max-width: 40rem; }
+ul.plain li { margin-bottom: 0.5rem; }
+.label { font: 600 0.75rem/1.4 var(--m-sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--m-ink-3); margin: 0 0 0.75rem; }
+.note { font: 0.8125rem/1.6 var(--m-sans); color: var(--m-ink-2); border-inline-start: 2px solid var(--m-rule); padding-inline-start: 0.75rem; margin: 1.25rem 0 0; max-width: 34rem; }
+.note p { margin: 0 0 0.6rem; max-width: none; }
+.masthead { padding: 2.25rem 0 0; }
+@media (min-width: 60rem) { .masthead { display: grid; grid-template-columns: minmax(0, 1fr) 15rem; column-gap: 2.5rem; padding-top: 3rem; } }
+.wordmark { font: 600 1.0625rem/1.4 var(--m-sans); letter-spacing: -0.02em; margin: 0; }
+.masthead nav { font: 0.8125rem/1.6 var(--m-sans); margin-top: 0.4rem; }
+.masthead nav a { margin-inline-end: 1rem; display: inline-block; }
+@media (min-width: 60rem) { .masthead nav { grid-column: 2; margin-top: 0.15rem; } }
+.foot { border-top: 1px solid var(--m-rule); padding-top: 1.75rem; font: 0.8125rem/1.7 var(--m-sans); color: var(--m-ink-3); }
+.foot ul { list-style: none; margin: 0 0 0.9rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem; }
+.updated { font: 0.8125rem/1.6 var(--m-sans); color: var(--m-ink-3); margin-bottom: 1.5rem; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="sheet">
+
+  <header class="masthead">
+    <p class="wordmark"><a href="index.html" style="color: inherit; text-decoration: none;">Marginalia</a></p>
+    <nav aria-label="Page sections">
+      <a href="index.html">Home</a>
+      <a href="https://github.com/yashgurbani/marginalia">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="main">
+
+    <section class="band" aria-labelledby="t-top">
+      <h1 id="t-top">Privacy</h1>
+      <p class="updated">Last updated 18 September 2026.</p>
+      <p>Marginalia keeps your reading on your computer. Nothing you read, select, highlight or write is sent anywhere until you have looked at the exact passage, seen who would receive it, and said yes.</p>
+      <p>This page describes the program you install. It is written against the code, not against an intention.</p>
+      <aside class="note">
+        <p>There is no account, no sign-up and no analytics in the extension or the helper.</p>
+      </aside>
+    </section>
+
+    <section class="band" aria-labelledby="t-store">
+      <p class="label">Storage</p>
+      <h2 id="t-store">Where your work lives.</h2>
+      <p>Your notes, highlights, threads and reading history are written to a SQLite database in a directory on your own machine. You can choose the directory with <code>MARGINALIA_DATA_DIR</code>. Nothing in that database is copied off your computer as part of ordinary use.</p>
+      <p>You can export the whole library as plain files at any time. Uninstalling the helper leaves your data in place.</p>
+      <aside class="note">
+        <p>Reading, highlighting and note-taking work with no network connection and no provider at all.</p>
+      </aside>
+    </section>
+
+    <section class="band" aria-labelledby="t-local">
+      <p class="label">The helper</p>
+      <h2 id="t-local">Everything stays on 127.0.0.1.</h2>
+      <p>The helper listens only on the loopback address <code>127.0.0.1</code>, by default on port <code>43120</code>. It is not reachable from another machine. It checks the <code>Host</code> and <code>Origin</code> of every request and requires a pairing token that you granted and can revoke.</p>
+      <p>The extension holds that one token and nothing else. Provider credentials never enter the browser. Page scripts cannot read the token.</p>
+      <p>Pairing uses a six-digit code that the helper prints, valid for five minutes and usable once. Pairing connects the extension to the helper. It does not authorise anything to be sent to a provider.</p>
+      <aside class="note">
+        <p>A port number is not authentication. The pairing token is, and you can revoke it from the extension options.</p>
+      </aside>
+    </section>
+
+    <section class="band" aria-labelledby="t-egress">
+      <p class="label">Sending</p>
+      <h2 id="t-egress">Nothing leaves without your approval.</h2>
+      <p>Selecting text sends nothing. Writing a note sends nothing. Saving and searching your own library sends nothing.</p>
+      <p>Asking the margin for help is a separate action. Before the first passage from a site is sent, the margin shows you:</p>
+      <ul class="plain">
+        <li>the exact text that would go, including any notes you chose to include;</li>
+        <li>the recipient, named as the actual provider and runtime that would receive it;</li>
+        <li>the scope of the permission you are being asked for.</li>
+      </ul>
+      <p>You then choose: this time, always on this site, or never on this site. A refusal persists and can be changed later from settings. On a site you have excluded, the margin does not offer an action that would fail.</p>
+      <p>Editing the request after the preview invalidates it. The frozen preview is what is sent, or nothing is.</p>
+      <p>The helper writes a record of every outgoing request before it dispatches and again after the outcome. That record is written by the helper, not by a model. If an outcome is unknown, the margin says it is unknown rather than claiming the request was not sent.</p>
+      <aside class="note">
+        <p>Asking uses a Codex runtime that starts on your computer, but the model inference itself happens on the provider's service. A local process is not local inference, and the consent preview names the real recipient.</p>
+      </aside>
+    </section>
+
+    <section class="band" aria-labelledby="t-auto">
+      <p class="label">Automatic work</p>
+      <h2 id="t-auto">Nothing runs on its own by default.</h2>
+      <p>Asking the margin needs an authorised local Codex runtime and is off until you turn it on. Automatic definitions are a separate setting, also off by default. A site permission you granted for one thing does not switch on another.</p>
+      <p>Fetching pages from the web is a second, narrower permission, asked per site. When the helper fetches a page for you it records what it fetched. If it cannot establish that the record is complete, it labels the record incomplete instead of implying it is whole.</p>
+      <p>Closed sessions are meant to run with no network access. That confinement has not yet been independently confirmed, and this page will not claim it has.</p>
+      <aside class="note">
+        <p>Clicking an ordinary link in a page is your browser doing its normal job. It is not Marginalia fetching anything.</p>
+      </aside>
+    </section>
+
+    <section class="band" aria-labelledby="t-site">
+      <p class="label">This website</p>
+      <h2 id="t-site">The page you are reading.</h2>
+      <p>This site is static HTML with its styles written inline. It sets no cookies, loads no fonts, scripts, images or stylesheets from other servers, and contains no analytics or advertising.</p>
+      <p>It is served by GitHub Pages. GitHub receives the ordinary request information any web server receives, such as your IP address, and handles it under GitHub's own privacy statement. Marginalia collects nothing from this page.</p>
+      <aside class="note">
+        <p>If you follow a link from here to GitHub, you are on GitHub's site and their terms apply.</p>
+      </aside>
+    </section>
+
+    <section class="band" aria-labelledby="t-change">
+      <p class="label">Changes</p>
+      <h2 id="t-change">If this changes.</h2>
+      <p>This policy describes the code at the current commit. When the behaviour changes, this page changes with it, and the history is in the repository where you can read the difference.</p>
+      <aside class="note">
+        <p>Questions and corrections belong in the repository issues.</p>
+      </aside>
+    </section>
+
+  </main>
+
+  <footer class="foot">
+    <ul>
+      <li><a href="index.html">Home</a></li>
+      <li><a href="https://github.com/yashgurbani/marginalia">Source on GitHub</a></li>
+      <li><a href="https://github.com/yashgurbani/marginalia/blob/main/LICENSE">MIT license</a></li>
+    </ul>
+    <p>Marginalia is a reading tool. It keeps the source intact, keeps your work on your computer, and asks before anything leaves it.</p>
+  </footer>
+
+</div>
+</body>
+</html>
