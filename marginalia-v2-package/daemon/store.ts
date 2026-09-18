@@ -10,6 +10,7 @@ export const digest = (value: string) => createHash('sha256').update(value).dige
 export class ConflictError extends Error { override name = 'Conflict'; }
 export class ReaderStore {
   db: Database.Database;
+  private readonly listStatements = new Map<string, Database.Statement>();
   constructor(filename: string) {
     const diskPath = filename === ':memory:' || filename === '' ? undefined : resolve(filename);
     // Inspect existing files read-only before opening a writer or setting journal_mode.
@@ -71,6 +72,7 @@ export class ReaderStore {
       CREATE TABLE IF NOT EXISTS grants(id TEXT PRIMARY KEY, site TEXT NOT NULL, scope TEXT NOT NULL, recipient TEXT NOT NULL, decision TEXT NOT NULL, createdAt TEXT NOT NULL, revokedAt TEXT);
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS vocabulary(term TEXT PRIMARY KEY, origin TEXT NOT NULL, status TEXT NOT NULL, firstSeen TEXT NOT NULL, lastSeen TEXT NOT NULL);
+      -- Search holds a second copy of captured text and must be included in erasure.
       CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(entityId UNINDEXED, kind UNINDEXED, content);
       INSERT OR IGNORE INTO migrations(version) VALUES(1);
     `);
@@ -123,6 +125,19 @@ export class ReaderStore {
     if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=7002').get()) {
       this.db.exec(`ALTER TABLE sources ADD COLUMN position TEXT; INSERT INTO migrations(version) VALUES(7002);`);
     }
+    if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=7004').get()) {
+      const hasReplies = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reply_versions'").get();
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS threads_list ON threads(deletedAt,createdAt,id);
+        CREATE INDEX IF NOT EXISTS threads_by_anchor ON threads(anchorId,deletedAt,createdAt,id);
+        CREATE INDEX IF NOT EXISTS anchors_by_source_version ON anchors(sourceVersionId);
+        CREATE INDEX IF NOT EXISTS notes_by_thread ON notes(threadId,createdAt,id);
+        CREATE INDEX IF NOT EXISTS highlights_by_thread ON highlights(threadId,deletedAt);
+        CREATE INDEX IF NOT EXISTS attachments_by_anchor ON attachments(anchorId,recordedAt,id);
+        ${hasReplies ? 'CREATE INDEX IF NOT EXISTS replies_by_thread ON reply_versions(threadId,createdAt,id);' : ''}
+        INSERT INTO migrations(version) VALUES(7004);
+      `);
+    }
   }
   close() { this.db.close(); }
   private event(kind: string, value: unknown) {
@@ -159,10 +174,14 @@ export class ReaderStore {
           const note = thread.notes.find(candidate => candidate.id === mutation.noteId);
           if (!note || note.revision !== mutation.expectedRevision) throw new ConflictError('This note changed elsewhere. Review the saved version before applying your change.');
           this.db.prepare('UPDATE notes SET deletedAt=?,revision=revision+1 WHERE id=?').run(mutation.removed ? now : null, mutation.noteId);
+          this.replaceSearch(mutation.noteId, 'note', mutation.removed ? null : note.text);
         } else {
           if (thread.revision !== mutation.expectedRevision) throw new ConflictError('This thread changed elsewhere. Review the saved version before applying your change.');
           if (mutation.kind === 'thread-state') this.db.prepare('UPDATE threads SET state=? WHERE id=?').run(mutation.state, mutation.threadId);
-          else this.db.prepare('UPDATE threads SET deletedAt=? WHERE id=?').run(mutation.removed ? now : null, mutation.threadId);
+          else {
+            this.db.prepare('UPDATE threads SET deletedAt=? WHERE id=?').run(mutation.removed ? now : null, mutation.threadId);
+            this.syncThreadSearch(mutation.threadId, mutation.removed);
+          }
         }
         this.db.prepare('UPDATE threads SET revision=revision+1,updatedAt=? WHERE id=?').run(now, mutation.threadId);
       }
@@ -223,8 +242,28 @@ export class ReaderStore {
     const revision = expectedRevision + 1;
     this.db.prepare('INSERT INTO notes VALUES(?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET text=excluded.text, revision=excluded.revision').run(id, threadId, text, revision, now);
     this.db.prepare('INSERT INTO note_versions VALUES(?,?,?,?)').run(id, revision, text, now);
-    this.db.prepare('DELETE FROM search WHERE entityId=? AND kind=?').run(id, 'note');
-    this.db.prepare('INSERT INTO search(entityId,kind,content) VALUES(?,?,?)').run(id, 'note', text);
+    this.replaceSearch(id, 'note', text);
+  }
+  private replaceSearch(id: string, kind: string, content: string | null) {
+    this.db.prepare('DELETE FROM search WHERE entityId=? AND kind=?').run(id, kind);
+    if (content !== null) this.db.prepare('INSERT INTO search(entityId,kind,content) VALUES(?,?,?)').run(id, kind, content);
+  }
+  private syncThreadSearch(threadId: string, removed: boolean) {
+    this.db.prepare(`DELETE FROM search WHERE kind IN ('note','reply') AND entityId IN (
+      SELECT id FROM notes WHERE threadId=? UNION SELECT id FROM reply_versions WHERE threadId=?)`).run(threadId, threadId);
+    this.db.prepare(`DELETE FROM search WHERE kind='source' AND entityId IN (
+      SELECT a.sourceVersionId FROM threads t JOIN anchors a ON a.id=t.anchorId WHERE t.id=?
+      UNION SELECT x.targetVersionId FROM threads t JOIN attachments x ON x.anchorId=t.anchorId WHERE t.id=?)
+      AND entityId NOT IN (SELECT a.sourceVersionId FROM threads t JOIN anchors a ON a.id=t.anchorId WHERE t.deletedAt IS NULL
+      UNION SELECT x.targetVersionId FROM threads t JOIN attachments x ON x.anchorId=t.anchorId WHERE t.deletedAt IS NULL)`).run(threadId, threadId);
+    if (removed) return;
+    this.db.prepare(`INSERT INTO search(entityId,kind,content)
+      SELECT id,'note',text FROM notes WHERE threadId=? AND deletedAt IS NULL
+      UNION ALL SELECT id,'reply',json_extract(json,'$.title') || char(10) || json_extract(json,'$.summary') || char(10) || json_extract(json,'$.staticFallback') FROM reply_versions WHERE threadId=? AND deletedAt IS NULL
+      UNION ALL SELECT v.id,'source',v.text FROM source_versions v WHERE v.id IN (
+        SELECT a.sourceVersionId FROM threads t JOIN anchors a ON a.id=t.anchorId WHERE t.id=?
+        UNION SELECT x.targetVersionId FROM threads t JOIN attachments x ON x.anchorId=t.anchorId WHERE t.id=?)
+        AND NOT EXISTS(SELECT 1 FROM search WHERE entityId=v.id AND kind='source')`).run(threadId, threadId, threadId, threadId);
   }
   get(id: string): Thread | undefined {
     const row = this.db.prepare(`SELECT t.*, a.sourceVersionId, a.json, s.url as sourceUrl, COALESCE(v.title,s.title) as sourceTitle FROM threads t JOIN anchors a ON a.id=t.anchorId JOIN source_versions v ON v.id=a.sourceVersionId JOIN sources s ON s.id=v.sourceId WHERE t.id=?`).get(id) as (Omit<Thread, 'anchor' | 'notes' | 'highlighted'> & { json: string }) | undefined;
@@ -233,8 +272,17 @@ export class ReaderStore {
     return { ...thread, anchor: JSON.parse(json) as QuoteAnchor, notes: this.db.prepare('SELECT * FROM notes WHERE threadId=? ORDER BY createdAt,id').all(id) as Note[], highlighted: !!this.db.prepare('SELECT 1 FROM highlights WHERE threadId=? AND deletedAt IS NULL').get(id) };
   }
   list(url?: string, includeRemoved = false): Thread[] {
-    const ids = this.db.prepare('SELECT id FROM threads ORDER BY createdAt,id').all() as { id: string }[];
-    return ids.map(({ id }) => this.get(id)!).filter(t => (!url || t.sourceUrl === url) && (includeRemoved || !t.deletedAt)).sort((a, b) => a.anchor.start - b.anchor.start || a.createdAt.localeCompare(b.createdAt));
+    const key = `${url ? 'url' : 'all'}:${includeRemoved ? 'removed' : 'active'}`;
+    let statement = this.listStatements.get(key);
+    if (!statement) {
+      statement = this.db.prepare(`SELECT t.id FROM threads t JOIN anchors a ON a.id=t.anchorId
+        JOIN source_versions v ON v.id=a.sourceVersionId JOIN sources s ON s.id=v.sourceId
+        ${url || !includeRemoved ? `WHERE ${url ? 's.url=?' : ''}${url && !includeRemoved ? ' AND ' : ''}${!includeRemoved ? 't.deletedAt IS NULL' : ''}` : ''}
+        ORDER BY t.createdAt,t.id`);
+      this.listStatements.set(key, statement);
+    }
+    const ids = (url ? statement.all(url) : statement.all()) as { id: string }[];
+    return ids.map(({ id }) => this.get(id)!).sort((a, b) => a.anchor.start - b.anchor.start || a.createdAt.localeCompare(b.createdAt));
   }
   reattach(threadId: string, text: string, tabCapture: string, capture?: SourceCapture) {
     const thread = this.get(threadId);
@@ -249,6 +297,7 @@ export class ReaderStore {
       const targetVersionId = this.captureVersion(capture ?? { url: thread.sourceUrl, text });
       const id = digest(canonicalReplyData([thread.anchorId, targetVersionId, tabCapture]));
       const inserted = this.db.prepare('INSERT OR IGNORE INTO attachments(id,anchorId,targetVersionId,tabCapture,state,candidates,recordedAt) VALUES(?,?,?,?,?,?,?)').run(id, thread.anchorId, targetVersionId, tabCapture, result.state, JSON.stringify(result.candidates), new Date().toISOString());
+      if (thread.deletedAt) this.syncThreadSearch(threadId, true);
       if (inserted.changes) this.event('attachment-recorded', { threadId, attachmentId: id, targetVersionId, state: result.state });
       return result;
     })();
@@ -310,6 +359,7 @@ export class ReaderStore {
       if (!reply) throw new Error('This reply is unavailable.');
       if (reply.revision !== change.expectedRevision) throw new ConflictError('This reply changed elsewhere.');
       this.db.prepare('UPDATE reply_versions SET deletedAt=?,revision=revision+1 WHERE id=?').run(change.removed ? new Date().toISOString() : null, reply.id);
+      this.replaceSearch(reply.id, 'reply', change.removed || this.get(reply.threadId)?.deletedAt ? null : [reply.reply.title, reply.reply.summary, reply.reply.staticFallback].join('\n'));
       this.event('reply-removed', { threadId: reply.threadId, replyVersionId: reply.id, removed: change.removed });
       return this.reply(reply.id)!;
     });
@@ -470,7 +520,7 @@ function exportRequest(serialized: string): HistoryRow {
 }
 
 // Membership, not MAX(version): T06/T13 share this database but own their migrations.
-const READER_MIGRATIONS = [1, 2, 4, 7001, 7002] as const;
+const READER_MIGRATIONS = [1, 2, 4, 7001, 7002, 7004] as const;
 const KNOWN_MIGRATIONS = new Set<number>([...READER_MIGRATIONS, 3, 13]);
 type ReaderSchema = { versions: number[]; hasSchema: boolean };
 type BackupManifest = { schema: 'marginalia.reader-backup.v1'; createdAt: string; versions: number[]; sha256: string };
