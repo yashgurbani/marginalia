@@ -237,6 +237,54 @@ test('inert paged export freezes exact JSON and requests download only on explic
   assert.equal(await downloaded!.text(), frozen); assert.equal(requests, 1); assert.equal(h.live(), 'JSON export download requested.');
 });
 
+test('Export everything re-reads all visibility states and requests local Markdown and JSON-LD downloads', async t => {
+  const active = thread('active'), removed = thread('removed', true);
+  const blobs: Blob[] = [], filenames: string[] = []; let lists = 0;
+  t.mock.method(URL, 'createObjectURL', (blob: Blob) => { blobs.push(blob); return `blob:library-${blobs.length}`; });
+  t.mock.method(URL, 'revokeObjectURL', () => {});
+  const h = setup(t, {
+    listThreads: async () => { lists++; return [active, removed]; },
+    exportThread: async id => ({ thread: id === active.id ? active : removed }),
+  });
+  await settle();
+  const before = h.doc.created.length;
+  button(h.host, 'Export everything').click(); await settle();
+  for (const node of h.doc.created.slice(before)) if (node.tagName === 'A' && node.download) filenames.push(node.download);
+  assert.equal(lists, 2, 'the export refreshes the initial library listing');
+  assert.deepEqual(filenames, ['marginalia-library.md', 'marginalia-library.jsonld']);
+  assert.equal(blobs.length, 2);
+  assert.match(await blobs[0].text(), /^# Marginalia library export/);
+  const json = JSON.parse(await blobs[1].text()) as { total: number; first: { items: Array<{ 'marginalia:deletedAt': string | null }> } };
+  assert.equal(json.total, 2); assert.equal(json.first.items.some(item => item['marginalia:deletedAt'] !== null), true);
+  assert.equal(h.live(), 'Markdown and Web Annotation downloads requested for 2 threads.');
+});
+
+test('whole-library read failure or wrong identity produces no partial downloads and permits retry', async t => {
+  let requests = 0, mode = 'failure';
+  t.mock.method(URL, 'createObjectURL', () => { requests++; return 'blob:fixture'; });
+  t.mock.method(URL, 'revokeObjectURL', () => {});
+  const h = setup(t, { listThreads: async () => [thread('one'), thread('two')], exportThread: async id => {
+    if (id === 'two' && mode === 'failure') throw new Error('read failed');
+    return { thread: thread(mode === 'wrong' ? 'wrong' : id) };
+  } });
+  await settle(); button(h.host, 'Export everything').click(); await settle();
+  assert.equal(requests, 0); assert.equal(h.live(), 'read failed');
+  mode = 'wrong'; button(h.host, 'Export everything').click(); await settle();
+  assert.equal(requests, 0); assert.match(h.live(), /different thread/);
+  mode = 'success'; button(h.host, 'Export everything').click(); await settle();
+  assert.equal(requests, 2);
+});
+
+test('destroying the library fences delayed whole-library downloads and duplicate clicks share one read', async t => {
+  const pending = deferred<unknown>(); let reads = 0, downloads = 0;
+  t.mock.method(URL, 'createObjectURL', () => { downloads++; return 'blob:fixture'; });
+  const h = setup(t, { exportThread: () => { reads++; return pending.promise; } });
+  await settle(); const action = button(h.host, 'Export everything');
+  action.click(); action.click(); await settle(); assert.equal(reads, 1);
+  h.destroy(); pending.resolve({ thread: thread() }); await settle();
+  assert.equal(downloads, 0);
+});
+
 test('model save captures submitted values, blocks duplicate saves, and keeps later edits', async t => {
   const saved = deferred<ModelSettings>(); const changes: Array<{ fast: string; deep: string; expectedRevision: number }> = [];
   const h = setup(t, { saveModels: change => { changes.push(change); return changes.length === 1 ? saved.promise : Promise.resolve(models(3, change.fast, change.deep)); } }); await h.settings();

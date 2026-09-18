@@ -7,7 +7,7 @@ import type { FollowupJobInput, FrozenJobContext, JobSnapshot, PreparedJobResult
 import type { OutgoingPart, PrepareConsentInput } from '../../contracts/consent.ts';
 import type { ReaderStore } from '../store.ts';
 import type { AuthorizedRuntimeFactory, RunningProvider } from './runtime.ts';
-import { JobConflictError, JobStore, packetDigest } from './store.ts';
+import { ClarificationLimitError, JobConflictError, JobStore, packetDigest } from './store.ts';
 import { prepareContinuationWorkspace, prepareWorkspace, provisionalForDisplay, readReplyFile, restoreCompletedWorkspace, verifyContinuationWorkspace } from './workspace.ts';
 import { buildProviderPrompt, prepareEnvelope } from './envelope.ts';
 import type { LibrarySettingsService } from '../library.ts';
@@ -499,7 +499,15 @@ export class JobService {
         if (!job || job.latestAttemptId !== attemptId || job.cancelRequested || ['succeeded', 'failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(job.state)) return;
         const partial = await readReplyFile(workspace, 'reply.partial.json', job.context.sourceText, capabilities);
         if (partial && !this.closing) this.store.saveProvisional(jobId, attemptId, provisionalForDisplay(partial));
-      })().catch(() => { /* A transient or invalid partial never gains authority. */ })
+      })().catch(async error => {
+        if (error instanceof ClarificationLimitError) {
+          this.store.setState(jobId, attemptId, 'failed', error.message);
+          this.recordOutcome(attemptId, 'invalid-output');
+          this.clearActivity(attemptId);
+          await this.releaseRuntime(attemptId);
+        }
+        // A transient or invalid partial never gains authority.
+      })
         .finally(() => { reading = false; this.pending.delete(observed); });
       this.pending.add(observed);
     }, 250);

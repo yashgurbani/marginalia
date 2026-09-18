@@ -3,6 +3,7 @@ import type { ModelSettings, VocabularyEntry } from '../../contracts/library.ts'
 import { providerCapabilities } from '../../contracts/provider-capabilities.ts';
 import type { Thread, ThreadState } from '../../contracts/reader.ts';
 import { mountConsentSettings } from '../consent.ts';
+import { wholeLibraryExport, type LibraryThreadExport } from './export.ts';
 import { retainedCopiesSection } from '../retained-copies.ts';
 
 export type LibraryPermissions = {
@@ -39,6 +40,7 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
   let libraryError = '', modelError = '', vocabularyError = '', status = '', modelSaveError = '';
   let permissions: { grants: ConsentGrant[]; exclusions: SiteExclusion[] } | undefined, permissionsError = '';
   let permissionsLoading = false, permissionWork = 0;
+  let wholeExporting = false;
   let exportPreview: { thread: Thread; json: string; page: number } | undefined;
   let threadLoad = 0, modelLoad = 0, vocabularyLoad = 0, permissionLoad = 0, exportLoad = 0, navigation = 0, statusRevision = 0;
   let modelSave: number | undefined;
@@ -99,7 +101,9 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
       const control = button(cap(value), () => { filter = value; render(); }, 'ml__filter', `filter-${value}`);
       control.setAttribute('aria-pressed', String(filter === value)); filters.append(control);
     }
-    section.append(h2, filters);
+    const exportEverything = button(wholeExporting ? 'Preparing everything…' : 'Export everything', () => void exportAll(), 'ml__quiet', 'export-everything');
+    exportEverything.disabled = wholeExporting;
+    section.append(h2, filters, exportEverything);
     if (libraryError) section.append(calm(libraryError, () => void loadThreads(), 'Try again'));
     else if (!threads) section.append(skeleton('Opening your library'));
     else {
@@ -378,6 +382,28 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
       exportPreview = { thread, json, page: 0 }; finishStatus(ticket, 'Review the JSON before downloading it.'); render();
     } catch (error) { if (current() && generation === exportLoad) finishStatus(ticket, message(error, 'This thread could not be exported.')); }
   };
+  const exportAll = async () => {
+    if (!current() || wholeExporting) return;
+    const generation = ++exportLoad, ticket = announce('Preparing Markdown and Web Annotation exports.');
+    wholeExporting = true; render();
+    try {
+      const listed = await owned(() => options.listThreads());
+      const records = await Promise.all(listed.map(async thread => {
+        const record = await owned(() => options.exportThread(thread.id)) as LibraryThreadExport;
+        if (record?.thread?.id !== thread.id) throw new Error(`The export for ${thread.id} returned a different thread.`);
+        return record;
+      }));
+      if (!current() || generation !== exportLoad) return;
+      const output = wholeLibraryExport(records);
+      download(output.markdown, 'text/markdown;charset=utf-8', 'marginalia-library.md');
+      download(output.jsonLd, 'application/ld+json;charset=utf-8', 'marginalia-library.jsonld');
+      finishStatus(ticket, `Markdown and Web Annotation downloads requested for ${records.length} ${records.length === 1 ? 'thread' : 'threads'}.`);
+    } catch (error) {
+      if (current() && generation === exportLoad) finishStatus(ticket, message(error, 'The library could not be exported.'));
+    } finally {
+      wholeExporting = false; if (current()) render();
+    }
+  };
   const closePreview = () => {
     if (!current()) return;
     exportLoad++; exportPreview = undefined; announce('Export preview closed.'); render();
@@ -449,3 +475,7 @@ function originLabel(value: string) { return value === 'lookup' || value === 'lo
 function statusLabel(value: string) { return value === 'familiar' ? 'Familiar' : value === 'active' ? 'Remembered' : cap(value); }
 function safeFile(value: string) { return value.normalize('NFKD').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'marginalia-thread'; }
 function message(error: unknown, fallback: string) { return error instanceof Error && error.message ? error.message : fallback; }
+function download(content: string, type: string, filename: string) {
+  const url = URL.createObjectURL(new Blob([content], { type })), link = document.createElement('a');
+  link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url);
+}

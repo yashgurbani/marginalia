@@ -22,7 +22,7 @@ export type ResolvedSolverArtifacts = {
   solverSha256: string;
   solverBytes: number;
   runtimeExecutable: string;
-  runtimeSha256?: string;
+  runtimeSha256: string;
 };
 
 export type PreparedSolverInput = {
@@ -63,7 +63,7 @@ async function assertRealDirectory(path: string): Promise<SolverValidation<strin
  * Reads a bounded regular file through a no-follow handle and hashes what was
  * actually read, not what a prior stat described.
  */
-async function hashRegularFile(path: string, maxBytes: number): Promise<SolverValidation<{ sha256: string; bytes: number }>> {
+export async function hashRegularFile(path: string, maxBytes: number): Promise<SolverValidation<{ sha256: string; bytes: number }>> {
   let first;
   try { first = await lstat(path); } catch { return failure('artifact-unknown', 'The saved solver file is no longer present in its job workspace.'); }
   if (!first.isFile() || first.isSymbolicLink()) return failure('path-unsafe', 'The saved solver path is not a regular file.');
@@ -81,7 +81,7 @@ async function hashRegularFile(path: string, maxBytes: number): Promise<SolverVa
     const bytes = Buffer.alloc(opened.size);
     const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
     const after = await handle.stat();
-    if (after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ino !== opened.ino || after.dev !== opened.dev) {
+    if (bytesRead !== opened.size || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs || after.ino !== opened.ino || after.dev !== opened.dev) {
       return failure('artifact-modified', 'The saved solver file changed while it was being read.');
     }
     return { ok: true, value: { sha256: createHash('sha256').update(bytes.subarray(0, bytesRead)).digest('hex'), bytes: bytesRead } };
@@ -95,6 +95,9 @@ async function hashRegularFile(path: string, maxBytes: number): Promise<SolverVa
 export async function resolveSolverArtifacts(binding: SolverArtifactBinding): Promise<SolverValidation<ResolvedSolverArtifacts>> {
   if (!isAbsolute(binding.workspace)) return failure('path-unsafe', 'An absolute job workspace path is required.');
   if (!isAbsolute(binding.runtimeExecutable)) return failure('path-unsafe', 'An absolute interpreter path is required.');
+  if (binding.runtimeIdentity !== process.release.name || binding.runtimeVersion !== process.version) {
+    return failure('artifact-modified', 'This saved solver was recorded for a different interpreter. Ask again to rebuild it with the current interpreter.');
+  }
   if (!safeRelativeSolverPath(binding.solverRelativePath)) return failure('path-unsafe', 'The solver path is not a safe relative workspace path.');
   if (!isDigest(binding.solverSha256)) return failure('artifact-unknown', 'The solver artifact has no pinned content hash.');
 
@@ -121,14 +124,11 @@ export async function resolveSolverArtifacts(binding: SolverArtifactBinding): Pr
     return failure('path-unsafe', 'The interpreter must not live inside the job workspace it executes.');
   }
 
-  let runtimeSha256: string | undefined;
-  if (binding.runtimeSha256 !== undefined) {
-    if (!isDigest(binding.runtimeSha256)) return failure('artifact-unknown', 'The interpreter has an invalid pinned hash.');
-    const hashed = await hashRegularFile(runtimeActual, 512 * 1024 * 1024);
-    if (!hashed.ok) return hashed;
-    if (hashed.value.sha256 !== binding.runtimeSha256) return failure('artifact-modified', 'The configured interpreter no longer matches its pinned hash.');
-    runtimeSha256 = hashed.value.sha256;
-  }
+  if (!binding.runtimeSha256) return failure('artifact-unknown', 'This saved solver has no pinned interpreter binary. Ask again to rebuild it.');
+  if (!isDigest(binding.runtimeSha256)) return failure('artifact-unknown', 'The interpreter has an invalid pinned hash.');
+  const hashed = await hashRegularFile(runtimeActual, 512 * 1024 * 1024);
+  if (!hashed.ok) return hashed;
+  if (hashed.value.sha256 !== binding.runtimeSha256) return failure('artifact-modified', 'The configured interpreter no longer matches its pinned hash.');
 
   return { ok: true, value: {
     workspace: workspace.value,
@@ -136,7 +136,7 @@ export async function resolveSolverArtifacts(binding: SolverArtifactBinding): Pr
     solverSha256: solver.value.sha256,
     solverBytes: solver.value.bytes,
     runtimeExecutable: runtimeActual,
-    ...(runtimeSha256 ? { runtimeSha256 } : {}),
+    runtimeSha256: hashed.value.sha256,
   } };
 }
 

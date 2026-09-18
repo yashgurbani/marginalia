@@ -109,6 +109,9 @@ export type JobAttempt = {
 };
 
 export type JobSnapshot = {
+  /** Host-owned durable budget. Retries share a build; reviewed follow-ups start a new one.
+   * Optional only for older serialized snapshots. Reading this value never spends it. */
+  clarificationBudget?: { buildId: string; limit: 1; used: 0 | 1 };
   id: string;
   threadId: string;
   idempotencyKey: string;
