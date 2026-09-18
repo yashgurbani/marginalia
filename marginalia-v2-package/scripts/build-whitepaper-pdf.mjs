@@ -21,7 +21,9 @@ if (!tools) throw new Error('Provide a tools directory argument or WHITEPAPER_PD
 const require = createRequire(resolve(tools, 'package.json'));
 const MarkdownIt = require('markdown-it');
 const md = new MarkdownIt({ html: false, linkify: true, typographer: false });
-const source = await readFile(resolve(root, 'marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md'), 'utf8');
+const raw = await readFile(resolve(root, 'marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md'), 'utf8');
+// The source keeps its placeholder byline; the PDF omits it because the cover page names the author.
+const source = raw.replace(/^\d{4}-\d{2}-\d{2} · @Someone\r?\n/m, '');
 const tokens = md.parse(source, {});
 const headings = [];
 const ids = new Set();
