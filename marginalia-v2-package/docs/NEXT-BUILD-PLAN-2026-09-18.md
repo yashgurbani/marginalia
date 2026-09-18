@@ -32,6 +32,8 @@ Judgment: the durable-reader core is real and tested. The remaining distance to 
 
 **Fourth: the three gated features, in the order they unlock.** Whole-library export (E12) has no gate and matches whitepaper line 159; ship it. Vocabulary (H02) is the whitepaper's "help accumulates" claim and is the smallest of the three once Yash chooses explicit keep. Own documents (H05) is the largest silent scope cut; build the interim PDF path only after install is proven.
 
+**The GPT-6 Pro fidelity ledger agrees with this order.** Its 120 rows come out 70 partial, 29 missing, 13 reachable, 6 contradicted, 2 built-unreachable, and its Phase 5 summary is the sharpest sentence in the week's paperwork: egress exists but its UI authority is incomplete; solver wiring exists but execution is blocked; JSON export exists but broader export is unfinished; the API journey is not a browser journey. Every one of those is an honesty or evidence item, not an engine item. Its seven Stage 1 packets are ticketed (E16 to E20, E11, and M3 behind H02); its Stage 2 designs mostly describe work merged this week and E14 will mark them superseded. Two of its owner recommendations differ from Fable's (G5 local files before PDF, G10 a local selection card) and ride along as second opinions in H05 and H10.
+
 **Do not build:** automatic definitions under a site grant (H08), multi-anchor threads before the FTS and export decisions land (H14), or any deletion of the parked journal, solver and consent code before H06.
 
 ## 3. Product experience: the five things a reader will feel
@@ -62,7 +64,7 @@ Eight worker runs merged this session across four Codex accounts, one is in flig
 - **Bounded packets with allowed and forbidden file lists produced clean merges.** Eight merges, zero conflicts needing hand resolution, including two runs that both touched `ui/margin.ts`. The packet format (why, task, allowed files, checks with baseline totals, report path, line limit) is worth keeping verbatim.
 - **Sol medium was sufficient for every engineering packet here.** No packet needed escalation. Reserve Astra medium and above for coupled ambiguity, not for size.
 - **Luna max failed on capacity, not on ability.** Two "at capacity" responses on the lrh account. Plan Luna work with a Sol fallback stated in the packet.
-- **The GPT-6 Pro long-horizon review stalls on multi-phase prompts.** It paused after Phase 1 twice waiting for a "continue". The single-message variant (§9 of `PRO-LONG-HORIZON-2026-09-18.md`) is the fix; treat its output as findings to verify, not as decisions.
+- **The GPT-6 Pro long-horizon review stalls on multi-phase prompts.** It paused after Phase 1 twice waiting for a "continue". The single-message variant (§9 of `PRO-LONG-HORIZON-2026-09-18.md`) worked and delivered all five phases in one file. Its Phase 5 self-refutation was worth the whole run: it downgraded its own rows, named what a worker could invent in each packet, and argued against each of its own recommendations. Ask for that phase every time. Treat the rest as findings to verify, not as decisions.
 - **Account cycling worked when each account carried one run at a time.** Five-hour windows on Plus accounts cycled without a stall once gs was reserved for Yash. Grep for "usage limit" or "401" in worker logs matches repository text; read the header lines and the tail instead.
 - **Worktrees plus a `node_modules` junction cost seconds and saved every parallel run.** Keep it. Never delete worktrees; they hold the reports.
 - **What did not work:** waiting on a long review, and Bash heredocs with backticks for packet files (use a file-writing tool). Both are cheap to avoid.
@@ -71,9 +73,9 @@ Eight worker runs merged this session across four Codex accounts, one is in flig
 
 | Wave | Engineering | QA | Yash |
 | --- | --- | --- | --- |
-| 1 | E01, E02, E03, E09 | Q01, Q03, Q07 | H01, H09, H11, H12 |
-| 2 | E04, E05, E06, E08, E10 | Q02, Q04, Q05, Q09 | H02, H03, H10, H13 |
-| 3 | E07, E11, E12, E13, E15 | Q06, Q08 | H04, H05, H06, H07, H08, H14 |
-| Release | E14 as the Pro review lands | | H15 twenty-minute verdict |
+| 1 | E01, E02, E03, E09, E14 | Q01, Q03, Q07 | H01, H09, H11, H12 |
+| 2 | E04, E05, E06, E08, E10, E16, E17, E18 | Q02, Q04, Q05, Q09 | H02, H03, H10, H13, H16 |
+| 3 | E07, E11, E12, E13, E15, E19, E20 | Q06, Q08 | H04, H05, H06, H07, H08, H14 |
+| Release | | | H15 twenty-minute verdict |
 
 Two premium runs at once. Every merge green before push. Every ticket closed with evidence paths. Yash's four yes answers on H15 release the build; each no becomes a ticket in his words.

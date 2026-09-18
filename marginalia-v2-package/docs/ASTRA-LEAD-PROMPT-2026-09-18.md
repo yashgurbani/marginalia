@@ -14,7 +14,7 @@ Governing decisions you never revisit: source page unchanged; notes senior to re
 
 ## Where things stand
 
-Read `docs/ASTRA-HANDOFF-2026-09-18.md` first: it lists the head (`fdb12dc` at handoff), the merged commits, the architecture, what is verified and what is only claimed, and the rules. The suite at head is 785 tests, 780 pass, 0 fail, 5 skipped (POSIX-only); `npm run typecheck` and `npm run prepare && npm run extension:typecheck` are clean. Confirm all of that yourself before your first dispatch; a handoff is a set of claims until you check it.
+Read `docs/ASTRA-HANDOFF-2026-09-18.md` first: it lists the head (`dc94636` pushed at handoff), the merged commits, the architecture, what is verified and what is only claimed, and the rules. The suite at head is 785 tests, 780 pass, 0 fail, 5 skipped (POSIX-only); `npm run typecheck` and `npm run prepare && npm run extension:typecheck` are clean. Confirm all of that yourself before your first dispatch; a handoff is a set of claims until you check it.
 
 Stage 0 (contract) and Stage 1 (durable reader) of `docs/FEATURE-STRATEGY-2026-09-18.md` are built. Stage 2 (real definition, install) is mostly built: egress record and retention, alarm reconnect, migration message, narrow sheet, library route are merged; the installer (M13) may still be unmerged in worktree `D:/Projects/Marginalia-worktrees/fable-m13-installer`. Stage 3 items and all standards refactors are open. Every remaining piece of work is a ticket.
 
@@ -22,9 +22,9 @@ Stage 0 (contract) and Stage 1 (durable reader) of `docs/FEATURE-STRATEGY-2026-0
 
 `wayfinder/astra/MAP.md` is the execution map. Tickets are under `wayfinder/astra/tickets/` in three streams:
 
-- **E01 to E15, engineering.** Yours and your children's.
+- **E01 to E20, engineering.** Yours and your children's. E16 to E20 come from the GPT-6 Pro review's Stage 1 packets.
 - **Q01 to Q09, QA and evidence.** Luna xhigh checklists, Astra low for exploratory browser work. Evidence goes to `docs/evidence/qa-2026-09-18/` with the file names in `docs/QA-HANDOFF-ASTRA.md` §10. Evidence is command output and screenshots, never a sentence saying it passed.
-- **H01 to H15, decisions only Yash can make.** Each carries Fable's recommendation. You never resolve these. When one blocks you, tell Fable which one and what you can build meanwhile.
+- **H01 to H16, decisions only Yash can make.** Each carries Fable's recommendation. You never resolve these. When one blocks you, tell Fable which one and what you can build meanwhile.
 
 Each ticket header carries `mode`, `status`, `blocked_by`, `route`. Before work, set `status: claimed (astra, <date>)`. On completion set `status: closed`, add `## Resolution` with the evidence paths and the actual model and effort used, and append one line under "Decisions so far" in `MAP.md`.
 
@@ -37,20 +37,26 @@ Optimise for the reader installing the thing and trusting it, in that order. The
 - E02 finish P7: bump `@types/better-sqlite3` to 13.x, fix type fallout, decide postinstall, push, read the three CI runs. Sol medium.
 - E03 extension icons at 16, 32, 48, 128. Astra visual. Chrome Web Store is blocked on this alone.
 - E09 two rail dots with 24px hit targets and the CSS specificity fix. Sol medium, after E02 finishes (premium cap).
+- E14 triage the fidelity ledger (see the section below). Astra alone, reading only; it decides what E16 to E20 look like at head.
 - Q01 gate 0 evidence, Q03 gate 2 evidence, Q07 real-browser extension checklist. Luna xhigh. Q07 will produce the first honest picture of the extension; expect it to open new E tickets.
 - Ask Fable to get H01, H09, H11, H12 resolved with Yash in one sitting. H01 changes consent copy; H11 changes how every report is judged.
 
 **Wave 2 (as wave 1 lands):**
 - E04 one digest literal (Luna max, mechanical), then E05 route table extraction and E06 margin decomposition (Sol medium, one at a time; both depend on E04 and both are pure refactors with zero behaviour change).
+- E16 copy honesty (after H01), E17 record-backed sending status, E18 reply removal with Undo. Sol medium, one at a time; all three are Stage 1 packets from the review and each mirrors a pattern already merged.
 - E08 confinement evidence collector (Sol medium): fix `maxOutputBytes` and `executionAttemptId` first, then the evidence record. This unblocks Q06.
 - E10 diagnostics surfaced (Sol medium, after E05 so it lands as a route module).
 - Q02 gate 1 (with Yash's feel verdict), Q04 gate 3, Q05 gate 4 (after E02, E03), Q09 flake fixes (Sol medium).
 
 **Wave 3:**
-- E07 solver-interpreter pinning and the jobs pipeline map. E11 "You were here" (after H11). E12 whole-library export. E13 Stage 3 renderer items. E15 docs refresh (Luna max; if Luna reports capacity, Sol medium). Q06 gate 5a (after E08 and H01). Q08 per-OS matrix from CI logs.
+- E07 solver-interpreter pinning and the jobs pipeline map. E19 reattach observations (after E07). E20 suggestions exposure record (after H03). E11 "You were here" (after H11). E12 whole-library export. E13 Stage 3 renderer items. E15 docs refresh (Luna max; if Luna reports capacity, Sol medium). Q06 gate 5a (after E08 and H01). Q08 per-OS matrix from CI logs.
 - Then H15: Yash reads two real pages for twenty minutes. Four yes answers release. Each no becomes a ticket with his sentence verbatim.
 
-**E14** runs whenever the GPT-6 Pro long-horizon review lands. Triage every finding: verified with file and line, refuted, or unverified. Verified findings become new tickets. Findings that contradict the whitepaper lose.
+## The GPT-6 Pro review
+
+It has landed and is filed in `docs/`: `FIDELITY-LEDGER-2026-09-18.md` (120 promises: 70 partial, 29 missing, 13 reachable, 6 contradicted, 2 built-unreachable), `OWNER-DECISIONS-2026-09-18.md`, `STAGE1-PACKETS-2026-09-18.md`, `STAGE2-3-DESIGNS-2026-09-18.md` (with the Phase 5 self-refutation at the end), and the raw `PRO-REVIEW-TRANSCRIPT-2026-09-18.md`. Read the Phase 5 section first; the reviewer's own corrections are the most reliable part.
+
+How to use it: it is pinned at `0360a1c`, ran no code, and 39 commits (21 non-merge) have landed since on the same files. Every file:line is stale until you re-resolve it. E14 does that row by row and records confirmed, superseded, refuted or unverified. The six contradictions it found (rows 47, 51, 100, 102, 103, 120) are already mapped to E16, E13 and E17. Its seven Stage 1 packets are E16 to E20 plus E11 (M6-M7) and M3 (waits on H02; ticket it only after Yash decides). Its nine Stage 2 designs mostly describe work already merged this week; E14 marks those superseded. Its owner recommendations agree with Fable's H tickets except G5 and G10, which E14 adds to H05 and H10 as second opinions. Its dropped-promise list is H16. The founding documents outrank it; where it argues from `SPEC-FINAL.md` against the whitepaper, the whitepaper wins.
 
 ## How you work
 
@@ -64,4 +70,4 @@ Optimise for the reader installing the thing and trusting it, in that order. The
 
 ## What done looks like
 
-Every E and Q ticket closed with evidence, every H ticket resolved by Yash and its outcome built, the four dated docs matching the live suite, CI green on three OSes, a new reader able to run one install script and pair, and Yash's four yes answers on H15. Report to Fable at each wave boundary with: tickets closed, evidence paths, suite totals, pushed head, blockers, and the H tickets you are waiting on.
+Every E and Q ticket closed with evidence, the 120 ledger rows each carrying a head verdict, every H ticket resolved by Yash and its outcome built, the four dated docs matching the live suite, CI green on three OSes, a new reader able to run one install script and pair, and Yash's four yes answers on H15. Report to Fable at each wave boundary with: tickets closed, evidence paths, suite totals, pushed head, blockers, and the H tickets you are waiting on.

@@ -16,11 +16,13 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 - **Routing:** Astra low is the technical lead. Sol medium takes bounded engineering packets, Luna max mechanical batches, Luna xhigh QA checklists. At most two premium runs at once unless Yash says otherwise. Every worker reports actual model, effort, changed paths, checks with totals, and uncertainty; a claim without a test name or evidence path is unverified (H11).
 - **Git rules:** work in isolated worktrees under `D:/Projects/Marginalia-worktrees/fable-<name>` with a `node_modules` junction to the main package; commit source and tests only; never `.local/`; never force-push, reset or delete worktrees; root `CONTEXT.md` and `README.md` carry Yash's uncommitted edits and stay uncommitted.
 - **Three streams run in parallel:** E (engineering), Q (QA and evidence), H (decisions with Yash). Q tickets start as soon as E01 lands; H tickets need no code and can be resolved in one sitting with Yash. Nothing in E waits on H except E11 (H11) and Q06 (H01).
-- **Suggested first wave (day 1):** E01, E02, E03, E09, Q01, Q03, Q07 in parallel; Yash resolves H01, H09, H11, H12 in one sitting. Second wave: E04, E05, E06, E08, E10, Q02, Q04, Q05, Q09. Third wave: E07, E11, E12, E13, E15, Q06, Q08, then H15.
+- **Suggested first wave (day 1):** E01, E02, E03, E09, E14, Q01, Q03, Q07 in parallel; Yash resolves H01, H09, H11, H12 in one sitting. Second wave: E04, E05, E06, E08, E10, E16, E17, E18, Q02, Q04, Q05, Q09; Yash resolves H02, H03, H10, H13, H16. Third wave: E07, E11, E12, E13, E15, E19, E20, Q06, Q08, then H15.
+- **The GPT-6 Pro review has landed** (2026-09-18, Downloads file `GitHub-Audit-Design.md`, split into `docs/FIDELITY-LEDGER-2026-09-18.md`, `docs/OWNER-DECISIONS-2026-09-18.md`, `docs/STAGE1-PACKETS-2026-09-18.md`, `docs/STAGE2-3-DESIGNS-2026-09-18.md`, transcript in `docs/PRO-REVIEW-TRANSCRIPT-2026-09-18.md`). It is pinned at `0360a1c`, 39 commits behind head, and ran no code. Treat every row as a claim: E14 triages, E16 to E20 carry its seven Stage 1 packets (M3 waits on H02, M6-M7 is E11), H16 carries its dropped-promise list. Its G1 to G11 recommendations agree with Fable's H01 to H11 except G5 (local files before PDF) and G10 (a small local selection card); both are noted as second opinions, not decisions.
 - **Claiming:** set `status: claimed (<who>, <date>)` in the ticket header before work; on completion set `status: closed` and add `## Resolution` with evidence paths; append one line to Decisions so far here.
 
 ## Decisions so far
 
+- Head `dc94636` pushed to origin on 2026-09-18 with this map, the handoff, the lead prompt and the next build plan; the GPT-6 Pro review landed the same day and is filed under `docs/` with tickets E14, E16 to E20 and H16.
 - Stage 1 position, egress record and retention, per-note removal, one-branch-open, migration message, alarm reconnect and workspace-key cleanup are merged on `codex/marginalia-v2` (d420221..fdb12dc, including P4 indexes, P9/P1/P7 hardening and CI, M14/M18 sheet and library) with suite 785/780/0/5 and both typechecks clean; see `../../docs/ASTRA-HANDOFF-2026-09-18.md` for the list and the installer run still in flight at handoff.
 
 ## Tickets
@@ -39,8 +41,13 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 - [E11 M6: the 'You were here' resume line](tickets/E11-m6-the-you-were-here-resume-line.md) · AFK · blocked by E01, H11 · Sol medium
 - [E12 M15: whole-library export as Markdown and W3C Web Annotation](tickets/E12-m15-whole-library-export-as-markdown-and-w3c-web-annotation.md) · AFK · blocked by E01 · Sol medium
 - [E13 Stage 3 non-gated renderer items](tickets/E13-stage-3-non-gated-renderer-items.md) · AFK · blocked by E01 · Sol medium
-- [E14 Integrate the GPT-6 Pro long-horizon review when it lands](tickets/E14-integrate-the-gpt-6-pro-long-horizon-review-when-it-lands.md) · AFK · blocked by (none) · Astra low, then Sol medium per finding
+- [E14 Triage the GPT-6 Pro fidelity ledger against the current head](tickets/E14-integrate-the-gpt-6-pro-long-horizon-review-when-it-lands.md) · AFK · blocked by E01 · Astra low triages, Sol medium verifies
 - [E15 Docs refresh to the final heads and totals](tickets/E15-docs-refresh-to-the-final-heads-and-totals.md) · AFK · blocked by E01 · Luna max (retry Sol medium if Luna reports capacity)
+- [E16 S1-COPY: remove false availability and isolation claims](tickets/E16-s1-copy-remove-false-availability-and-isolation-claims.md) · AFK · blocked by E01, H01 · Sol medium
+- [E17 M4: a record behind the sending status](tickets/E17-m4-a-record-behind-sending-status.md) · AFK · blocked by E01 · Sol medium
+- [E18 S1-REPLY-REMOVE: discard a reply without discarding the note](tickets/E18-s1-reply-remove-discard-a-reply-without-discarding-the-note.md) · AFK · blocked by E01 · Sol medium
+- [E19 REATTACH: persist attachment observations without replaying questions](tickets/E19-reattach-persist-attachment-observations-without-replaying.md) · AFK · blocked by E01, E07 · Sol medium
+- [E20 SUGGESTIONS: three stable offers with an exposure record](tickets/E20-suggestions-three-stable-offers-with-an-exposure-record.md) · AFK · blocked by E01, H03 · Sol medium
 
 ### Stream Q: QA and evidence
 - [Q01 Gate 0 contract evidence](tickets/Q01-gate-0-contract-evidence.md) · AFK · blocked by E01 · Luna xhigh
@@ -69,13 +76,14 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 - [H13 G13: a replacement selection does not re-anchor](tickets/H13-g13-a-replacement-selection-does-not-re-anchor.md) · HITL · blocked by (none) · Fable with Yash; Astra executes the outcome
 - [H14 M10: multiple anchors per thread](tickets/H14-m10-multiple-anchors-per-thread.md) · HITL · blocked by H06 · Fable with Yash; Astra executes the outcome
 - [H15 Release verdict: Yash's experiential gate](tickets/H15-release-verdict-yashs-experiential-gate.md) · HITL · blocked by Q02, Q03, Q04, Q05, Q07 · Fable with Yash; Astra executes the outcome
+- [H16 Nineteen whitepaper promises the spec dropped silently](tickets/H16-nineteen-whitepaper-promises-the-spec-dropped-silently.md) · HITL · blocked by E14 · Fable with Yash; Astra executes the outcome
 
 ## Not yet specified
 
 - The open-session web path itself (if H01 chooses to build it): its consent copy, its evidence record shape and its Gate 5a proof are one design once E08 exists.
 - Chrome Web Store listing copy and screenshots: sharp only after E03 and Q05.
 - Hosted home, PDF viewer, local models, library search (BUILD-PLAN stage 5b roadmap): each needs its own fidelity, permission, persistence and failure contract before it can be ticketed.
-- Whatever the GPT-6 Pro review (E14) surfaces that survives verification.
+- Whatever E14's head-by-head triage of the 120 ledger rows surfaces beyond E16 to E20 and H16.
 
 ## Out of scope
 

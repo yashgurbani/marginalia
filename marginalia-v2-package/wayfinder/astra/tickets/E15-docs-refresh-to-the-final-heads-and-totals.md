@@ -12,3 +12,5 @@ The Luna docs refresh failed with "Selected model is at capacity" and produced n
 ## Acceptance
 - Every number in the four docs matches the live suite and `git log`.
 - No claim beyond what tests or evidence files show.
+
+Also: the five GPT-6 Pro files under `docs/` keep their extraction header naming `0360a1c`; do not edit their bodies. `docs/PRO-LONG-HORIZON-2026-09-18.md` gets one line at the top saying the run completed on 2026-09-18 and where its output lives.

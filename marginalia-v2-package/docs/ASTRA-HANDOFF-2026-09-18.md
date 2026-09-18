@@ -11,8 +11,8 @@ Read in this order: this file, then `wayfinder/astra/MAP.md`, then `docs/ASTRA-L
 | Repository | `D:\Projects\Marginalia`, remote `https://github.com/yashgurbani/marginalia.git` |
 | Branch | `codex/marginalia-v2` |
 | Package | `marginalia-v2-package/` (Node 24, TypeScript ESM with `.ts` specifiers, node:test) |
-| Head at handoff | `fdb12dc` (Merge branch 'fable/m14-m18') |
-| Origin at handoff | `caa010c` before the final push in §7; see §7 for the pushed head |
+| Head at handoff | `dc94636` (map, handoff, lead prompt, next build plan), then one more commit filing the GPT-6 Pro review; see §7 |
+| Origin at handoff | equal to head after the push in §7 |
 | Suite at head | 785 tests, 780 pass, 0 fail, 5 skipped (POSIX-only) |
 | Typecheck | `npm run typecheck` clean; `npm run prepare && npm run extension:typecheck` clean |
 
@@ -42,7 +42,7 @@ Per-worker reports live in each worktree under `.local/fable-<name>/report.md` (
 
 To integrate (ticket E01): in the worktree, `git status --short | grep -v .local`, read the diff, `git add` scripts, README, tests only, commit on `fable/m13-installer`, `git merge --no-edit fable/m13-installer` into `codex/marginalia-v2`, run `npm test` and `npm run typecheck`, push.
 
-**GPT-6 Pro long-horizon review** (Phases 1 to 5 of `docs/PRO-LONG-HORIZON-2026-09-18.md`), running outside this repo. Do not wait for it. Ticket E14 triages it when it lands.
+**GPT-6 Pro long-horizon review** landed on 2026-09-18 after the map was charted. Yash delivered it as `Downloads/GitHub-Audit-Design.md`; Fable split it into `docs/FIDELITY-LEDGER-2026-09-18.md`, `docs/OWNER-DECISIONS-2026-09-18.md`, `docs/STAGE1-PACKETS-2026-09-18.md`, `docs/STAGE2-3-DESIGNS-2026-09-18.md` and the raw `docs/PRO-REVIEW-TRANSCRIPT-2026-09-18.md`. It is pinned at `0360a1c`, ran no code, and is a set of claims. Tickets: E14 (triage against head), E16 to E20 (its Stage 1 packets), H16 (its dropped-promise list). The lead prompt has a section on how to read it.
 
 **Docs refresh** (Luna max on the lrh account) failed twice with "Selected model is at capacity"; worktree `fable-docs-refresh` has no changes. Ticket E15 re-runs it after E01.
 
@@ -74,7 +74,7 @@ To integrate (ticket E01): in the worktree, `git status --short | grep -v .local
 
 ## 7. Push state
 
-Fable commits `wayfinder/astra/`, this handoff, the lead prompt and the next build plan after writing them, then pushes `codex/marginalia-v2`. The pushed head is recorded in `wayfinder/astra/MAP.md` under Decisions so far.
+Pushed `dc94636` (map, handoff, lead prompt, next build plan) on 2026-09-18, then one further commit filing the GPT-6 Pro review and tickets E14, E16 to E20 and H16. The pushed heads are recorded in `wayfinder/astra/MAP.md` under Decisions so far. The installer run (M13) was still in flight; if it is not merged when Astra starts, E01 integrates it.
 
 ## 8. Accounts and tooling state (for Fable-side sessions)
 
@@ -84,5 +84,5 @@ Codex exec fallback per account: `CODEX_HOME=$LOCALAPPDATA/Codex-Profile-System/
 
 1. Integrate M13 when its final message appears (E01), rerun the suite, push.
 2. Yash resolves H01, H09, H11, H12 in one sitting (all have Fable recommendations in the tickets).
-3. Astra starts wave one from `docs/ASTRA-LEAD-PROMPT-2026-09-18.md`: E02, E03, E09, Q01, Q03, Q07.
+3. Astra starts wave one from `docs/ASTRA-LEAD-PROMPT-2026-09-18.md`: E02, E03, E09, E14, Q01, Q03, Q07.
 4. E15 docs refresh once E01 is closed, so every number in the four dated docs matches the live suite.
