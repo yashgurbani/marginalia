@@ -64,7 +64,11 @@ export function connectAskingSurfaces(flow: AskingFlow, options: AskingSurfaces)
       if (preview) {
         try {
           const a = flow.getAccess();
-          const mounted = options.mountConsent(options.consentRoot, { preview: hostCopy(preview), surface: a.surface,
+          const preparation = state.preparation!;
+          const mounted = options.mountConsent(options.consentRoot, { preview: hostCopy(preview),
+            reviewedPlan: hostCopy({ previewId: preview.id, previewRevision: preview.revision,
+              preparedPayloadDigest: preparation.job.preparedPayloadDigest,
+              capabilities: preparation.job.capabilities ?? [] }), surface: a.surface,
             canAuthorize: a.paired && a.canAuthorize && !a.excluded, returnFocus: options.returnFocus,
             decide: (choice, exactPreview, signal) => flow.choose(choice, exactPreview, signal), onNotNow: () => flow.dismissPreview(),
             // No onGranted dispatch: the existing sheet also invokes it for Never.

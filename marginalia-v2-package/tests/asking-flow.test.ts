@@ -39,14 +39,15 @@ const validate: AskingValidator = value => {
     ? { ok: true, value: structuredClone(v), errors: [] } : { ok: false, errors: ['Controlled invalid candidate'] };
 };
 function preparation(input: PrepareJobInput, b: AskingBinding): AskingPreparation {
+  const capabilities = input.intent === 'simulate' ? ['samples', 'solver'] as const : [];
   const packet = { schema: 'marginalia.job-packet.v1', intent: input.intent, question: input.question,
     source: { url: b.sourceUrl, title: b.sourceTitle, pageType: b.sourcePageType, capturedAt: b.sourceCapturedAt, sourceHash: b.sourceHash, sourceVersionId: b.sourceVersionId },
     selection: { ...b.anchor, originalEnd: b.anchor.end, omittedCharacters: 0 }, adjacentContext: { before: '', after: '', basis: 'bounded-character-context' },
     ...(b.answeredNote ? { answeredNote: { ...b.answeredNote, originalCharacters: b.answeredNote.text.length, omittedCharacters: 0 } } : {}),
     ...(input.parentReplyId ? { parentReplyId: input.parentReplyId, parentReply: { replyVersionId: input.parentReplyId,
       attribution: 'Prior generated work, not source evidence.', excerpt: '{"title":"Prior reply"}', omittedBytes: 0 } } : {}),
-    availableCapabilities: [], omissions: [] };
-  return { job: { ...input, provider: 'app-server', model: 'host-selected', mode: 'structured-final', policyKey: POLICY, preparedPayloadDigest: DIGEST, capabilities: [] },
+    availableCapabilities: capabilities, omissions: [] };
+  return { job: { ...input, provider: 'app-server', model: 'host-selected', mode: 'structured-final', policyKey: POLICY, preparedPayloadDigest: DIGEST, capabilities: [...capabilities] },
     preview: { id: 'preview-' + input.id, revision: 1, requestId: input.id, site: 'https://example.org',
       scope: input.intent === 'evidence' || input.intent === 'explore' ? 'open-session' : 'cloud-inference', scopeLabel: 'Host scope',
       recipient: 'openai-codex', recipientLabel: 'OpenAI Codex', provider: 'app-server', policyKey: POLICY,
@@ -162,6 +163,23 @@ test('explicit Ask confirms saved context and observed runtime readiness then pr
   assert.deepEqual(h.calls.map(c => c.name), ['ensureSaved', 'availability', 'prepare']);
   assert.equal(h.count('start'), 0); assert.equal(h.flow.getState().phase, 'consent');
   assert.deepEqual(Object.keys(h.calls[2].input as object).sort(), ['answeredNote', 'id', 'idempotencyKey', 'intent', 'question', 'threadId']);
+});
+
+test('prepared Simulate review exposes its digest-bound local solver capability before consent or start', async () => {
+  const h = harness(), d = dom(); let sheet!: ConsentSheetOptions;
+  const surfaces = connectAskingSurfaces(h.flow, { consentRoot: d.host, replyRoot: d.host, provisionalRoot: d.host,
+    mountConsent: (_root, options) => { sheet = options; return { update() {}, destroy() {} }; },
+    mountReply: mountedStub, replyOptions: () => ({}) });
+  await h.flow.ask('simulate', 'Show how this changes');
+  assert.equal(h.flow.getState().phase, 'consent');
+  assert.deepEqual(sheet.reviewedPlan, { previewId: h.prepared.preview.id, previewRevision: h.prepared.preview.revision,
+    preparedPayloadDigest: h.prepared.job.preparedPayloadDigest, capabilities: ['samples', 'solver'] });
+  assert.equal(sheet.reviewedPlan!.preparedPayloadDigest, sheet.preview.bindingDigest);
+  assert.deepEqual(sheet.preview.outgoing, h.prepared.preview.outgoing);
+  assert.equal(h.count('decide'), 0); assert.equal(h.count('start'), 0);
+  await sheet.decide('this-time', sheet.preview, new AbortController().signal);
+  assert.equal(h.count('decide'), 1); assert.equal(h.count('start'), 1);
+  surfaces.destroy();
 });
 
 test('paired is not provider-ready; unavailable runtime never reaches preparation or dispatch', async () => {
