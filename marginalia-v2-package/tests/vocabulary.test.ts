@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, readdirSync, copyFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LibrarySettingsService } from '../daemon/library.ts';
-import { ReaderStore, UnsupportedReaderSchemaError } from '../daemon/store.ts';
+import { ReaderMigrationError, ReaderStore, UnsupportedReaderSchemaError } from '../daemon/store.ts';
 import { startServer } from '../daemon/server.ts';
 import type { VocabularyObservation } from '../contracts/library.ts';
 
@@ -14,6 +14,19 @@ import { oldReaderPreflight } from './fixtures/reader-preflight-89a6335.ts';
 const at = '2026-09-18T09:00:00.000Z';
 const remember = (operationId: string, term = 'entropy', source: VocabularyObservation['source'] = { kind: 'reader' }): VocabularyObservation =>
   ({ operationId, term, origin: 'stated', observedAt: at, source });
+
+function removeE33Schema(db: Database.Database) {
+  db.exec(`
+    DROP INDEX source_versions_material_identity;
+    ALTER TABLE source_versions DROP COLUMN author;
+    ALTER TABLE source_versions DROP COLUMN publicationDate;
+    ALTER TABLE source_versions DROP COLUMN venue;
+    CREATE UNIQUE INDEX source_versions_material_identity ON source_versions(
+      sourceId,hash,extractionVersion,sections,metadataStatus,
+      title IS NULL,COALESCE(title,''),pageType IS NULL,COALESCE(pageType,''));
+    DELETE FROM migrations WHERE version=33001;
+  `);
+}
 
 function noteFixture() {
   const reader = new ReaderStore(':memory:');
@@ -158,6 +171,71 @@ test('vocabulary upgrade retains a readable pre-upgrade backup and handles an un
     const recovered = new ReaderStore(recoveredPath);
     try { assert.deepEqual(new LibrarySettingsService(recovered).vocabulary()[0].origins?.[0].operationId, 'existing-e22'); }
     finally { recovered.close(); }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('an E22-only database gains E33 metadata without resurrecting a deleted vocabulary operation', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'e22-to-e33-')), filename = join(directory, 'reader.sqlite');
+  try {
+    const original = new ReaderStore(filename), library = new LibrarySettingsService(original);
+    const observation = remember('deleted-before-e33', 'Entropy');
+    library.recordVocabularyObservation(observation);
+    assert.equal(library.deleteVocabulary('Entropy').deleted, true);
+    const receipt = original.db.prepare('SELECT * FROM vocabulary_operations WHERE operationId=?').get(observation.operationId);
+    assert.ok((receipt as { deletedAt: string | null }).deletedAt);
+    original.db.pragma('journal_mode = DELETE'); original.close();
+
+    const e22 = new Database(filename);
+    removeE33Schema(e22);
+    assert.ok(e22.prepare('SELECT 1 FROM migrations WHERE version=22001').get());
+    assert.equal(e22.prepare('SELECT 1 FROM migrations WHERE version=33001').get(), undefined);
+    e22.close();
+
+    const migrated = new ReaderStore(filename);
+    try {
+      assert.ok(migrated.db.prepare('SELECT 1 FROM migrations WHERE version=33001').get());
+      assert.deepEqual(migrated.db.prepare('SELECT * FROM vocabulary_operations WHERE operationId=?').get(observation.operationId), receipt);
+      assert.deepEqual(new LibrarySettingsService(migrated).recordVocabularyObservation(observation), { recorded: false, deleted: true });
+      assert.deepEqual(new LibrarySettingsService(migrated).vocabulary(), []);
+    } finally { migrated.close(); }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a late E22 normalization conflict rolls back the earlier E33 schema and both migration markers', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'e33-e22-rollback-')), filename = join(directory, 'reader.sqlite');
+  try {
+    const current = new ReaderStore(filename);
+    current.db.pragma('journal_mode = DELETE'); current.close();
+    const legacy = new Database(filename);
+    removeE33Schema(legacy);
+    legacy.exec(`
+      DROP TABLE vocabulary_origins;
+      DROP TABLE vocabulary_operations;
+      DROP TABLE vocabulary;
+      CREATE TABLE vocabulary(term TEXT PRIMARY KEY,origin TEXT NOT NULL,status TEXT NOT NULL,firstSeen TEXT NOT NULL,lastSeen TEXT NOT NULL);
+      INSERT INTO vocabulary VALUES('café noir','stated','active','${at}','${at}');
+      INSERT INTO vocabulary VALUES(' café   noir ','stated','ignored','${at}','${at}');
+      DELETE FROM migrations WHERE version=22001;
+    `);
+    const beforeRows = legacy.prepare('SELECT * FROM vocabulary ORDER BY term').all();
+    legacy.close();
+
+    let failure: unknown;
+    try { new ReaderStore(filename); } catch (error) { failure = error; }
+    assert.ok(failure instanceof ReaderMigrationError);
+    assert.match(String(failure.cause), /statuses conflict after normalization/);
+
+    const rolledBack = new Database(filename, { readonly: true });
+    try {
+      const columns = (rolledBack.prepare('PRAGMA table_info(source_versions)').all() as { name: string }[]).map(column => column.name);
+      assert.equal(columns.includes('author'), false);
+      assert.equal(columns.includes('publicationDate'), false);
+      assert.equal(columns.includes('venue'), false);
+      assert.equal(rolledBack.prepare('SELECT 1 FROM migrations WHERE version=33001').get(), undefined);
+      assert.equal(rolledBack.prepare('SELECT 1 FROM migrations WHERE version=22001').get(), undefined);
+      assert.deepEqual(rolledBack.prepare('SELECT * FROM vocabulary ORDER BY term').all(), beforeRows);
+      assert.equal(rolledBack.prepare("SELECT 1 FROM sqlite_master WHERE name IN ('vocabulary_v2','vocabulary_origins','vocabulary_operations')").get(), undefined);
+    } finally { rolledBack.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
