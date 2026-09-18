@@ -7,7 +7,7 @@ import {
   type SolverRejectionCode,
   type SolverValidation,
 } from '../../contracts/solver.ts';
-import { BOUNDED_READ_OPEN_FLAGS, isBoundedRegularDescriptor } from '../jobs/workspace-integrity.ts';
+import { BOUNDED_READ_OPEN_FLAGS, directoryIdentity, isBoundedRegularDescriptor } from '../jobs/workspace-integrity.ts';
 
 /**
  * Filesystem authority for a recompute. Every path is re-resolved here; nothing
@@ -51,12 +51,11 @@ export function safeRelativeSolverPath(value: string): boolean {
 }
 
 async function assertRealDirectory(path: string): Promise<SolverValidation<string>> {
-  let info;
-  try { info = await lstat(path); } catch { return failure('artifact-unknown', 'The job workspace is no longer available.'); }
-  if (!info.isDirectory() || info.isSymbolicLink()) return failure('path-unsafe', 'The job workspace is not a real directory.');
-  const actual = await realpath(path);
-  if (!samePath(actual, path)) return failure('path-unsafe', 'The job workspace path is not authoritative.');
-  return { ok: true, value: actual };
+  try { return { ok: true, value: (await directoryIdentity(path)).path }; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return failure('artifact-unknown', 'The job workspace is no longer available.');
+    return failure('path-unsafe', 'The job workspace is not a real directory.');
+  }
 }
 
 /**
@@ -113,15 +112,18 @@ export async function resolveSolverArtifacts(binding: SolverArtifactBinding): Pr
   try { runtimeInfo = await lstat(binding.runtimeExecutable); } catch { return failure('artifact-unknown', 'The configured interpreter is not present.'); }
   if (!runtimeInfo.isFile() || runtimeInfo.isSymbolicLink()) return failure('path-unsafe', 'The configured interpreter is not a regular file.');
   const runtimeActual = await realpath(binding.runtimeExecutable);
-  if (!samePath(runtimeActual, binding.runtimeExecutable)) return failure('path-unsafe', 'The interpreter path resolves somewhere else.');
-  if (inside(workspace.value, resolve(binding.runtimeExecutable))) {
+  const runtimeCanonical = await lstat(runtimeActual);
+  if (!runtimeCanonical.isFile() || runtimeCanonical.isSymbolicLink() || runtimeCanonical.dev !== runtimeInfo.dev || runtimeCanonical.ino !== runtimeInfo.ino) {
+    return failure('path-unsafe', 'The interpreter path resolves somewhere else.');
+  }
+  if (inside(workspace.value, runtimeActual)) {
     return failure('path-unsafe', 'The interpreter must not live inside the job workspace it executes.');
   }
 
   let runtimeSha256: string | undefined;
   if (binding.runtimeSha256 !== undefined) {
     if (!/^[a-f0-9]{64}$/.test(binding.runtimeSha256)) return failure('artifact-unknown', 'The interpreter has an invalid pinned hash.');
-    const hashed = await hashRegularFile(binding.runtimeExecutable, 512 * 1024 * 1024);
+    const hashed = await hashRegularFile(runtimeActual, 512 * 1024 * 1024);
     if (!hashed.ok) return hashed;
     if (hashed.value.sha256 !== binding.runtimeSha256) return failure('artifact-modified', 'The configured interpreter no longer matches its pinned hash.');
     runtimeSha256 = hashed.value.sha256;

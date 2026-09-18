@@ -10,6 +10,7 @@ import { prepareEnvelope } from '../daemon/jobs/envelope.ts';
 import { loadHostInstructions, hostInstructionText } from '../daemon/jobs/host-instructions.ts';
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+const canonicalInstructionText = (text: string) => text.replace(/\r\n?/g, '\n');
 const installed = {
   define: ['../skills/define/SKILL.md', '../skills/define/references/runtime-contract.md'],
   simulate: ['../skills/simulate/SKILL.md', '../skills/simulate/IO.md'],
@@ -17,11 +18,11 @@ const installed = {
   explore: ['../skills/explore/SKILL.md', '../skills/explore/IO.md'],
 } as const;
 
-test('every supported instruction bundle includes its installed files verbatim with matching digests', async () => {
+test('every supported instruction bundle includes its canonical installed content with matching digests', async () => {
   for (const [intent, paths] of Object.entries(installed)) {
     const bundle = await loadHostInstructions(intent as HostInstructionBundle['kind']); assert.ok(bundle);
     assert.equal(bundle.kind, intent);
-    const documents = await Promise.all(paths.map(path => readFile(new URL(path, import.meta.url), 'utf8')));
+    const documents = await Promise.all(paths.map(async path => canonicalInstructionText(await readFile(new URL(path, import.meta.url), 'utf8'))));
     for (const document of documents) assert.ok(bundle.text.includes(document));
     assert.equal(bundle.sha256, digest(bundle.text));
     assert.deepEqual(bundle.documents.map(file => file.sha256), documents.map(digest));
@@ -31,7 +32,19 @@ test('every supported instruction bundle includes its installed files verbatim w
 
 test('definition instruction bytes retain the installed digest fixture', async () => {
   const bundle = await loadHostInstructions('define'); assert.ok(bundle);
-  assert.equal(bundle.sha256, '386e436434cad6be5e8b8cf9f16b78c7e40eee40b5cc56dfa391cec72dd3b0f7');
+  assert.equal(bundle.sha256, '2699f7f826f533dbe09e15c909a1ab65ef5fdaf6e27e05626601fe4a2dd6d8dd');
+});
+
+test('instruction bindings have one digest for CRLF and LF installations', async t => {
+  const root = await mkdtemp(join(tmpdir(), 't06-instruction-eol-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const url = pathToFileURL(root + '/'); await mkdir(join(root, 'references'));
+  await writeFile(join(root, 'SKILL.md'), 'first line\r\nsecond line\r\n');
+  await writeFile(join(root, 'references/runtime-contract.md'), 'contract line\r\n');
+  const crlf = await loadHostInstructions('define', url); assert.ok(crlf);
+  await writeFile(join(root, 'SKILL.md'), 'first line\nsecond line\n');
+  await writeFile(join(root, 'references/runtime-contract.md'), 'contract line\n');
+  const lf = await loadHostInstructions('define', url); assert.ok(lf);
+  assert.deepEqual(crlf, lf);
 });
 
 test('instruction bindings reject altered bytes and every cross-intent use', async () => {

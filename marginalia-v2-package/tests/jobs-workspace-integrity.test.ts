@@ -1,7 +1,7 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, rm, link, symlink, rename, readdir, unlink, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, link, symlink, rename, readdir, unlink, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -44,6 +44,20 @@ test('bounded descriptor read rejects links, extra bytes and stale directory ide
   await assert.rejects(readWorkspaceBytes(identity, 'packet.json', 8), /identity/);
   assert.throws(() => assertInside(root, root), /escapes/);
   assert.throws(() => assertInside(root, join(root, '..', 'escape')), /escapes/);
+});
+test('workspace identity canonicalizes an aliased ancestor but rejects a linked workspace', async t => {
+  const { root } = await fixture(t), parent = join(root, 'real-parent'), workspace = join(parent, 'job');
+  const alias = join(root, 'parent-alias'), linkedWorkspace = join(root, 'workspace-link');
+  await mkdir(workspace, { recursive: true });
+  try {
+    await symlink(parent, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    await symlink(workspace, linkedWorkspace, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch {
+    t.skip('This host does not permit creating directory links.'); return;
+  }
+  const identity = await directoryIdentity(join(alias, 'job'));
+  assert.equal(identity.path, await realpath(workspace));
+  await assert.rejects(directoryIdentity(linkedWorkspace), /unsafe/);
 });
 test('history is outside the active workspace, exclusive, and does not overwrite prior evidence', async t => {
   const { root, workspace } = await fixture(t), identity = await directoryIdentity(workspace);
