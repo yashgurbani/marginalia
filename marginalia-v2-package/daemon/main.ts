@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import type { ReplyCapability } from '../contracts/reply.ts';
 import { startServer } from './server.ts';
 import { createInterface } from 'node:readline';
 import { createDiagnostics } from './diagnostics.ts';
@@ -73,7 +74,7 @@ function policyFor(workspace: string, mode: 'structured-final' | 'workspace-file
   return createCodexPolicy({ ...common, operation: 'generation' });
 }
 const jobDefaults = runtimeIdentity && !runtimeModule ? {
-  provider: 'app-server' as const, mode: 'workspace-files' as const, modeFor: modeForIntent, capabilities: [],
+  provider: 'app-server' as const, mode: 'workspace-files' as const, modeFor: modeForIntent, capabilities: ['samples', 'solver', 'media.audio', 'media.image', 'media.video', 'network.citations', 'network.shelf'] satisfies ReplyCapability[],
   policyFor: (workspace: string, mode: 'structured-final' | 'workspace-files', model: string, provider: 'app-server' | 'mcp-server') => policyFingerprint(policyFor(workspace, mode, model, provider)),
 } : undefined;
 const server = await startServer({ database: join(canonicalDataDir, 'marginalia.sqlite'), port, webRoot: fileURLToPath(new URL('../webapp/dist', import.meta.url)), diagnostics,

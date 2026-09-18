@@ -162,3 +162,39 @@ test('actual reply-cache failures retain unsaved inputs and competing sessions r
   await assert.rejects(second.save({ parameters: { x: 4 }, view: {} }), { name: 'RecoveredViewConflict' });
   const final = (await seeded.persistence.replies.list(seeded.thread.id))[0]; assert.equal(final.local.parameters.x, 3); assert.equal(final.recovered![0].state.parameters.x, 4);
 });
+
+for (const [label, intent] of [['Move it', 'simulate'], ['Check this', 'evidence']] as const) {
+  test(`${label} saves a selection draft without opening asking or sending`, async t => {
+    const e = env(t), requests: string[] = []; let opened = 0;
+    replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected outbound request'); } });
+    const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace,
+      asking: () => ({ open() { opened++; }, setVisible() {}, destroy() {} }) });
+    api.select(anchor()); button(e.root, 'Ask').click(); button(e.root, label).click(); await api.drain();
+    const draft = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
+    assert.equal(draft.intent, intent); assert.deepEqual(draft.anchor, anchor());
+    assert.equal(draft.question, e.root.querySelector('[aria-label="Your question"]')!.value);
+    assert.ok(draft.question.length); assert.equal(opened, 0); assert.deepEqual(requests, []);
+    api.destroy(); await api.drain();
+  });
+}
+
+test('saved reply follow-up retains the saved thread and current inputs as a draft without sending', async t => {
+  const e = env(t), seeded = await threadFixture(e.namespace), reply = cached(seeded.thread);
+  await seeded.persistence.replies.cache(e.document.location.origin, seeded.thread.id, reply.source, [reply.version], [reply.view]);
+  const requests: string[] = []; let opened = 0;
+  replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected outbound request'); } });
+  boundaries.replyMounts.length = 0;
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace,
+    asking: () => ({ open() { opened++; }, setVisible() {}, destroy() {} }) });
+  await until(() => boundaries.replyMounts.length === 1);
+  const followup = boundaries.replyMounts[0].onFollowup; assert.equal(typeof followup, 'function');
+  await followup!({ text: 'Why this value?', parameters: { x: 2 }, view: {} }); await api.drain();
+  const draft = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
+  assert.equal(draft.threadId, seeded.thread.id); assert.equal(draft.resumeReplyId, reply.version.id);
+  assert.equal(draft.answeredNote, undefined, 'follow-up uses the saved reply note identity, not the latest thread note');
+  assert.equal(draft.question, 'Why this value?\n\nCurrent reader-selected inputs:\nx = 2');
+  assert.equal(e.root.querySelector('[aria-label="Your question"]')!.value, draft.question);
+  await followup!({ text: 'Do not replace my draft', parameters: {}, view: {} }); await api.drain();
+  assert.equal(e.root.querySelector('[aria-label="Your question"]')!.value, draft.question);
+  assert.equal(opened, 0); assert.deepEqual(requests, []); api.destroy(); await api.drain();
+});
