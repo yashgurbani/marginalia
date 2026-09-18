@@ -20,6 +20,8 @@ const selectionSuggestions = [
   { intent: 'simulate', label: 'See it', time: 'about a minute', question: 'Help me see how this passage works.' },
   { intent: 'evidence', label: 'What supports this', question: 'What supports this passage?' },
   { intent: 'define', label: 'Define this', question: 'Define this passage in context.' },
+  { intent: 'instantiate', label: 'Show me an example', question: 'Show a worked example of this passage.' },
+  { intent: 'derive', label: 'Explain step by step', question: 'Explain this passage step by step.' },
 ] as const;
 const wholePageSuggestions = [
   { intent: 'define', label: 'Define this', question: 'Define this passage in context.' },

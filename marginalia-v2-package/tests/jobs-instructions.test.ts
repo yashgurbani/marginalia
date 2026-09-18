@@ -16,6 +16,8 @@ const installed = {
   simulate: ['../skills/simulate/SKILL.md', '../skills/simulate/IO.md'],
   evidence: ['../skills/evidence/SKILL.md', '../skills/evidence/IO.md'],
   explore: ['../skills/explore/SKILL.md', '../skills/explore/IO.md'],
+  instantiate: ['../skills/instantiate/SKILL.md', '../skills/instantiate/IO.md'],
+  derive: ['../skills/derive/SKILL.md', '../skills/derive/IO.md'],
 } as const;
 
 test('every supported instruction bundle includes its canonical installed content with matching digests', async () => {
@@ -23,7 +25,8 @@ test('every supported instruction bundle includes its canonical installed conten
     const bundle = await loadHostInstructions(intent as HostInstructionBundle['kind']); assert.ok(bundle);
     assert.equal(bundle.kind, intent);
     const documents = await Promise.all(paths.map(async path => canonicalInstructionText(await readFile(new URL(path, import.meta.url), 'utf8'))));
-    for (const document of documents) assert.ok(bundle.text.includes(document));
+    for (const document of documents) { assert.ok(bundle.text.includes(document)); assert.ok(Buffer.byteLength(document) <= 16 * 1024); }
+    assert.ok(Buffer.byteLength(bundle.text) <= 34 * 1024);
     assert.equal(bundle.sha256, digest(bundle.text));
     assert.deepEqual(bundle.documents.map(file => file.sha256), documents.map(digest));
     assert.equal(hostInstructionText(bundle, intent as HostInstructionBundle['kind']), bundle.text);
@@ -62,7 +65,7 @@ test('instruction bindings reject altered bytes and every cross-intent use', asy
 test('loading is host-selected, bounded, stable and refreshed on a new preparation', async t => {
   const root = await mkdtemp(join(tmpdir(), 't06-instructions-')); t.after(() => rm(root, { recursive: true, force: true }));
   const url = pathToFileURL(root + '/');
-  assert.equal(await loadHostInstructions('derive', url), undefined); // Unsupported intent cannot select a path.
+  assert.equal(await loadHostInstructions('unsure', url), undefined); // Unsupported intent cannot select a path.
   await assert.rejects(loadHostInstructions('define', url));
   await mkdir(join(root, 'references')); await writeFile(join(root, 'SKILL.md'), 'first instructions');
   await writeFile(join(root, 'references/runtime-contract.md'), 'integration boundary');

@@ -18,21 +18,23 @@ function records(data: Map<string, unknown>) {
   return [...data].filter(([key]) => key.startsWith('suggestion-exposure:')).map(([, value]) => value as SuggestionExposureRecord);
 }
 
-test('visible selection has three stable exact offers and records exact labels only when shown', async t => {
+test('visible selection has five stable exact offers and records exact labels only when shown', async t => {
   const e = env(t), api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
   assert.deepEqual(records(e.data(e.namespace)), [], 'mounting a hidden question surface is not an exposure');
   api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
   const row = e.root.querySelector('.m-question .m-actions')!;
-  assert.deepEqual(row.querySelectorAll('button').map(node => node.textContent), ['See it', 'What supports this', 'Define this']);
+  assert.deepEqual(row.querySelectorAll('button').map(node => node.textContent), ['See it', 'What supports this', 'Define this', 'Show me an example', 'Explain step by step']);
   assert.match(row.textContent, /about a minute/);
   assert.doesNotMatch(row.textContent, /\d+\s*(ms|seconds?)/i, 'the visible time is a category, not a runtime measurement');
   const [record] = records(e.data(e.namespace));
   assert.equal(record.policyVersion, SUGGESTION_POLICY_VERSION);
-  assert.deepEqual(record.eligible, ['simulate', 'evidence', 'define']);
+  assert.deepEqual(record.eligible, ['simulate', 'evidence', 'define', 'instantiate', 'derive']);
   assert.deepEqual(record.shown, [
     { intent: 'simulate', label: 'See it', position: 1 },
     { intent: 'evidence', label: 'What supports this', position: 2 },
     { intent: 'define', label: 'Define this', position: 3 },
+    { intent: 'instantiate', label: 'Show me an example', position: 4 },
+    { intent: 'derive', label: 'Explain step by step', position: 5 },
   ]);
   assert.match(record.contextHash, /^[a-f0-9]{64}$/); assert.doesNotMatch(JSON.stringify(record), /A passage/);
   assert.equal(record.resolution, null); api.destroy(); await api.drain();

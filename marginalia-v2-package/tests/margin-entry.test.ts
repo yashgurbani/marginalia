@@ -667,7 +667,12 @@ test('actual reply-cache failures retain unsaved inputs and competing sessions r
   const final = (await seeded.persistence.replies.list(seeded.thread.id))[0]; assert.equal(final.local.parameters.x, 3); assert.equal(final.recovered![0].state.parameters.x, 4);
 });
 
-for (const [label, intent] of [['See it', 'simulate'], ['What supports this', 'evidence']] as const) {
+for (const [label, intent, question] of [
+  ['See it', 'simulate', 'Help me see how this passage works.'],
+  ['What supports this', 'evidence', 'What supports this passage?'],
+  ['Show me an example', 'instantiate', 'Show a worked example of this passage.'],
+  ['Explain step by step', 'derive', 'Explain this passage step by step.'],
+] as const) {
   test(`${label} saves a selection draft without opening asking or sending`, async t => {
     const e = env(t), requests: string[] = []; let opened = 0;
     replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected outbound request'); } });
@@ -677,7 +682,7 @@ for (const [label, intent] of [['See it', 'simulate'], ['What supports this', 'e
     const draft = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
     assert.equal(draft.intent, intent); assert.deepEqual(draft.anchor, anchor());
     assert.equal(draft.question, e.root.querySelector('[aria-label="Your question"]')!.value);
-    assert.ok(draft.question.length); assert.equal(opened, 0); assert.deepEqual(requests, []);
+    assert.equal(draft.question, question); assert.equal(opened, 0); assert.deepEqual(requests, []);
     api.destroy(); await api.drain();
   });
 }
