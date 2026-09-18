@@ -16,3 +16,7 @@ Interim PDF fallback via the browser's own viewer plus text extraction, Stage 3,
 ## Resolution
 
 Yash decided on 2026-09-18: "Prioritize an interim PDF path" after the install gate. Preserve source fidelity and document unsupported cases; this does not claim the full PDF viewer shipped. Pro preferred text/Markdown first; its dissent is retained, with the technical-reading audience as the reason for prioritizing PDF. Evidence: owner response in task `01a0b26e-cc90-73b2-8688-de014bcacd80`. This records the decision, not implementation acceptance.
+
+## Pro second opinion (dissent retained)
+
+The long-horizon review recommends local text/Markdown first, followed by a faithful PDF viewer, because it delivers an own-document path sooner and avoids flattening PDF coordinates, figures and accessibility structure. Its Phase 5 counter-argument is stronger for Marginalia's first cohort: technical readers may get substantially more value from faithful PDFs than from another text importer. That counter-argument supports Yash's PDF-first outcome after the install gate. It does not prove runtime acceptance or alter the recorded owner decision.
