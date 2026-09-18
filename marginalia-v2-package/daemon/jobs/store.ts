@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { ProviderHandle } from '../../contracts/job-runner.ts';
 import type { OutgoingPart } from '../../contracts/consent.ts';
+import { isDigest } from '../../contracts/digest.ts';
 import { canonicalReplyData, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
 import type { FrozenJobContext, JobAttempt, JobConsentAuthority, JobSnapshot, JobState, StartJobInput } from '../../contracts/jobs.ts';
 import type { SolverArtifactBinding } from '../../contracts/solver.ts';
@@ -129,7 +130,7 @@ export class JobStore {
     return Object.assign(this.snapshot(row), { requestDigest: row.requestDigest });
   }
   savePreparation(jobId: string, planDigest: string, bindingDigest: string) {
-    if (!/^[\w-]{1,100}$/.test(jobId) || !/^[a-f0-9]{64}$/.test(planDigest) || !/^[a-f0-9]{64}$/.test(bindingDigest)) throw new Error('Invalid prepared work binding.');
+    if (!/^[\w-]{1,100}$/.test(jobId) || !isDigest(planDigest) || !isDigest(bindingDigest)) throw new Error('Invalid prepared work binding.');
     this.db.transaction(() => {
       const current = this.db.prepare('SELECT consumedAt FROM job_preparations WHERE jobId=?').get(jobId) as { consumedAt: string | null } | undefined;
       if (current?.consumedAt) throw new JobConflictError('This prepared work was already consumed. Use a new job identifier.');
@@ -503,7 +504,7 @@ export class JobStore {
     })();
   }
   bindAuthorization(attemptId: string, fingerprint: string): boolean {
-    if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new JobConflictError('Consent authorization fingerprint is invalid.');
+    if (!isDigest(fingerprint)) throw new JobConflictError('Consent authorization fingerprint is invalid.');
     return this.db.transaction(() => {
       const attempt = this.db.prepare('SELECT * FROM job_attempts WHERE id=?').get(attemptId) as AttemptRow | undefined;
       if (!attempt || attempt.dispatchClaimed) throw new JobConflictError('This attempt can no longer change authorization.');

@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { attachQuote, validateQuoteAnchor, validateReaderMutation, validateSourceCapture, type JsonValue, type ReaderMutation, type Thread, type Note, type QuoteAnchor, type SourceCapture, type SourceVersion, type SourceSection, type AttachmentRecord, type NoteVersionRef, type NoteVersion, type ReplyVersion, type ReplyViewState } from '../contracts/reader.ts';
 import { canonicalReplyData, validateReply, type CandidateReply, type ReplyCapability } from '../contracts/reply.ts';
 import { digestReply, runHostChecks } from '../contracts/host-checks.ts';
+import { isDigest } from '../contracts/digest.ts';
 
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export class ConflictError extends Error { override name = 'Conflict'; }
@@ -429,7 +430,7 @@ export class ReaderStore {
     const egress = associated('egress_events', 'r.id,r.jobId,r.attemptId,r.grantId,r.grantRevision,r.recipient,r.scope,r.provider,r.policyKey,r.contextHashes,r.permissionFingerprint,r.approvedAt,r.dispatchedAt,r.outcome,r.fetched,r.complete,r.updatedAt', 'r.approvedAt,r.id').map((row): ExportedEgress => {
       const { fetched, contextHashes, complete, ...event } = row;
       const hashes: unknown = JSON.parse(String(contextHashes));
-      if (!Array.isArray(hashes) || hashes.some(hash => typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash))) throw new Error('Saved context hashes are invalid.');
+      if (!Array.isArray(hashes) || hashes.some(hash => typeof hash !== 'string' || !isDigest(hash))) throw new Error('Saved context hashes are invalid.');
       return { ...event, contextHashes: hashes as string[], fetched: exportFetches(String(fetched)), retrievalComplete: !!complete };
     });
     return { authority: 'host-recorded' as const, missingTables, jobs: jobs.map((row): ExportedJob => {
@@ -600,7 +601,7 @@ function verifyBackup(directory: string): BackupManifest {
   const filename = join(directory, 'reader.sqlite'), metadata = join(directory, 'verified.json');
   for (const file of [filename, metadata]) if (!lstatSync(file).isFile() || lstatSync(file).isSymbolicLink()) throw new Error('Backup files must be ordinary files.');
   const manifest = JSON.parse(readFileSync(metadata, 'utf8')) as BackupManifest;
-  if (manifest.schema !== 'marginalia.reader-backup.v1' || !Array.isArray(manifest.versions) || !Number.isFinite(Date.parse(manifest.createdAt)) || !/^[a-f0-9]{64}$/.test(manifest.sha256) || backupDigest(filename) !== manifest.sha256) {
+  if (manifest.schema !== 'marginalia.reader-backup.v1' || !Array.isArray(manifest.versions) || !Number.isFinite(Date.parse(manifest.createdAt)) || !isDigest(manifest.sha256) || backupDigest(filename) !== manifest.sha256) {
     throw new Error('Backup verification record does not match the snapshot.');
   }
   const check = new Database(filename, { readonly: true, fileMustExist: true });

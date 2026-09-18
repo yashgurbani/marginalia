@@ -7,6 +7,7 @@ import {
   type SolverRejectionCode,
   type SolverValidation,
 } from '../../contracts/solver.ts';
+import { isDigest } from '../../contracts/digest.ts';
 import { BOUNDED_READ_OPEN_FLAGS, directoryIdentity, isBoundedRegularDescriptor } from '../jobs/workspace-integrity.ts';
 
 /**
@@ -95,7 +96,7 @@ export async function resolveSolverArtifacts(binding: SolverArtifactBinding): Pr
   if (!isAbsolute(binding.workspace)) return failure('path-unsafe', 'An absolute job workspace path is required.');
   if (!isAbsolute(binding.runtimeExecutable)) return failure('path-unsafe', 'An absolute interpreter path is required.');
   if (!safeRelativeSolverPath(binding.solverRelativePath)) return failure('path-unsafe', 'The solver path is not a safe relative workspace path.');
-  if (!/^[a-f0-9]{64}$/.test(binding.solverSha256)) return failure('artifact-unknown', 'The solver artifact has no pinned content hash.');
+  if (!isDigest(binding.solverSha256)) return failure('artifact-unknown', 'The solver artifact has no pinned content hash.');
 
   const workspace = await assertRealDirectory(binding.workspace);
   if (!workspace.ok) return workspace;
@@ -122,7 +123,7 @@ export async function resolveSolverArtifacts(binding: SolverArtifactBinding): Pr
 
   let runtimeSha256: string | undefined;
   if (binding.runtimeSha256 !== undefined) {
-    if (!/^[a-f0-9]{64}$/.test(binding.runtimeSha256)) return failure('artifact-unknown', 'The interpreter has an invalid pinned hash.');
+    if (!isDigest(binding.runtimeSha256)) return failure('artifact-unknown', 'The interpreter has an invalid pinned hash.');
     const hashed = await hashRegularFile(runtimeActual, 512 * 1024 * 1024);
     if (!hashed.ok) return hashed;
     if (hashed.value.sha256 !== binding.runtimeSha256) return failure('artifact-modified', 'The configured interpreter no longer matches its pinned hash.');

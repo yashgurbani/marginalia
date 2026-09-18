@@ -6,6 +6,7 @@ import {
   type ReplyBlock,
   type SolverBlock,
 } from './reply.ts';
+import { isDigest } from './digest.ts';
 
 /**
  * Path 3 of the four computation paths: re-running a solver that a model already
@@ -36,7 +37,6 @@ export const SOLVER_LIMITS = Object.freeze({
   maxSolverBytes: 1024 * 1024,
 });
 
-const SHA256 = /^[a-f0-9]{64}$/;
 const ID = /^[\w-]{1,100}$/;
 const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
@@ -336,7 +336,7 @@ export function solverStateKeyFrom(canonical: string): string {
 
 /** True for a well-formed wire view-state key. Any length of reply produces one. */
 export function isSolverStateKey(value: unknown): value is string {
-  return typeof value === 'string' && SHA256.test(value);
+  return isDigest(value);
 }
 
 /**
@@ -389,7 +389,7 @@ export function validateSolverRequest(request: unknown): SolverValidation<Solver
   const hashes = {} as Record<'replyHash' | 'sourceHash' | 'policyKey', string>;
   for (const field of ['replyHash', 'sourceHash', 'policyKey'] as const) {
     const value = request[field];
-    if (typeof value !== 'string' || !SHA256.test(value)) return reject('invalid-request', `The recompute request has an invalid ${field}.`);
+    if (!isDigest(value)) return reject('invalid-request', `The recompute request has an invalid ${field}.`);
     hashes[field] = value;
   }
   if (!isSolverStateKey(request.stateKey)) {
@@ -756,7 +756,7 @@ export function validateSolverExecuteRequest(request: unknown): SolverValidation
     if (typeof value !== 'string' || !ID.test(value)) return reject('invalid-request', `The execute request has an invalid ${field}.`);
     ids[field] = value;
   }
-  if (typeof request.planToken !== 'string' || !SHA256.test(request.planToken)) {
+  if (!isDigest(request.planToken)) {
     return reject('invalid-request', 'The execute request has an invalid plan token.');
   }
   if (!isSolverStateKey(request.stateKey)) return reject('invalid-request', 'The execute request has an invalid view state key.');

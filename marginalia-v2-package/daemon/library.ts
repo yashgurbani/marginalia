@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDigest } from '../contracts/digest.ts';
 import type { ModelSelection, ModelSettings, ModelSettingsChange, ModelTier, VocabularyEntry } from '../contracts/library.ts';
 import type { Thread } from '../contracts/reader.ts';
 import { ConflictError, type ReaderStore } from './store.ts';
@@ -69,9 +70,9 @@ export class LibrarySettingsService {
    * before creating a Codex policy. A mismatch means start/fork, never resume.
    */
   continuationIdentity(choice: ModelSelection, permissionFingerprint: string): string {
-    if (!/^[a-f0-9]{64}$/.test(permissionFingerprint)) throw new Error('Invalid permission identity.');
+    if (!isDigest(permissionFingerprint)) throw new Error('Invalid permission identity.');
     validateModel(choice.model);
-    if (!Number.isSafeInteger(choice.settingsRevision) || choice.settingsRevision < 0 || !/^[a-f0-9]{64}$/.test(choice.compatibilityKey)) throw new Error('Invalid model compatibility identity.');
+    if (!Number.isSafeInteger(choice.settingsRevision) || choice.settingsRevision < 0 || !isDigest(choice.compatibilityKey)) throw new Error('Invalid model compatibility identity.');
     return digest(['marginalia.continuation.v1', choice.model, choice.settingsRevision, choice.compatibilityKey, permissionFingerprint]);
   }
 
