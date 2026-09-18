@@ -2,7 +2,7 @@
 
 label: wayfinder:task
 mode: AFK
-status: open
+status: claimed (astra, 2026-09-18)
 blocked_by: H05, E02, E03, Q05
 route: Sol medium
 

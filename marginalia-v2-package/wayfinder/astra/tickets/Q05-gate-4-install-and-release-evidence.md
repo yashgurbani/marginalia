@@ -2,7 +2,7 @@
 
 label: wayfinder:task
 mode: HITL
-status: open
+status: claimed (astra, 2026-09-18)
 blocked_by: E01, E02, E03
 route: Luna xhigh drives, Yash performs the fresh install
 

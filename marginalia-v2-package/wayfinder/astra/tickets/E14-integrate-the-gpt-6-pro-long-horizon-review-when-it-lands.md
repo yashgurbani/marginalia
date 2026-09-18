@@ -2,7 +2,7 @@
 
 label: wayfinder:task
 mode: AFK
-status: claimed (astra, 2026-09-18)
+status: closed
 blocked_by: E01
 route: Astra low triages; Sol medium verifies rows that need code reading
 
@@ -25,3 +25,7 @@ The reviewer pinned commit `0360a1c` and did not run code. Thirty-nine commits (
 ## Provenance context from E21
 
 E21's mechanical provenance record is `docs/evidence/pro-review-triage/INTEGRATION-PROVENANCE-2026-09-18.md`, with raw verification output in `docs/evidence/pro-review-triage/RAW-VERIFICATION-2026-09-18.txt` and the preserved historical script in `docs/evidence/pro-review-triage/integrate_pro_review.py`. It records the supplied transcript source and the committed transcript as logically identical across 1,930 lines, with a retained raw SHA-256 mismatch caused by LF versus CRLF line endings; all four scripted extraction bodies match their 1-based source ranges exactly. This is provenance only: E14 still owns substantive verification of all 120 rows, and E21 claims none of those rows as verified.
+
+## Resolution
+
+2026-09-18: All 120 Pro ledger rows triaged at explicitly pinned bdfe8d7: 89 confirmed, 29 unverified, 1 superseded, 1 refuted. Evidence docs/evidence/pro-review-triage/TRIAGE-2026-09-18.md, TRIAGE-CHECKS.log, TRIAGE-WORKER-REPORT.md, INDEPENDENT-REVIEW.md and RECONCILIATION-REPORT.md. New E30-E38 tickets map verified gaps; E36 closed as duplicate, Q02 retains real runtime observation. E13 expanded for result-claim coverage and E33 corrected for missing metadata contracts. H05/H10 dissent preserved without overruling Yash. Historical script provenance remains E21. Initial worker requested Sol medium (actual MCP runtime unobservable); independent review actual GPT-5.6 Sol high and reconciliation actual GPT-5.6 Sol medium. This closes triage, not implementation or runtime acceptance.

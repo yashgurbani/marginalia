@@ -2,7 +2,7 @@
 
 label: wayfinder:task
 mode: AFK
-status: claimed (astra, 2026-09-18)
+status: closed
 blocked_by: E01, H01
 route: Sol medium
 
@@ -17,3 +17,7 @@ Hard limits from the packet: no authority change, gate refusals stay, the exact 
 ## Acceptance
 - Tests asserting the new copy and asserting the outgoing review text is unchanged.
 - `npm test` green; `.m-meta` register and the Keep / Note / Ask / Library vocabulary preserved.
+
+## Resolution
+
+2026-09-18: Integrated de49a90: H01 honest network copy, state-dependent saved calculation availability, and reader-language checked conclusions. Exact outgoing pre text and recipient are unchanged. Named regression: ui: network copy is honest and leaves reviewed outgoing bytes and recipient unchanged. Evidence docs/evidence/qa-2026-09-18/e16-copy/worker-report.md and integrated-suite.log: 797 total, 791 pass, 0 fail, 6 skip; typecheck, prepare and extension:typecheck passed. Worker requested Sol medium; exact MCP runtime model/effort unobservable. H12 disclosure is separately implemented in E24 pending independent integration review.
