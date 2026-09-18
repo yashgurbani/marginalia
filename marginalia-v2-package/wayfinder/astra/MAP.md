@@ -45,6 +45,10 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 - 2026-09-18: E24 closed at `848c5d9`/`f88f651`: the digest-bound Simulate review discloses “can run the model locally” before consent, retains exact outgoing text and explicit approval, and passes its named regressions plus 800/794/0/6 integration checks. Evidence: `docs/evidence/qa-2026-09-18/e24-capability/`.
 - 2026-09-18: E05 closed at `29a4730`/`5892e65`: route extraction preserves the served surface, 94/94 focused route checks pass before and after, `server.ts` is 130 lines, independent review accepted, and CI 35307863347 is green on three OSes. Evidence: `docs/evidence/qa-2026-09-18/e05-routes/`.
 
+- 2026-09-18: E32 closed on `d472442` / `89a6335`: eight retained-copy classes disclose location/remove/export behavior, logical FTS erasure and retained versions are tested, and secure physical erasure is disclaimed. Independent review 47/47; combined main suite 815/809/0/6. Evidence: `docs/evidence/qa-2026-09-18/e32-e37-settings/`.
+- 2026-09-18: E37 closed on `d472442` / `89a6335`: typed provider capability is separate from model selection, unsupported providers cannot dispatch, and credentials remain outside the browser. Independent review 42/42; combined main suite 815/809/0/6. Evidence: `docs/evidence/qa-2026-09-18/e32-e37-settings/`. Live-runtime acceptance remains open.
+- 2026-09-18: E34 remains claimed after `2c9a27b` / `b1ce21f`: inert unavailable footer behavior passes 28/28 review and main suite 802/796/0/6, but the literal E31 attributed-match acceptance bullet is unfulfilled. Need E31 integration/verification or explicit chief deferral of that bullet; review ACCEPT covers the implemented footer. Evidence: `docs/evidence/qa-2026-09-18/e34-availability/` and `e32-e37-settings/independent-review.md`.
+
 ## Tickets
 
 ### Stream E: engineering
