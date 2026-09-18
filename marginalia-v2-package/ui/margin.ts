@@ -315,7 +315,12 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     }
   }
   const footerCount = el('span', '', 'm-meta');
-  footer.append(footerCount, actions(button('Export JSON', exportWork), button('Think with it', () => pageQuestion('unsure', 'Help me reflect on this page and connect it to my own questions.')), button('Go further', () => pageQuestion('explore', 'Suggest useful further reading related to this page.'))), el('span', 'Hear it · not available yet', 'm-meta'));
+  footer.append(
+    footerCount,
+    el('p', 'Related items · not available in this version.', 'm-meta'),
+    actions(button('Export JSON', exportWork), button('Think with it', () => pageQuestion('unsure', 'Help me reflect on this page and connect it to my own questions.')), button('Go further', () => pageQuestion('explore', 'Suggest useful further reading related to this page.'))),
+    el('p', 'Hear it · not available in this version.', 'm-meta'),
+  );
   const skip = button('Go to margin', () => showPanel(true, skip)); skip.className = 'm-skip'; root.prepend(skip);
 
   const noteEditor = mountNoteEditor(compose, {
