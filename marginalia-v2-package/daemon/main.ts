@@ -1,7 +1,8 @@
-import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { dedicatedRuntimeIdentity } from './runtime-identity.ts';
+import { createRuntimePolicy } from './runtime-policy.ts';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type { ReplyCapability } from '../contracts/reply.ts';
+import { isAbsolute, join, resolve } from 'node:path';
 import { startServer } from './server.ts';
 import { createInterface } from 'node:readline';
 import { createDiagnostics } from './diagnostics.ts';
@@ -11,9 +12,6 @@ import { randomUUID } from 'node:crypto';
 import { createCodexRuntimeFactory } from './jobs/runtime.ts';
 import { createConsentProviderAuthorization, createObservedPolicyEvidenceCollector } from './consent/index.ts';
 import { createDedicatedHostEvidenceSource } from './consent/evidence-host.ts';
-import { modeForIntent } from './jobs/mode.ts';
-import { createCodexPolicy, PINNED_CODEX_VERSION, type JsonValue } from './codex-policy.ts';
-import { policyFingerprint } from './providers/policy-gate.ts';
 import { launchProvider } from './providers/runtime.ts';
 import { inspectAppServer } from './providers/preflight.ts';
 import { createLazySolverTransport } from './solver/index.ts';
@@ -31,23 +29,8 @@ const solverProbeRoot = join(canonicalDataDir, 'confinement-probes');
 mkdirSync(solverProbeRoot, { recursive: true, mode: 0o700 });
 const port = Number(process.env.MARGINALIA_PORT ?? 43120);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MARGINALIA_PORT must be between 1 and 65535.');
-function dedicatedRuntimeIdentity() {
-  const executable = process.env.MARGINALIA_CODEX_EXECUTABLE, home = process.env.MARGINALIA_CODEX_HOME;
-  if (!executable || !home || !isAbsolute(executable) || !isAbsolute(home) ||
-    (process.platform === 'win32' && !/\.exe$/i.test(executable))) return undefined;
-  try {
-    const identity = { executable: realpathSync(executable), codexHome: realpathSync(home) };
-    if (!statSync(identity.executable).isFile() || !statSync(identity.codexHome).isDirectory()) return undefined;
-    const ambient = [join(homedir(), '.codex'), process.env.CODEX_HOME].filter((v): v is string => !!v);
-    const nested = (a: string, b: string) => { const r = relative(a, b); return !r || (!isAbsolute(r) && r !== '..' && !r.startsWith(`..${sep}`)); };
-    if (ambient.some(value => {
-      let actual: string; try { actual = realpathSync(value); } catch { actual = resolve(value); }
-      return nested(actual, identity.codexHome) || nested(identity.codexHome, actual);
-    })) return undefined;
-    return identity;
-  } catch { return undefined; }
-}
 const runtimeIdentity = dedicatedRuntimeIdentity();
+const runtimePolicy = runtimeIdentity ? createRuntimePolicy(runtimeIdentity.codexHome) : undefined;
 const runtimeModule = process.env.MARGINALIA_AUTHORIZED_RUNTIME_MODULE;
 const hostEvidence = createDedicatedHostEvidenceSource();
 const installationDiagnostics = createDiagnostics(runtimeModule ? undefined : runtimeIdentity);
@@ -66,24 +49,9 @@ const runtimeFactoryBuilder = async ({ store, consent }: Parameters<NonNullable<
   const authorization = createConsentProviderAuthorization({ consent, platform: process.platform as 'win32' | 'linux' | 'darwin', evidence });
   return createCodexRuntimeFactory({ ...runtimeIdentity, consent, authorization,
     dispatchReady: hostEvidence.readiness().ready, readiness: () => hostEvidence.readiness(),
-    configOverridesFor: (job, workspace) => policyFor(workspace, job.mode, job.model, job.provider).configOverrides });
+    configOverridesFor: (job, workspace) => runtimePolicy!.policyFor(workspace, job.mode, job.model, job.provider).configOverrides });
 };
-const policyAuditEpoch = randomUUID();
-let definitionSchema: Record<string, JsonValue> | undefined;
-function policyFor(workspace: string, mode: 'structured-final' | 'workspace-files', model: string, provider: 'app-server' | 'mcp-server') {
-  if (!runtimeIdentity) throw new Error('No dedicated runtime identity is available.');
-  const common = { version: PINNED_CODEX_VERSION, platform: process.platform as 'win32' | 'linux' | 'darwin',
-    adapter: provider, model, workspace, codexHome: runtimeIdentity.codexHome, auditId: policyAuditEpoch };
-  if (mode === 'structured-final') {
-    definitionSchema ??= JSON.parse(readFileSync(new URL('../contracts/reply.schema.json', import.meta.url), 'utf8')) as Record<string, JsonValue>;
-    return createCodexPolicy({ ...common, operation: 'definition', outputSchema: definitionSchema });
-  }
-  return createCodexPolicy({ ...common, operation: 'generation' });
-}
-const jobDefaults = runtimeIdentity && !runtimeModule ? {
-  provider: 'app-server' as const, mode: 'workspace-files' as const, modeFor: modeForIntent, capabilities: ['samples', 'solver', 'media.audio', 'media.image', 'media.video', 'network.citations', 'network.shelf'] satisfies ReplyCapability[],
-  policyFor: (workspace: string, mode: 'structured-final' | 'workspace-files', model: string, provider: 'app-server' | 'mcp-server') => policyFingerprint(policyFor(workspace, mode, model, provider)),
-} : undefined;
+const jobDefaults = runtimePolicy && !runtimeModule ? runtimePolicy.jobDefaults : undefined;
 const solverTransport = runtimeIdentity && !runtimeModule ? createLazySolverTransport({
   launch: () => launchProvider('app-server', { ...runtimeIdentity, workspace: canonicalDataDir, timeoutMs: 60_000 }),
   inspect: rpc => inspectAppServer(rpc, canonicalDataDir, runtimeIdentity.codexHome),

@@ -2,7 +2,7 @@ import type { ProviderAudit, ProviderHandle, ProviderRequest } from '../../contr
 import type { JobSnapshot } from '../../contracts/jobs.ts';
 import { createCodexPolicy, PINNED_CODEX_VERSION, type AuditStage, type JsonValue, type Platform, type PolicyEvidence } from '../codex-policy.ts';
 import type { ProviderAuthorization } from '../jobs/runtime.ts';
-import { authorizePolicy, policyFingerprint } from '../providers/policy-gate.ts';
+import { authorizePolicy, policyFingerprint, type PolicyAuthorizationOptions } from '../providers/policy-gate.ts';
 import type { RpcTransport } from '../providers/stdio.ts';
 import { ConsentSessionService } from './service.ts';
 
@@ -18,13 +18,13 @@ export interface PolicyEvidenceCollector {
   inspectMcp(rpc: RpcTransport, workspace: string, codexHome: string, tools: unknown[]): Promise<ProviderAudit>;
 }
 
-export type ConsentProviderAuthorizationOptions = {
+export type ConsentProviderAuthorizationOptions = PolicyAuthorizationOptions & {
   consent: ConsentSessionService;
   platform: Platform;
   evidence: PolicyEvidenceCollector;
 };
 
-/** Real T02/T06 bridge. Missing or unresolved collector evidence rejects; there is no development allow path. */
+/** Real T02/T06 bridge. Missing or unresolved collector evidence rejects unless explicitly reader-authorized. */
 export function createConsentProviderAuthorization(options: ConsentProviderAuthorizationOptions): ProviderAuthorization {
   return {
     async authorize(job, request, audit, stage) {
@@ -45,7 +45,7 @@ export function createConsentProviderAuthorization(options: ConsentProviderAutho
       // T06 has already marked dispatch immediately before entering the runner; app-server calls
       // this again after its thread observation. A later adapter checkpoint gap remains recorded.
       const authorization = options.consent.currentAuthorization(job, attemptId, stage === 'dispatch');
-      return authorizePolicy(policy, request, audit, evidence, authorization, stage);
+      return authorizePolicy(policy, request, audit, evidence, authorization, stage, options);
     },
     async authorizeRecovery(job, handle, audit) {
       if (!job.latestAttemptId || handle.jobId !== job.latestAttemptId || handle.policyKey !== job.policyKey) throw new Error('recovery-binding-mismatch');

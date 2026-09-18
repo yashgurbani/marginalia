@@ -4,6 +4,9 @@ import type { AuditedPolicy, ProviderAudit, ProviderRequest } from '../../contra
 import type { ConsentAuthorization } from '../../contracts/consent.ts';
 import { isPreparationAuthorization, type PreparationAuthorization } from './preparation-authority.ts';
 
+export type PolicyAuthorizationOptions = { unobservedConfinement?: 'reject' | 'reader-authorized' };
+const loggedAttempts = new Set<string>();
+
 /** Semantic identity survives a worker restart; evidenceScope deliberately does not. */
 export function policyFingerprint(policy: CodexPolicy): string {
   const { evidenceScope: _epoch, ...semanticPolicy } = policy;
@@ -13,7 +16,7 @@ export function policyFingerprint(policy: CodexPolicy): string {
 /** Connects T13's pure audit to T02. The host must supply observations and current consent.
  * No requested value is promoted to observed evidence here. */
 export function authorizePolicy(policy: CodexPolicy, request: ProviderRequest, audit: ProviderAudit,
-  evidence: PolicyEvidence, authorization: ConsentAuthorization | PreparationAuthorization, stage: AuditStage): AuditedPolicy {
+  evidence: PolicyEvidence, authorization: ConsentAuthorization | PreparationAuthorization, stage: AuditStage, options: PolicyAuthorizationOptions = {}): AuditedPolicy {
   if (!authorization || authorization.attemptId !== request.jobId || authorization.policyKey !== request.policyKey ||
       authorization.provider !== policy.adapter || (stage === 'dispatch' && !authorization.dispatchedAt && !isPreparationAuthorization(authorization))) throw new Error('current-attempt-authorization-required');
   if (!policy.modelTurn) throw new Error('saved-solver-is-not-a-model-job');
@@ -23,7 +26,15 @@ export function authorizePolicy(policy: CodexPolicy, request: ProviderRequest, a
   if ((policy.operation === 'definition') !== (request.mode === 'structured-final')) throw new Error('policy-mode-mismatch');
   if (policy.operation === 'definition' && JSON.stringify(policy.turnPolicy.outputSchema) !== JSON.stringify(request.outputSchema)) throw new Error('policy-output-schema-mismatch');
   const decision = auditCodexPolicy(policy, evidence, stage);
-  if (stage === 'bootstrap' ? !decision.bootstrapPolicySatisfied : !decision.dispatchPolicySatisfied) throw new Error(`policy-evidence-rejected:${decision.issues.map(x => `${x.code}:${x.field}`).join(',')}`);
+  if (stage === 'bootstrap' ? !decision.bootstrapPolicySatisfied : !decision.dispatchPolicySatisfied) {
+    if (options.unobservedConfinement !== 'reader-authorized') throw new Error(`policy-evidence-rejected:${decision.issues.map(x => `${x.code}:${x.field}`).join(',')}`);
+    const attemptKey = `${policy.evidenceScope}:${request.jobId}`;
+    if (!loggedAttempts.has(attemptKey)) {
+      loggedAttempts.add(attemptKey);
+      // Only fixed audit issue codes: fields can contain provider-controlled names.
+      console.error(`READER-AUTHORIZED RUNTIME: confinement NOT observed; rejected issue codes: ${[...new Set(decision.issues.map(x => x.code))].join(',')}`);
+    }
+  }
   if (decision.perRequestCatalogVeto === 'unsupported') throw new Error(`policy-catalog-veto:${decision.unsupportedCatalogEntries.join(',')}`);
   return { policyKey: request.policyKey, auditScope: policy.evidenceScope, workspace: request.workspace,
     thread: { ...policy.threadStart.params, config: policy.configOverrides }, turn: { ...policy.turnPolicy },
