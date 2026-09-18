@@ -83,8 +83,8 @@ export class Pairing {
     if (typeof threadId !== 'string' || !/^[\w-]{1,100}$/.test(threadId) || !this.valid(token, origin)) return;
     return this.store.db.transaction(() => {
       const updated = this.store.db.prepare(`UPDATE pairing_tokens SET currentThreadId=?
-        WHERE hash=? AND origin=? AND revokedAt IS NULL AND (currentThreadId IS NULL OR currentThreadId=?)`)
-        .run(threadId, digest(token as string), origin, threadId);
+        WHERE hash=? AND origin=? AND revokedAt IS NULL`)
+        .run(threadId, digest(token as string), origin);
       return updated.changes === 1 ? this.session(token, origin) : undefined;
     })();
   }

@@ -9,6 +9,7 @@ import { mountNoteEditor } from './note-editor.ts';
 import { createT08Mount, type AskingMountFactory, type AskingSelection } from './asking-host.ts';
 import type { MountedReply } from '../renderer/index.ts';
 import { canonicalReplyData, validateReply, type SourceBinding } from '../contracts/reply.ts';
+import { mountSolverRecompute } from './solver-recompute.ts';
 
 export type MarginSection = { title: string; start: number; end: number };
 export type MarginOptions = {
@@ -680,9 +681,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
           return track(viewSaves.save(state)).catch(error => { if (!closed && alive()) viewStatus.textContent = error instanceof Error ? error.message : 'View inputs remain unsaved. Export before closing.'; throw error; });
         };
         const { mountReply } = await import('../renderer/index.ts'); if (!current()) return;
+        const solverRecompute = options.allowHelper !== false && helper?.token && helper.origin === saved.origin ? mountSolverRecompute(wrapper, helper, saved.version.id) : undefined;
         const mounted: MountedReply = mountReply(canvas, saved.version.reply, {
           sourceText: saved.source.text, initialState: saved.local,
-          capabilities: ['samples'],
+          capabilities: ['samples', 'solver'],
           hostReport: saved.reports?.[canonicalReplyData(saved.local.parameters)] ?? saved.report ?? saved.version.validation,
           sampleGenerationRecords: saved.sampleGenerationRecords,
           onStateChange: persistView,
@@ -696,6 +698,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
             if (anchor) sourceAction(anchor); else announce('This saved source passage cannot be located unambiguously on the current page. The original reply is preserved.');
           },
           ...(options.allowHelper !== false && helper?.token && helper.origin === saved.origin ? {
+            onRecompute: solverRecompute?.onRecompute,
             resolveHostReport: async (parameters: Readonly<Record<string, number>>) => {
               if (closed) return undefined;
               const request = ++reportRequest;
@@ -716,6 +719,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         const entry = { threadId: thread.id, node: wrapper, mounted, flush, close() {
           if (closed) return;
           const final = viewSaves!.close(mounted.getState()); closed = true;
+          solverRecompute?.forget();
           mounted.destroy(); void track(final).catch(fail);
         } };
         replyMounts.set(key, entry);
