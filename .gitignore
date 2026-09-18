@@ -9,3 +9,9 @@ node_modules/
 .local/
 .impeccable/
 *.zip
+
+# Local build records and scratch work
+marginalia-v2-package/r2b-*.txt
+marginalia-v2-package/docs/evidence/
+marginalia-v2-package/docs/archive/
+.scratch/
