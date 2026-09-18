@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import {
+  capabilitiesForIntent,
   canonicalReplyData,
   computeIndependentChecks,
   parseAndValidateReply,
@@ -182,6 +183,44 @@ test('capability-gated blocks require both a declaration and host availability',
   candidate.requiredCapabilities = ['media.image'];
   assert.match(validate(candidate, []).errors.join('\n'), /capability media\.image is unavailable/i);
   assert.equal(validate(candidate, ['media.image']).ok, true);
+});
+
+test('evidence intent capabilities admit citations without broadening define replies', () => {
+  const evidenceReply: CandidateReply = {
+    schema: 'marginalia.reply.v1', intent: 'evidence', status: 'complete',
+    title: 'Fixture evidence reply', summary: 'Contract fixture only.', sourceBindings: [], parameters: [], assumptions: [], limitations: [],
+    requiredCapabilities: ['network.citations'], checks: [], staticFallback: 'Fixture evidence reply.',
+    blocks: [{
+      id: 'evidence-citations', type: 'citations', entries: [{
+        id: 'evidence-entry', claim: 'A fixture claim.', support: 'Authored support is not verified evidence.',
+        source: 'Fixture source', date: '2026-09-18', fetched: false, url: 'https://example.org/evidence',
+      }],
+    }],
+  };
+
+  const admitted = validateReply(evidenceReply, { sourceText: growthSourceText, capabilities: capabilitiesForIntent('evidence') });
+  assert.equal(admitted.ok, true, admitted.ok ? '' : admitted.errors.join('\n'));
+  const unavailable = validateReply(evidenceReply, { sourceText: growthSourceText, capabilities: capabilitiesForIntent('define') });
+  assert.equal(unavailable.ok, false);
+  assert.ok(unavailable.errors.includes('$.blocks[0]: capability network.citations is unavailable.'));
+});
+
+test('explore intent capabilities admit a shelf without broadening define replies', () => {
+  const exploreReply: CandidateReply = {
+    schema: 'marginalia.reply.v1', intent: 'explore', status: 'complete',
+    title: 'Fixture explore reply', summary: 'Contract fixture only.', sourceBindings: [], parameters: [], assumptions: [], limitations: [],
+    requiredCapabilities: ['network.shelf'], checks: [], staticFallback: 'Fixture explore reply.',
+    blocks: [{
+      id: 'explore-shelf', type: 'shelf',
+      items: [{ id: 'reading-one', title: 'Fixture reading', reason: 'A parked suggestion for contract testing.', url: 'https://example.org/reading' }],
+    }],
+  };
+
+  const admitted = validateReply(exploreReply, { sourceText: growthSourceText, capabilities: capabilitiesForIntent('explore') });
+  assert.equal(admitted.ok, true, admitted.ok ? '' : admitted.errors.join('\n'));
+  const unavailable = validateReply(exploreReply, { sourceText: growthSourceText, capabilities: capabilitiesForIntent('define') });
+  assert.equal(unavailable.ok, false);
+  assert.ok(unavailable.errors.includes('$.blocks[0]: capability network.shelf is unavailable.'));
 });
 
 // These are contract regressions, not live provider, browser or retrieval evidence.
