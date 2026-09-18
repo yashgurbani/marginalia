@@ -911,7 +911,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
           })));
         }
         if (options.allowHelper !== false) controls.append(button('Open saved reply and follow-up', () => { const current = currentThread(thread.id); if (!current) return; const note = saved.version.answeredNote; ask(current.anchor, current, note ? { noteId: note.noteId, revision: note.revision, text: note.text } : undefined, saved.version.id); }));
-        wrapper.append(viewStatus, controls, el('p', 'Saved-solver execution is not connected here. Follow-ups require a separate host-prepared review.', 'm-meta'));
+        wrapper.append(viewStatus, controls);
+        if (!solverRecompute) wrapper.append(el('p', options.allowHelper === false
+          ? 'This example cannot run again here yet. Your notes and current inputs are unchanged.'
+          : 'Permission is needed before this example can run again. Your notes and current inputs are unchanged.', 'm-meta'));
         area()?.querySelector('.m-reply-list')?.append(wrapper);
       }
       message(persistence.replies.unsaved(thread.id).length ? 'Some view inputs are still only in memory after a failed save. Export them before closing this page.' : unavailable ? `${unavailable} saved ${unavailable === 1 ? 'reply could' : 'replies could'} not be safely displayed. Original records remain available in the export.` : visible.some(record => record.conflict) ? 'The helper has a different view. Local controls are preserved; use the helper view explicitly to replace them.' : visible.some(record => record.recovered?.length) ? 'Saved replies are available. Earlier view inputs are preserved in the recovery export.' : visible.length ? `${visible.length} saved ${visible.length === 1 ? 'reply' : 'replies'}. Notes stay above replies.` : 'No saved replies on this device.');

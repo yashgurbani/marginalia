@@ -48,12 +48,17 @@ test('number and range changes recompute locally without sending or requesting r
 
   const classification = root.querySelector('[data-block="growth-classification"]')!;
   await until(() => classification.textContent.includes('Still rising at 8 s. This model diverges at 32.4 s.'));
+  assert.match(root.textContent, /The calculations run on this device\./);
+  assert.match(root.textContent, /This conclusion was checked for the inputs shown\./);
+  assert.doesNotMatch(root.textContent, /packaged renderer|host verification|host report/i);
   const derived = root.querySelector('[data-block="threshold"]')!;
   const plot = root.querySelector('[data-block="growth-plot"]')!;
   const derivedBefore = derived.textContent;
   const pathBefore = plot.querySelector('path')?.getAttribute('d');
 
   setNumericInput(inputOfType(root, 'number'), 0.8);
+
+  await until(() => root.textContent.includes('No checked conclusion is available for these inputs.'));
 
   assert.notEqual(derived.textContent, derivedBefore);
   assert.notEqual(plot.querySelector('path')?.getAttribute('d'), pathBefore);

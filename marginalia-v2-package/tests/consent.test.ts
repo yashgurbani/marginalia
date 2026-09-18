@@ -382,6 +382,32 @@ test('ui: Tab may leave the non-modal sheet; outgoing text is readable; Escape i
   assert.equal(dismissed, 1); assert.equal(decisions, 0); assert.equal(d.host.children.length, 0); assert.equal(d.doc.activeElement, d.opener);
 });
 
+test('ui: network copy is honest and leaves reviewed outgoing bytes and recipient unchanged', async t => {
+  const d = dom(t), exactBytes = '<question>Why?</question>\n\u0000Exact UTF-8: café';
+  const cloud = { ...preview('cloud-copy'), outgoing: [{ label: 'Exact outgoing', text: exactBytes, sha256: hash(exactBytes) }] };
+  const originalOutgoing = structuredClone(cloud.outgoing); let decided: ConsentPreview | undefined;
+  const sheet = mountConsentSheet(d.element, { preview: cloud, canAuthorize: true,
+    decide: async (_choice, value) => { decided = value; return allowed; } });
+  d.flush(); let root = d.host.children[0];
+  assert.deepEqual(root.querySelectorAll('pre').map(node => node.textContent), [exactBytes]);
+  assert.match(root.textContent, /Your question is sent to Codex\. Other internet access has not been established as blocked on this device\./);
+  assert.ok(root.textContent.includes(cloud.recipientLabel));
+  assert.doesNotMatch(root.textContent, /network access stays closed/i);
+  root.querySelector('button')!.click(); await tick();
+  assert.deepEqual(decided?.outgoing, originalOutgoing); assert.equal(decided?.recipient, cloud.recipient);
+  sheet.destroy();
+
+  const open = { ...preview('open-copy'), scope: 'open-session' as const, scopeLabel: 'Codex and separate web access for this site', outgoing: originalOutgoing };
+  const unavailable = mountConsentSheet(d.element, { preview: open, surface: 'floating', canAuthorize: true, decide: async () => { throw new Error('must not authorize'); } });
+  d.flush(); root = d.host.children[0];
+  assert.match(root.textContent, /Web checks are not available yet\. Nothing will be looked up\./);
+  assert.match(root.textContent, /This action is unavailable here\. Nothing was sent\./);
+  assert.deepEqual(root.querySelectorAll('pre').map(node => node.textContent), [exactBytes]);
+  assert.doesNotMatch(root.textContent, /separate web access|Fetched pages are recorded/i);
+  assert.deepEqual(root.querySelectorAll('button').map(node => node.textContent), ['Not now']);
+  unavailable.destroy();
+});
+
 test('ui: not-now stays usable while saving; late approval cannot send after dismissal', async t => {
   const d = dom(t); let resolve!: (value: ConsentGrant) => void; let signal!: AbortSignal; let granted = 0, backed = 0;
   mountConsentSheet(d.element, { preview: preview(), canAuthorize: true,
