@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import type { ProviderHandle } from '../../contracts/job-runner.ts';
 import type { OutgoingPart } from '../../contracts/consent.ts';
 import { isDigest } from '../../contracts/digest.ts';
-import { canonicalReplyData, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
+import { canonicalReplyData, validateReply, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
 import type { FrozenJobContext, JobAttempt, JobConsentAuthority, JobSnapshot, JobState, StartJobInput } from '../../contracts/jobs.ts';
 import type { SolverArtifactBinding } from '../../contracts/solver.ts';
 import type { ReaderStore } from '../store.ts';
@@ -51,6 +51,10 @@ const terminal = new Set<JobState>(['succeeded', 'failed', 'cancelled', 'timed_o
 export const packetDigest = (value: unknown) => createHash('sha256').update(canonicalReplyData(JSON.parse(JSON.stringify(value)))).digest('hex');
 
 export class JobConflictError extends Error { override name = 'JobConflict'; }
+export const CLARIFICATION_LIMIT_FALLBACK = 'This build already asked its one clarifying question. The additional question was withheld.';
+export class ClarificationLimitError extends JobConflictError {
+  constructor() { super(CLARIFICATION_LIMIT_FALLBACK); }
+}
 
 export class JobStore {
   readonly db: Database.Database;
@@ -75,6 +79,10 @@ export class JobStore {
           revision INTEGER NOT NULL DEFAULT 0, dispatchClaimed INTEGER NOT NULL DEFAULT 0, handoffMarked INTEGER NOT NULL DEFAULT 0, workspacePrepared INTEGER NOT NULL DEFAULT 0, providerHandle TEXT,
           predecessorAttemptId TEXT, authorizationFingerprint TEXT,
           sentContent TEXT, startedAt TEXT, deadlineAt TEXT, endedAt TEXT, reason TEXT, UNIQUE(jobId,number)
+        );
+        CREATE TABLE IF NOT EXISTS build_clarifications(
+          buildId TEXT PRIMARY KEY REFERENCES jobs(id), attemptId TEXT NOT NULL REFERENCES job_attempts(id),
+          questionDigest TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS provider_thread_leases(
           provider TEXT NOT NULL, providerThreadId TEXT NOT NULL, attemptId TEXT NOT NULL UNIQUE REFERENCES job_attempts(id),
@@ -119,6 +127,19 @@ export class JobStore {
       ensureColumn(this.db, 'job_attempts', 'handoffMarked', 'INTEGER NOT NULL DEFAULT 0');
       ensureColumn(this.db, 'job_attempts', 'workspacePrepared', 'INTEGER NOT NULL DEFAULT 0');
       ensureColumn(this.db, 'job_attempts', 'sentContent', 'TEXT');
+      // Preserve already published questions when upgrading a pre-budget database.
+      const existing = this.db.prepare(`SELECT j.id,j.latestAttemptId,j.provisional,r.json AS reply
+        FROM jobs j LEFT JOIN reply_versions r ON r.id=j.replyVersionId ORDER BY j.createdAt,j.id`).all() as
+        { id: string; latestAttemptId: string | null; provisional: string | null; reply: string | null }[];
+      for (const job of existing) {
+        if (!job.latestAttemptId) continue;
+        for (const serialized of [job.provisional, job.reply]) {
+          if (!serialized) continue;
+          const question = (JSON.parse(serialized) as CandidateReply).blocks.find(block => block.type === 'question');
+          if (question) this.db.prepare('INSERT OR IGNORE INTO build_clarifications VALUES(?,?,?)')
+            .run(this.buildId(job.id), job.latestAttemptId, packetDigest(question));
+        }
+      }
     })();
   }
   private event(kind: string, payload: unknown) {
@@ -214,6 +235,7 @@ export class JobStore {
   private snapshot(row: JobRow): JobSnapshot {
     const attempts = this.db.prepare('SELECT * FROM job_attempts WHERE jobId=? ORDER BY number').all(row.id) as AttemptRow[];
     return {
+      clarificationBudget: this.clarificationBudget(row.id),
       id: row.id, threadId: row.threadId, idempotencyKey: row.idempotencyKey, packetDigest: row.packetDigest, preparedPayloadDigest: row.preparedPayloadDigest, provider: row.provider,
       model: row.model, mode: row.mode, policyKey: row.policyKey, grantId: row.grantId, state: row.state,
       cancelRequested: !!row.cancelRequested, latestAttemptId: row.latestAttemptId ?? undefined,
@@ -225,6 +247,40 @@ export class JobStore {
         sentContent: a.sentContent ? JSON.parse(a.sentContent) : undefined,
         startedAt: a.startedAt ?? undefined, deadlineAt: a.deadlineAt ?? undefined, endedAt: a.endedAt ?? undefined, reason: a.reason ?? undefined })),
     };
+  }
+  private buildId(jobId: string): string {
+    const visited = new Set<string>();
+    let current = jobId;
+    while (!visited.has(current)) {
+      visited.add(current);
+      const row = this.db.prepare('SELECT context,threadId FROM jobs WHERE id=?').get(current) as { context: string; threadId: string } | undefined;
+      if (!row) throw new JobConflictError('The build lineage is unavailable.');
+      const retryOf = (JSON.parse(row.context) as FrozenJobContext).retryOfJobId;
+      if (!retryOf) return current;
+      const parent = this.db.prepare('SELECT threadId FROM jobs WHERE id=?').get(retryOf) as { threadId: string } | undefined;
+      if (!parent || parent.threadId !== row.threadId) throw new JobConflictError('The retry build lineage is unavailable.');
+      current = retryOf;
+    }
+    throw new JobConflictError('The retry build lineage is invalid.');
+  }
+  private clarificationBudget(jobId: string): NonNullable<JobSnapshot['clarificationBudget']> {
+    const buildId = this.buildId(jobId);
+    return { buildId, limit: 1, used: this.db.prepare('SELECT 1 FROM build_clarifications WHERE buildId=?').get(buildId) ? 1 : 0 };
+  }
+  /** Called only inside the transaction publishing a validated candidate. Identical partial/final
+   * observations from one attempt are one question; another attempt cannot ask it again. */
+  private claimClarification(jobId: string, attemptId: string, reply: CandidateReply) {
+    const questions = reply.blocks.filter(block => block.type === 'question');
+    if (!questions.length) return;
+    if (questions.length > 1) throw new ClarificationLimitError();
+    const buildId = this.buildId(jobId), questionDigest = packetDigest(questions[0]);
+    const previous = this.db.prepare('SELECT attemptId,questionDigest FROM build_clarifications WHERE buildId=?').get(buildId) as
+      { attemptId: string; questionDigest: string } | undefined;
+    if (previous) {
+      if (previous.attemptId !== attemptId || previous.questionDigest !== questionDigest) throw new ClarificationLimitError();
+      return;
+    }
+    this.db.prepare('INSERT INTO build_clarifications VALUES(?,?,?)').run(buildId, attemptId, questionDigest);
   }
   capabilities(jobId: string): ReplyCapability[] {
     const row = this.db.prepare('SELECT capabilities FROM jobs WHERE id=?').get(jobId) as { capabilities: string } | undefined;
@@ -426,6 +482,8 @@ export class JobStore {
     this.db.transaction(() => {
       const job = this.get(jobId), attempt = job?.attempts.find(a => a.id === attemptId);
       if (!job || !attempt || job.latestAttemptId !== attemptId || job.cancelRequested || terminal.has(job.state)) return;
+      if (!validateReply(reply, { sourceText: job.context.sourceText, capabilities: this.capabilities(jobId) }).ok) return;
+      this.claimClarification(jobId, attemptId, reply);
       const serialized = JSON.stringify(reply);
       const previous = this.db.prepare('SELECT provisional FROM jobs WHERE id=?').get(jobId) as { provisional: string | null };
       if (previous.provisional === serialized) return;
@@ -440,6 +498,7 @@ export class JobStore {
       if (job.cancelRequested) throw new JobConflictError('The result arrived after cancellation.');
       if (job.latestAttemptId !== attemptId || attempt.state !== 'validating' || !attempt.dispatchClaimed ||
         attempt.revision !== expectedRevision || attempt.providerHandle?.state !== 'completed') throw new JobConflictError('This attempt is no longer eligible to commit.');
+      this.claimClarification(jobId, attemptId, reply);
       const committed = this.reader.commitReply({ id: `${job.id}-reply`, threadId: job.threadId, reply,
         parentId: job.context.parentReplyId, answeredNote: job.context.answeredNote && { noteId: job.context.answeredNote.noteId, revision: job.context.answeredNote.revision } }, this.capabilities(job.id));
       const insertBinding = this.db.prepare(`INSERT INTO solver_artifact_bindings
@@ -465,6 +524,7 @@ export class JobStore {
       const actual = job.cancelRequested && state !== 'outcome_unknown' ? 'cancelled' : state;
       const now = new Date().toISOString();
       this.db.prepare('UPDATE jobs SET state=?,reason=?,updatedAt=? WHERE id=?').run(actual, reason ?? null, now, jobId);
+      if (reason === CLARIFICATION_LIMIT_FALLBACK) this.db.prepare('UPDATE jobs SET provisional=NULL WHERE id=?').run(jobId);
       this.db.prepare('UPDATE job_attempts SET state=?,reason=?,endedAt=? WHERE id=?').run(actual, reason ?? null, terminal.has(actual) ? now : null, attemptId);
       this.event('job-state', { jobId, attemptId, state: actual, reason });
       return this.get(jobId);
