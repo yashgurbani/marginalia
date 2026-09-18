@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { ProviderHandle } from '../../contracts/job-runner.ts';
+import type { OutgoingPart } from '../../contracts/consent.ts';
 import { canonicalReplyData, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
 import type { FrozenJobContext, JobAttempt, JobConsentAuthority, JobSnapshot, JobState, StartJobInput } from '../../contracts/jobs.ts';
 import type { SolverArtifactBinding } from '../../contracts/solver.ts';
@@ -42,7 +43,7 @@ type JobRow = {
 type AttemptRow = {
   id: string; jobId: string; number: number; state: JobState; revision: number; dispatchClaimed: number; handoffMarked: number; workspacePrepared: number; providerHandle: string | null;
   predecessorAttemptId: string | null; authorizationFingerprint: string | null;
-  startedAt: string | null; deadlineAt: string | null; endedAt: string | null; reason: string | null;
+  sentContent: string | null; startedAt: string | null; deadlineAt: string | null; endedAt: string | null; reason: string | null;
 };
 
 const terminal = new Set<JobState>(['succeeded', 'failed', 'cancelled', 'timed_out', 'outcome_unknown']);
@@ -72,7 +73,7 @@ export class JobStore {
           id TEXT PRIMARY KEY, jobId TEXT NOT NULL REFERENCES jobs(id), number INTEGER NOT NULL, state TEXT NOT NULL,
           revision INTEGER NOT NULL DEFAULT 0, dispatchClaimed INTEGER NOT NULL DEFAULT 0, handoffMarked INTEGER NOT NULL DEFAULT 0, workspacePrepared INTEGER NOT NULL DEFAULT 0, providerHandle TEXT,
           predecessorAttemptId TEXT, authorizationFingerprint TEXT,
-          startedAt TEXT, deadlineAt TEXT, endedAt TEXT, reason TEXT, UNIQUE(jobId,number)
+          sentContent TEXT, startedAt TEXT, deadlineAt TEXT, endedAt TEXT, reason TEXT, UNIQUE(jobId,number)
         );
         CREATE TABLE IF NOT EXISTS provider_thread_leases(
           provider TEXT NOT NULL, providerThreadId TEXT NOT NULL, attemptId TEXT NOT NULL UNIQUE REFERENCES job_attempts(id),
@@ -116,6 +117,7 @@ export class JobStore {
       ensureColumn(this.db, 'job_attempts', 'authorizationFingerprint', 'TEXT');
       ensureColumn(this.db, 'job_attempts', 'handoffMarked', 'INTEGER NOT NULL DEFAULT 0');
       ensureColumn(this.db, 'job_attempts', 'workspacePrepared', 'INTEGER NOT NULL DEFAULT 0');
+      ensureColumn(this.db, 'job_attempts', 'sentContent', 'TEXT');
     })();
   }
   private event(kind: string, payload: unknown) {
@@ -219,6 +221,7 @@ export class JobStore {
       attempts: attempts.map(a => ({ id: a.id, jobId: a.jobId, number: a.number, state: a.state, revision: a.revision,
         dispatchClaimed: !!a.dispatchClaimed, handoffMarked: !!a.handoffMarked, workspacePrepared: !!a.workspacePrepared, predecessorAttemptId: a.predecessorAttemptId ?? undefined,
         authorizationFingerprint: a.authorizationFingerprint ?? undefined, providerHandle: a.providerHandle ? JSON.parse(a.providerHandle) : undefined,
+        sentContent: a.sentContent ? JSON.parse(a.sentContent) : undefined,
         startedAt: a.startedAt ?? undefined, deadlineAt: a.deadlineAt ?? undefined, endedAt: a.endedAt ?? undefined, reason: a.reason ?? undefined })),
     };
   }
@@ -533,6 +536,12 @@ export class JobStore {
       this.event('job-provider-handoff', { jobId: expected.id, attemptId });
       return result;
     })();
+  }
+  recordSentContent(attemptId: string, content: readonly OutgoingPart[]) {
+    const serialized = JSON.stringify(structuredClone(content));
+    const updated = this.db.prepare(`UPDATE job_attempts SET sentContent=?
+      WHERE id=? AND handoffMarked=1 AND dispatchClaimed=1 AND sentContent IS NULL`).run(serialized, attemptId);
+    if (updated.changes !== 1) throw new JobConflictError('Sent content could not be attached to the provider handoff.');
   }
   private assertDispatchFence(expected: Readonly<JobSnapshot>, current: JobSnapshot | undefined, attemptId: string) {
     const before = expected.attempts.find(a => a.id === attemptId), now = current?.attempts.find(a => a.id === attemptId);

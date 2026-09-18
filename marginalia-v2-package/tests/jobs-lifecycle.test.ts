@@ -19,8 +19,8 @@ function starting(request: ProviderRequest): ProviderHandle {
   const { jobId, workspace, policyKey, model, mode } = request;
   return { jobId, workspace, policyKey, model, mode, provider: 'app-server', providerInstanceId: 'test-provider', state: 'starting', tombstone: false };
 }
-function fixture(sourceText = 'Start with this passage.') {
-  const reader = new ReaderStore(':memory:');
+function fixture(sourceText = 'Start with this passage.', database = ':memory:') {
+  const reader = new ReaderStore(database);
   reader.apply({ id: 'keep-job-test', kind: 'keep', threadId: 'thread-job-test',
     capture: { url: 'https://example.org/article', title: 'Article', pageType: 'article', text: sourceText,
       capturedAt: '2026-09-17T00:00:00Z', extractionVersion: 'text-v1' },
@@ -85,6 +85,7 @@ test('cancel before handoff settles locally and cannot become a timeout', async 
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(jobs.get(created.id)?.state, 'cancelled');
     assert.equal(jobs.get(created.id)?.attempts[0].handoffMarked, false);
+    assert.equal(jobs.get(created.id)?.attempts[0].sentContent, undefined);
   } finally { release(); await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -143,7 +144,7 @@ test('runtime preparation failure leaves the handoff and once-grant untouched', 
 
 test('runner uncertainty after handoff stays unknown with one finalization', async () => {
   const root = await mkdtemp(join(tmpdir(), 'marginalia-jobs-'));
-  const reader = fixture();
+  const database = join(root, 'reader.sqlite'), reader = fixture('Start with this passage.', database);
   let finalized = 0, starts = 0;
   const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
   const runtimeFactory: AuthorizedRuntimeFactory = { ...base,
@@ -163,9 +164,15 @@ test('runner uncertainty after handoff stays unknown with one finalization', asy
     await jobs.create({ ...prepared.job, grantId: 'grant' });
     for (let i = 0; i < 20 && jobs.get('uncertain-job')?.state !== 'outcome_unknown'; i++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(jobs.get('uncertain-job')?.state, 'outcome_unknown');
-    assert.equal(jobs.get('uncertain-job')?.attempts[0].handoffMarked, true);
+    const sent = jobs.get('uncertain-job')!;
+    assert.equal(sent.attempts[0].handoffMarked, true);
+    assert.deepEqual(sent.attempts[0].sentContent, prepared.consent.outgoing);
+    assert.equal(sent.preparedPayloadDigest, prepared.consent.bindingDigest);
     assert.equal(finalized, 1);
     assert.equal(starts, 1);
+    const reopened = new ReaderStore(database);
+    try { assert.deepEqual(new JobStore(reopened).get(sent.id)?.attempts[0].sentContent, prepared.consent.outgoing); }
+    finally { reopened.close(); }
   } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -414,14 +421,20 @@ test('retry preparation and dispatch retain original capabilities across changed
 
 test('retry dispatch uses the exact outgoing content reviewed during retry preparation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'marginalia-retry-content-')), reader = fixture();
+  const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
   const jobs = new JobService({ reader, workspaceRoot: root, library,
     defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: [] },
-    runtimeFactory: factory(async () => ({ grantId: 'grant', policyKey })) });
+    runtimeFactory: { ...base, create: async (_job, _attempt, _workspace, host) => ({ close: () => undefined, runner: {
+      capabilities: { interrupt: 'turn-interrupt', recovery: 'thread-state', structuredFinal: true, schemaEnforced: true, liveEvents: true },
+      start: async request => { host.finalizeSend(request, starting(request)); throw new Error('send outcome unconfirmed'); },
+      resume: async () => { throw new Error('Unexpected resume.'); }, inspect: async () => { throw new Error('Unexpected inspect.'); },
+      cancel: async () => { throw new Error('Unexpected cancel.'); },
+    } }) } });
   try {
     const first = await jobs.prepare({ id: 'retry-content-original', idempotencyKey: 'retry-content-original-key',
       threadId: 'thread-job-test', intent: 'explore', question: 'Keep this exact question.' });
     await jobs.create({ ...first.job, grantId: 'grant' });
-    for (let i = 0; i < 20 && jobs.get('retry-content-original')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    for (let i = 0; i < 20 && jobs.get('retry-content-original')?.state !== 'outcome_unknown'; i++) await new Promise(resolve => setTimeout(resolve, 10));
     const original = jobs.get('retry-content-original')!;
     const legacyContext = structuredClone(original.context);
     delete (legacyContext.outgoing as Partial<typeof legacyContext.outgoing>).question;
@@ -432,6 +445,8 @@ test('retry dispatch uses the exact outgoing content reviewed during retry prepa
     const retried = await jobs.retry(original.id, { ...retryInput, grantId: 'grant', preparedPayloadDigest: reviewed.job.preparedPayloadDigest });
 
     assert.equal(retried.preparedPayloadDigest, reviewed.job.preparedPayloadDigest);
+    for (let i = 0; i < 20 && !jobs.get(retried.id)?.attempts[0].sentContent; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.deepEqual(jobs.get(retried.id)?.attempts[0].sentContent, reviewed.consent.outgoing);
   } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
 

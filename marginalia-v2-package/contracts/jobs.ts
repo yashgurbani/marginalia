@@ -2,6 +2,7 @@ import type { ProviderHandle, ProviderKind } from './job-runner.ts';
 import type { CandidateReply, Intent, ReplyCapability } from './reply.ts';
 import type { NoteVersionRef } from './reader.ts';
 import type { ConsentAuthorization } from './consent.ts';
+import type { OutgoingPart } from './consent.ts';
 
 export type JobState = 'queued' | 'preparing' | 'sending' | 'running' | 'validating' | 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'outcome_unknown' | 'cancel_requested';
 
@@ -99,6 +100,8 @@ export type JobAttempt = {
   predecessorAttemptId?: string;
   authorizationFingerprint?: string;
   providerHandle?: ProviderHandle;
+  /** Exact reviewed provider-bound parts retained only after durable handoff. */
+  sentContent?: OutgoingPart[];
   startedAt?: string;
   deadlineAt?: string;
   endedAt?: string;
