@@ -210,15 +210,24 @@ test('saved replies receive intent capabilities and solver only at the paired re
   boundaries.replyMounts.length = 0;
   let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
   await until(() => boundaries.replyMounts.length === 3);
+  assert.match(e.root.textContent, /This example cannot run again here yet\. Your notes and current inputs are unchanged\./);
+  assert.doesNotMatch(e.root.textContent, /Saved-solver execution is not connected/);
   assert.deepEqual(Object.fromEntries(boundaries.replyMounts.map(item => [item.intent, item.capabilities])), {
     evidence: ['samples', 'network.citations'], explore: ['samples', 'network.shelf'], define: ['samples'],
   });
+  api.destroy(); await api.drain();
+
+  boundaries.replyMounts.length = 0;
+  api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace });
+  await until(() => boundaries.replyMounts.length === 3);
+  assert.match(e.root.textContent, /Permission is needed before this example can run again\. Your notes and current inputs are unchanged\./);
   api.destroy(); await api.drain();
 
   e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) }); boundaries.replyMounts.length = 0;
   api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperOrigin: e.document.location.origin });
   await until(() => boundaries.replyMounts.length === 3);
   assert.ok(boundaries.replyMounts.every(item => item.capabilities?.at(-1) === 'solver'));
+  assert.doesNotMatch(e.root.textContent, /cannot run again here yet|Permission is needed before this example can run again/);
   api.destroy(); await api.drain();
 });
 test('embedded margin never reads a pairing credential or exposes management/privileged dispatch', async t => {

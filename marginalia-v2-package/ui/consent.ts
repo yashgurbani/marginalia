@@ -37,7 +37,8 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
   const render = () => {
     const title = element('h2', 'Review what will be sent', 'm-consent__title'); title.id = `m-consent-title-${safeId(preview.id)}`; title.tabIndex = -1;
     const summary = element('dl', undefined, 'm-consent__summary');
-    summary.append(element('dt', 'Recipient'), element('dd', preview.recipientLabel), element('dt', 'Permission'), element('dd', preview.scopeLabel));
+    const scopeLabel = preview.scope === 'open-session' ? 'Codex for this site; web checks are not available yet' : preview.scopeLabel;
+    summary.append(element('dt', 'Recipient'), element('dd', preview.recipientLabel), element('dt', 'Permission'), element('dd', scopeLabel));
     const exact = element('div', undefined, 'm-consent__outgoing');
     for (const part of preview.outgoing) {
       const item = element('section', undefined, 'm-consent__part');
@@ -46,8 +47,11 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
       item.append(heading, outgoing); exact.append(item);
     }
     const explanation = preview.scope === 'open-session'
-      ? element('p', 'This also permits separate web access for this site. Fetched pages are recorded; the record says incomplete if another route could fetch outside the observed broker.', 'm-consent__note')
-      : element('p', 'Codex is a cloud service. Tool network access stays closed for this request; necessary model-service traffic is separate.', 'm-consent__note');
+      ? element('p', 'Web checks are not available yet. Nothing will be looked up.', 'm-consent__note')
+      : element('p', 'Your question is sent to Codex. Other internet access has not been established as blocked on this device.', 'm-consent__note');
+    const unavailable = preview.state !== 'ready' || !canAuthorize
+      ? element('p', 'This action is unavailable here. Nothing was sent.', 'm-consent__note')
+      : undefined;
     const controls = element('div', undefined, 'm-consent__actions');
     if (preview.state === 'excluded') controls.append(element('p', 'This site is excluded. Nothing can be sent until you change the exclusion in Settings.', 'm-consent__blocked'));
     else if (preview.state === 'denied') {
@@ -63,7 +67,7 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
       );
     }
     const dismiss = action('Not now', notNow); dismiss.dataset.dismiss = 'true'; controls.append(dismiss);
-    root.replaceChildren(title, summary, exact, explanation, controls, live);
+    root.replaceChildren(title, summary, exact, explanation, ...(unavailable ? [unavailable] : []), controls, live);
     setBusy(busy);
   };
 
