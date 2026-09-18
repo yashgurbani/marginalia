@@ -162,6 +162,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   let sectionIndex = 0, held = false, draft: Draft | undefined, selected: QuoteAnchor | undefined;
   let helper: HelperClient | undefined, storageReady = false, saving = false;
   let positionTimer: ReturnType<typeof setTimeout> | undefined, positionDirty = false, lastPositionWrite = 0, restoredPosition = false;
+  let resumePosition: number | undefined, resumeLine: HTMLButtonElement | undefined;
+  let resumeAnchor: QuoteAnchor | undefined;
   let denied = false;
   let pendingNoteMutation: ReaderMutation | undefined;
   let pendingNoteCommitted = false;
@@ -294,6 +296,15 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const followingLabel = el('span', 'Reading', 'm-meta');
   const followButton = button('Follow reading', () => { held = false; updateReading(); renderPosition(); readingTitle.focus(); });
   reading.append(readingTitle, followingLabel, followButton);
+  function dismissResumeLine() { resumeLine?.remove(); resumeLine = undefined; resumePosition = undefined; resumeAnchor = undefined; }
+  function showResumeLine(anchor: QuoteAnchor, position: number) {
+    dismissResumeLine(); resumePosition = position; resumeAnchor = anchor;
+    resumeLine = button('You were here', () => { dismissResumeLine(); sourceAction(anchor); });
+    resumeLine.className = 'm-resume m-meta';
+    heading.append(resumeLine);
+  }
+  shell.addEventListener('click', dismissResumeLine, { signal });
+  shell.addEventListener('input', dismissResumeLine, { signal });
   const railThreads = el('div', undefined, 'm-rail-threads');
   map.append(railThreads);
   const activityButton = button('Work status', () => { void openEgress(); });
@@ -1055,7 +1066,19 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (held || suspended || !source) return;
     const blocks = Array.from(source.querySelectorAll<HTMLElement>('[data-reading-section]'));
     const index = blocks.reduce((chosen, node, i) => node.getBoundingClientRect().top <= innerHeight * .4 ? i : chosen, 0);
-    sectionIndex = Math.min(index, sections.length - 1); readingPosition = sections[sectionIndex].start; renderPosition();
+    sectionIndex = Math.min(index, sections.length - 1); readingPosition = sections[sectionIndex].start;
+    if (resumePosition !== undefined && readingPosition > resumePosition) dismissResumeLine();
+    else if (resumeAnchor) {
+      // Section starts cannot tell whether a mid-section anchor has passed.
+      // Measure its first character; a long quote may extend below the viewport.
+      const range = sourceRange(resumeAnchor);
+      if (range) {
+        range.setEnd(range.startContainer, range.startOffset + 1);
+        const first = range.getClientRects()[0];
+        if (first && first.bottom <= 0) dismissResumeLine();
+      }
+    }
+    renderPosition();
   }
   function captureSelection() {
     const selection = document.getSelection();
@@ -1216,7 +1239,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     getThread: currentThread,
     focusThread(threadId: string) { expandAdditionally(threadId); renderThreads(); const thread = currentThread(threadId); if (thread) hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); },
     select: showSelection,
-    setReadingPosition(start: number) { if (alive() && !suspended && !held) { const next = Math.max(0, Math.min(capture.text.length, start)); if (restoredPosition && sectionFor(next) === sectionIndex) return; restoredPosition = false; if (next === readingPosition) return; readingPosition = next; sectionIndex = sectionFor(readingPosition); renderPosition(); if (hydrationFinished) { positionDirty = true; queueReadingPosition(); } } },
+    setReadingPosition(start: number) { if (alive() && !suspended && !held) { const next = Math.max(0, Math.min(capture.text.length, start)); if (resumePosition !== undefined && next > resumePosition) dismissResumeLine(); if (restoredPosition && sectionFor(next) === sectionIndex) return; restoredPosition = false; if (next === readingPosition) return; readingPosition = next; sectionIndex = sectionFor(readingPosition); renderPosition(); if (hydrationFinished) { positionDirty = true; queueReadingPosition(); } } },
     suspend() { highlight(null); suspended = true; diagnosticsAbort?.abort(); management?.close(); askingMount?.setVisible(false); },
     resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); renderSettings(); paintHighlights(); },
     async openThread(threadId: string) { await openSavedThread(threadId); },
@@ -1242,7 +1265,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       try {
         const read = options.readPosition ?? (helper?.token ? async (sourceUrl: string) => (await helper!.request('/api/position', { url: sourceUrl })).anchor as QuoteAnchor | null : undefined);
         const saved = await read?.(capture.url), at = saved ? displayPosition(saved, capture) : undefined;
-        if (saved && at !== undefined) { readingPosition = at; sectionIndex = sectionFor(at); restoredPosition = true; options.onSource?.(saved); }
+        if (!alive()) return api;
+        if (saved && at !== undefined) { readingPosition = at; sectionIndex = sectionFor(at); restoredPosition = true; if (at > 0) showResumeLine(saved, at); options.onSource?.(saved); }
       } catch { /* Position restoration is deliberately quiet. */ }
     }
     announce(journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() ? 'Unsaved work recovered in this document. Retry saving or export before closing.' : 'Local storage is available. Model readiness has not been checked; asking requires a separate review.');

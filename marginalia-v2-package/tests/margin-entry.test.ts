@@ -199,17 +199,111 @@ test('stored reading anchor restores quietly and an unresolved anchor keeps the 
   let api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false,
     positionDebounceMs: 10, readPosition: async () => restored, writePosition: async value => { writes.push(value); }, onSource: value => { navigated.push(value); } });
   assert.equal(e.root.querySelector('.m-reading')!.textContent.includes('Second'), true);
+  const resume = button(e.root, 'You were here');
+  assert.equal(resume.classList.contains('m-meta'), true);
+  assert.equal(resume.parentElement, e.root.querySelector('.m-head'), 'the top-zone cue remains outside the following margin scroller');
   assert.deepEqual(navigated, [restored]);
   assert.deepEqual(writes, [], 'restoring never writes the value back');
   api.setReadingPosition(15); await new Promise(resolve => setTimeout(resolve, 20)); await api.drain();
   assert.deepEqual(writes, [], 'the host section fallback cannot overwrite a precise restored anchor');
+  resume.click();
+  assert.deepEqual(navigated, [restored, restored], 'the resume line navigates to the precise restored anchor');
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 0, 'one interaction dismisses the resume line');
   api.destroy(); await api.drain();
 
   const missing = { exact: 'not on this page', prefix: '', suffix: '', start: 0, end: 16 };
   api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false,
     readPosition: async () => missing, onSource: value => { navigated.push(value); } });
   assert.equal(e.root.querySelector('.m-reading')!.textContent.includes('First'), true);
-  assert.deepEqual(navigated, [restored]);
+  assert.deepEqual(navigated, [restored, restored]);
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 0);
+  api.destroy(); await api.drain();
+});
+
+test('resume line is absent on a fresh or top-restored page and clears after reading past it', async t => {
+  const e = env(t);
+  let api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false,
+    readPosition: async () => undefined });
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 0);
+  api.destroy(); await api.drain();
+
+  api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false,
+    readPosition: async () => anchor() });
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 0);
+  api.destroy(); await api.drain();
+
+  api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false,
+    readPosition: async () => anchor(21, 30) });
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 1);
+  api.setReadingPosition(22);
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 0, 'scrolling beyond the restored anchor dismisses the line');
+  api.destroy(); await api.drain();
+});
+
+test('a margin interaction dismisses the resume line without navigating or sending', async t => {
+  const e = env(t), navigated: unknown[] = [];
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false,
+    readPosition: async () => anchor(21, 30), onSource: value => navigated.push(value) });
+  button(e.root, 'Settings').click();
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 0);
+  assert.equal(navigated.length, 1, 'only the existing startup restore navigated');
+  api.destroy(); await api.drain();
+});
+
+test('standalone source scrolling past the restored section dismisses the resume line', async t => {
+  const e = env(t), source = e.document.createElement('article');
+  const blocks = capture.sections!.map((_section, index) => {
+    const block = e.document.createElement('p'); block.dataset.readingSection = String(index);
+    block.offsetTop = index * 1000; source.append(block); return block;
+  });
+  e.document.body.append(source);
+  const api = await mountMargin(asHost(e.root), { capture, sourceRoot: asHost(source), storageName: e.namespace,
+    allowHelper: false, readPosition: async () => anchor(21, 30) });
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 1);
+  blocks[2].offsetTop = 0;
+  (window as unknown as typeof e.root).fire('scroll');
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 0);
+  api.destroy(); await api.drain();
+});
+
+test('standalone same-section scroll keeps resume before the anchor and dismisses only after its first character passes the viewport', async t => {
+  const e = env(t), source = e.document.createElement('article'), texts: ReturnType<typeof e.document.createTextNode>[] = [];
+  const blocks = capture.sections!.map((section, index) => {
+    const block = e.document.createElement('p'), text = e.document.createTextNode(capture.text.slice(section.start, section.end));
+    block.dataset.readingSection = String(index); block.offsetTop = (index - 1) * 1000;
+    block.append(text); source.append(block); texts.push(text); return block;
+  });
+  e.document.body.append(source);
+  let anchorBottom = 120, measured = 0;
+  Object.assign(e.document, {
+    createTreeWalker() { let index = 0; return { nextNode: () => texts[index++] ?? null }; },
+    createRange() {
+      return { startContainer: texts[0], startOffset: 0, endOffset: 0,
+        setStart(node: typeof texts[number], offset: number) { this.startContainer = node; this.startOffset = offset; },
+        setEnd(_node: typeof texts[number], offset: number) { this.endOffset = offset; },
+        getClientRects() {
+          assert.equal(this.startContainer, texts[1]); assert.equal(this.startOffset, 6, 'global restored offset 21 is offset 6 in section starting at 15');
+          assert.equal(this.endOffset, 7, 'measure the first character, not the end of a multi-line quote');
+          measured++; return [{ top: anchorBottom - 18, bottom: anchorBottom }];
+        },
+      };
+    },
+  });
+  replaceGlobals(t, { NodeFilter: { SHOW_TEXT: 4 } });
+  const navigated: unknown[] = [], writes: unknown[] = [];
+  const api = await mountMargin(asHost(e.root), { capture, sourceRoot: asHost(source), storageName: e.namespace,
+    allowHelper: false, readPosition: async () => anchor(21, 30), onSource: value => navigated.push(value),
+    writePosition: async value => { writes.push(value); } });
+  const scroll = () => (window as unknown as typeof e.root).fire('scroll');
+  scroll();
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 1, 'before offset 21 the cue stays visible');
+  anchorBottom = 1; scroll();
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 1, 'partly visible first character is not past the anchor');
+  anchorBottom = -1; scroll();
+  assert.equal(blocks[1].offsetTop, 0, 'still in the same section starting at 15');
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 0, 'the viewport passed offset 21 inside the same section');
+  assert.equal(measured, 3); assert.equal(navigated.length, 1); assert.deepEqual(writes, []);
+  assert.equal(source.textContent, capture.text, 'source remains unchanged');
   api.destroy(); await api.drain();
 });
 

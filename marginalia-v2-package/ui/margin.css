@@ -57,6 +57,7 @@ button { cursor: pointer; } button:disabled { cursor: default; }
 .m-colour-1 { --section-colour: var(--m-sec-1); }.m-colour-2 { --section-colour: var(--m-sec-2); }.m-colour-3 { --section-colour: var(--m-sec-3); }.m-colour-4 { --section-colour: var(--m-sec-4); }.m-colour-5 { --section-colour: var(--m-sec-5); }.m-colour-6 { --section-colour: var(--m-sec-6); }
 .m-reading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; min-height: 36px; margin-bottom: 8px; }
 .m-reading button { font-size: var(--m-t-1); border: 1px solid var(--m-rule-strong); flex-shrink: 0; }
+.m-head .m-resume { display: block; width: 100%; min-height: 24px; padding: 2px 0; border: 0; }
 .m-selection,.m-question-slot { border: 1px solid var(--m-rule-strong); border-radius: 6px; padding: 12px; background: var(--m-surface); margin-bottom: 16px; min-width: 0; }
 .m-selection blockquote,.m-question-slot blockquote { background: var(--m-accent-soft); margin: -4px -4px 8px; padding: 8px; color: var(--m-ink); font-size: var(--m-t-1); overflow-wrap: anywhere; max-height: 140px; overflow: auto; }
 .m-selection pre,.m-question-slot pre,.m-settings pre { font: 12px/1.55 var(--m-mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; }
