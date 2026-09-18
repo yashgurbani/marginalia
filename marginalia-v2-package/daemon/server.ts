@@ -18,6 +18,7 @@ import { createJobRoutes } from './routes/jobs.ts';
 import { createServerSolver, createSolverRouteHandler } from './routes/solver.ts';
 import { handleStaticRoute } from './routes/static.ts';
 import type { ApiRouteContext } from './routes/types.ts';
+import { createDiagnosticsRoute } from './routes/diagnostics.ts';
 
 export async function startServer(options: { database: string; port?: number; webRoot?: string; diagnostics?: (refresh?: boolean) => unknown;
   jobWorkspaceRoot?: string; runtimeFactory?: AuthorizedRuntimeFactory;
@@ -53,6 +54,7 @@ export async function startServer(options: { database: string; port?: number; we
   }
   // Preserve the original dispatch order, including solver prefix fallthrough.
   const apiRoutes = [
+    createDiagnosticsRoute(options.database, diagnostics),
     createSolverRouteHandler(solver, store, pairing),
     createReaderRoutes({ store, pairing, library, consent, sessions }),
     createJobRoutes(jobs, consent, runtimeInitializationError),

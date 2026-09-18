@@ -1,5 +1,7 @@
 import { browser } from 'wxt/browser';
 import { DEFAULT_HELPER_ORIGIN, HELPER_ORIGIN_KEY, validHelperOrigin } from '../../lib/helper-origin.ts';
+import { diagnosticsSection, loadReaderDiagnostics } from '../../../ui/diagnostics.ts';
+import { localPersistence } from '../../../ui/persistence.ts';
 const list = document.querySelector('#sites')!;
 async function hosts(): Promise<string[]> { const value = (await browser.storage.local.get('excludedHosts')).excludedHosts; return Array.isArray(value) ? value.filter(v => typeof v === 'string') : []; }
 async function render() {
@@ -21,12 +23,51 @@ document.querySelector<HTMLFormElement>('#add')!.onsubmit = async event => {
 void render();
 const originInput = document.querySelector<HTMLInputElement>('#helper-origin')!;
 const originStatus = document.querySelector<HTMLElement>('#helper-origin-status')!;
-void browser.storage.local.get(HELPER_ORIGIN_KEY).then(values => { originInput.value = typeof values[HELPER_ORIGIN_KEY] === 'string' ? values[HELPER_ORIGIN_KEY] : DEFAULT_HELPER_ORIGIN; });
+const diagnosticsRoot = document.querySelector<HTMLElement>('#diagnostics')!;
+let diagnosticsGeneration = 0, diagnosticsAbort: AbortController | undefined;
+let stopped = false, addressRevision = 0;
+const pairingChanges = new BroadcastChannel('marginalia-extension-reader');
+function invalidateDiagnostics() { diagnosticsGeneration++; diagnosticsAbort?.abort(); diagnosticsRoot.replaceChildren(); }
+async function renderDiagnostics(origin: string) {
+  invalidateDiagnostics();
+  if (stopped || window.top !== window) return;
+  const generation = diagnosticsGeneration;
+  diagnosticsAbort = new AbortController();
+  const signal = diagnosticsAbort.signal;
+  const valid = validHelperOrigin(origin);
+  if (!valid) { diagnosticsRoot.replaceChildren(diagnosticsSection({ origin: 'Invalid local helper address', reachability: 'invalid', pairing: 'unknown' })); return; }
+  const saved = await localPersistence('marginalia-extension-reader').read<{ origin: string; token: string }>('pairing').catch(() => undefined);
+  if (generation !== diagnosticsGeneration) return;
+  const token = saved?.origin === valid ? saved.token : undefined;
+  diagnosticsRoot.replaceChildren(diagnosticsSection({ origin: valid, reachability: 'checking', pairing: 'unknown' }));
+  const result = await loadReaderDiagnostics({ origin: valid, token, extension: true, signal });
+  if (generation !== diagnosticsGeneration || signal.aborted) return;
+  diagnosticsRoot.replaceChildren(diagnosticsSection(result));
+}
+pairingChanges.addEventListener('message', event => { if (event.data === 'pairing-changed') void renderDiagnostics(originInput.value); });
+originInput.addEventListener('input', () => { addressRevision++; invalidateDiagnostics(); });
+window.addEventListener('pagehide', () => { stopped = true; invalidateDiagnostics(); pairingChanges.close(); });
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[HELPER_ORIGIN_KEY]) {
+    addressRevision++;
+    originInput.value = typeof changes[HELPER_ORIGIN_KEY].newValue === 'string' ? changes[HELPER_ORIGIN_KEY].newValue : DEFAULT_HELPER_ORIGIN;
+    void renderDiagnostics(originInput.value);
+  }
+});
+void browser.storage.local.get(HELPER_ORIGIN_KEY).then(values => {
+  if (addressRevision || stopped) return;
+  originInput.value = typeof values[HELPER_ORIGIN_KEY] === 'string' ? values[HELPER_ORIGIN_KEY] : DEFAULT_HELPER_ORIGIN;
+  void renderDiagnostics(originInput.value);
+});
 document.querySelector<HTMLFormElement>('#helper-origin-form')!.onsubmit = async event => {
   event.preventDefault();
   const origin = validHelperOrigin(originInput.value);
   if (!origin) { originStatus.textContent = 'Enter an HTTP loopback origin with a port, such as http://127.0.0.1:43120.'; return; }
+  invalidateDiagnostics();
+  const revision = ++addressRevision;
   await browser.storage.local.set({ [HELPER_ORIGIN_KEY]: origin });
+  if (stopped || revision !== addressRevision) return;
   originInput.value = origin;
   originStatus.textContent = 'Helper address saved. Pair again at this address before connecting.';
+  void renderDiagnostics(origin);
 };

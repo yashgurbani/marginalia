@@ -13,6 +13,7 @@ import { createT08Mount, type AskingMountFactory, type AskingSelection } from '.
 import type { MountedReply } from '../renderer/index.ts';
 import { canonicalReplyData, capabilitiesForIntent, validateReply, type SourceBinding } from '../contracts/reply.ts';
 import { mountSolverRecompute } from './solver-recompute.ts';
+import { diagnosticsSection, loadReaderDiagnostics, type ReaderDiagnostics } from './diagnostics.ts';
 
 const selectionSuggestions = [
   { intent: 'simulate', label: 'Move it', question: 'Help me explore this passage by moving its inputs.' },
@@ -278,7 +279,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   openButton.setAttribute('aria-controls', shell.id); openButton.setAttribute('aria-expanded', 'true');
   rail.append(openButton);
   const collapse = button('Collapse', closePanel);
-  const openSettings = () => { setup.hidden = false; updateManagement(); setup.querySelector<HTMLElement>('input,button')?.focus(); };
+  const openSettings = () => { setup.hidden = false; updateManagement(); void refreshDiagnostics(); setup.querySelector<HTMLElement>('input,button')?.focus(); };
   const settingsButton = button('Settings', () => { if (setup.hidden) openSettings(); else setup.hidden = true; });
   const barActions = [collapse];
   if (options.onLibrary) barActions.push(button('Library', options.onLibrary));
@@ -1086,6 +1087,22 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     changed(); renderThreads(); renderSettings();
     announce(journal.state.conflicts.length ? 'Changes need review. Local choices and note drafts are retained.' : 'Queued work saved to the local helper. Inference has not been authorized by saving.');
   }
+  let diagnostics: ReaderDiagnostics = { origin: options.helperOrigin ?? location.origin,
+    reachability: 'checking', pairing: 'unknown' };
+  let diagnosticsEpoch = -1, diagnosticsGeneration = 0;
+  let diagnosticsAbort: AbortController | undefined;
+  async function refreshDiagnostics() {
+    if (options.allowHelper === false || !helper || !alive() || suspended) return;
+    diagnosticsAbort?.abort(); diagnosticsAbort = new AbortController();
+    const client = helper, epoch = client.connectionVersion, generation = ++diagnosticsGeneration;
+    diagnosticsEpoch = epoch;
+    diagnostics = { origin: client.origin, reachability: 'checking', pairing: 'unknown' };
+    if (!setup.hidden) renderSettings();
+    const result = await loadReaderDiagnostics({ origin: client.origin, token: client.token || undefined,
+      extension: location.protocol.endsWith('-extension:'), signal: AbortSignal.any([signal, diagnosticsAbort.signal]) });
+    if (!alive() || suspended || generation !== diagnosticsGeneration || client !== helper || epoch !== client.connectionVersion) return;
+    diagnostics = result; if (!setup.hidden) renderSettings();
+  }
   function renderSettings() {
     if (!alive()) return;
     const focused = settingsBody.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
@@ -1127,6 +1144,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
           const client = helper; if (!client) throw new Error('The local connection is unavailable.');
           const token = client.token; let removed = false;
           const result = await client.disconnect(async () => { await locked(async () => { removed = await forgetPairingIfCurrent(persistence, client.origin, token); }); if (removed) channel?.postMessage('pairing-changed'); });
+          renderSettings();
           announce(result === 'replaced' || !removed ? 'A newer pairing is retained. The earlier revocation may be unconfirmed.' : result === 'unconfirmed' ? 'Local pairing removed. Remote revocation is unconfirmed; the helper may still list this browser.' : 'Local pairing removed. ' + (result === 'revoked' ? 'The helper confirmed revocation.' : 'There was no active token to revoke.'));
         }))));
     }
@@ -1137,6 +1155,11 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     settingsBody.append(label('Theme', theme), el('p', 'Model choices, actual grants, exclusions and vocabulary are managed in the local library and settings.', 'm-meta'), retainedCopiesSection(),
       button(denied ? 'Allow question previews here' : 'Block question previews here', () => safely(async () => { const next = !denied; await persistence.write('denied:' + new URL(capture.url).origin, next); denied = next; renderSettings(); announce('Local preview preference saved. Helper permission records are unchanged.'); })),
       button('Close settings', () => { setup.hidden = true; updateManagement(); settingsButton.focus({ preventScroll: true }); }));
+    if (options.allowHelper !== false) {
+      if (diagnosticsEpoch !== helper?.connectionVersion) diagnostics = { origin: helper?.origin ?? diagnostics.origin,
+        reachability: 'checking', pairing: 'unknown' };
+      settingsBody.append(diagnosticsSection(diagnostics), button('Check how things are', () => refreshDiagnostics()));
+    }
     for (const conflict of sourceBoundJournal(journal.state, capture.url).conflicts) {
       const item = el('details'), mutation = conflict.change;
       item.append(el('summary', 'Review a retained change'), el('p', conflict.message), el('pre', mutation.kind === 'note' ? mutation.text : mutation.kind === 'keep' ? mutation.note ?? mutation.anchor.exact : JSON.stringify(mutation)));
@@ -1194,7 +1217,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     focusThread(threadId: string) { expandAdditionally(threadId); renderThreads(); const thread = currentThread(threadId); if (thread) hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); },
     select: showSelection,
     setReadingPosition(start: number) { if (alive() && !suspended && !held) { const next = Math.max(0, Math.min(capture.text.length, start)); if (restoredPosition && sectionFor(next) === sectionIndex) return; restoredPosition = false; if (next === readingPosition) return; readingPosition = next; sectionIndex = sectionFor(readingPosition); renderPosition(); if (hydrationFinished) { positionDirty = true; queueReadingPosition(); } } },
-    suspend() { highlight(null); suspended = true; management?.close(); askingMount?.setVisible(false); },
+    suspend() { highlight(null); suspended = true; diagnosticsAbort?.abort(); management?.close(); askingMount?.setVisible(false); },
     resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); renderSettings(); paintHighlights(); },
     async openThread(threadId: string) { await openSavedThread(threadId); },
     destroy,
@@ -1235,7 +1258,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         const pairing = await persistence.read<{ origin: string; token: string }>('pairing');
         if (!alive() || client !== helper || epoch !== client.connectionVersion) return;
         const token = pairing?.origin === client.origin ? pairing.token : ''; if (client.token !== token) client.token = token;
-      }); announce('Pairing changed in another margin. Earlier outcomes may be unconfirmed; nothing was automatically retried.'); });
+      }); renderSettings(); announce('Pairing changed in another margin. Earlier outcomes may be unconfirmed; nothing was automatically retried.'); });
       return;
     }
     void safely(async () => { await locked(() => journal.load()); renderThreads(); renderSettings(); announce(journal.unsaved ? 'Another margin saved work; your unsaved changes remain here.' : 'Saved work updated. Your note and question drafts are unchanged.'); });
