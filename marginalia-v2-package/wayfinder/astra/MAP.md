@@ -22,6 +22,8 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 
 ## Decisions so far
 
+- 2026-09-18: Yash resolved H02 (explicit remember action only), H03 (See it / What supports this, overriding Fable's labels), H13 (ask before changing a draft's anchor, Keep/Switch). Implementation remains open. Latest routing: Sol medium/high by difficulty, Luna max for QA/computer use/bulk, Astra low for hard technical judgment, complementary MCP routing when available.
+
 - 2026-09-18: Yash resolved H01 (correct copy now, defer web path), H09 (keep FTS with erasure), H11 (unsupported receipts stay unverified), and H12 (one simulate decision with local execution shown before sending). Implementation and QA obligations remain open.
 - 2026-09-18: Astra independently reproduced `bdfe8d7` baseline: 785 tests, 780 pass, 0 fail, 5 skipped; both typechecks clean. Raw logs: `../../.local/astra-baseline/`. The unfinished M13 installer is being completed by Sol high; the original worktree is preserved. Technical packets use Sol high per Yash's current instruction, superseding dated medium routing.
 - 2026-09-18: E21 tracks the supplied `integrate_pro_review.py` and exact transcript extraction provenance; E14 still owns substantive review triage. Initial D: worktree creation failed for lack of space; the two first packets use isolated C: worktrees. Yash subsequently freed D: space. No existing worktree was removed.

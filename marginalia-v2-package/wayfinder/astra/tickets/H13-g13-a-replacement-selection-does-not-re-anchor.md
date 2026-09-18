@@ -2,7 +2,7 @@
 
 label: wayfinder:grilling
 mode: HITL
-status: open
+status: closed
 blocked_by: (none)
 route: Fable with Yash; Astra executes the outcome
 
@@ -12,3 +12,6 @@ Selecting a new passage while a draft or question is open does not re-anchor the
 
 ## Fable's recommendation
 Ask, in one line under the composer: "Attach to the new passage?" with Keep and Switch. Silent re-anchoring loses the reader's place; silent ignoring loses their intent.
+
+## Resolution
+Yash decided on 2026-09-18: "Ask with Keep and Switch". Preserve the draft and original attachment until an explicit Switch. Selection and either choice send nothing. Add a bounded implementation ticket with draft-preservation and no-send tests. Evidence: H13 answer in task `01a0b26e-cc90-73b2-8688-de014bcacd80`. Decision by Yash; implementation remains open.
