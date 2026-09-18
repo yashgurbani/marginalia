@@ -1,12 +1,35 @@
 # Marginalia v2 package
 
-## Requirements
+## Install the helper
+
+Install Node 24, then run the installer from this checkout. It installs locked
+dependencies when needed, builds the local reader, and starts the helper at
+login. Paths with spaces are supported.
+
+On Windows, open PowerShell in this folder and run:
+
+```powershell
+.\scripts\install-helper.ps1
+```
+
+On macOS or Linux, run:
+
+```sh
+bash scripts/install-helper.sh
+```
+
+Both installers have a dry-run option (`-DryRun` or `--dry-run`). To remove the
+login task or service, use `-Uninstall` or `--uninstall`. Uninstalling keeps your
+reader data. The helper listens only at `http://127.0.0.1:43120`; after it starts,
+open the extension options and pair with the code in the helper output. Installing,
+starting, and pairing do not send a passage to a provider or change Codex sign-in.
+Without an authorized Codex runtime, saved reading and notes remain available.
+
+## Develop
 
 Use Node 24 (`>=24 <25`) and npm. Install the locked dependencies with `npm ci`.
 The install lifecycle runs `prepare`, which generates WXT's ignored configuration
 under `extension/.wxt`.
-
-## Commands
 
 ```text
 npm test
