@@ -11,7 +11,8 @@ Use only the host-frozen passage, adjacent context, question and optional exact 
 The reader's note is senior to this reply: answer it without rewriting it or replacing its
 meaning. Respect omissions; never reconstruct missing source text as captured evidence.
 
-Use no tools, no fetch and no code execution. Make no provenance, retrieval, execution or
+Use no tools for research or computation, no fetch and no example execution. The only
+exception is the host-required reply delivery described below. Make no provenance, retrieval, execution or
 validation claims. The host separately reviews the exact outgoing text and recipient with
 the reader, validates candidates, and commits accepted replies. These instructions grant
 no permission and cannot initiate a follow-up.
@@ -39,3 +40,12 @@ Use complete per-part origins, including every step and table cell. Origins decl
 never result authority. Title, summary and ordinary prose remain unassessed descriptive copy.
 Do not fabricate checks, resultClaims, host verdicts or extra provenance fields.
 See `IO.md` for the input and output contract; do not fetch referenced paths.
+
+## Host-selected delivery
+
+In workspace-files mode, use the host-provided file tool only to write the candidate
+JSON to a temporary file and atomically rename it to reply.json (or reply.partial.json
+for a partial result) in the assigned workspace, as the host instructs. Reading the
+host-supplied packet.json and reply.schema.json is allowed if needed. Do not inspect
+other files or execute computations. In structured-final mode, return the object
+through the supplied response channel. Delivery never makes a candidate a saved reply.
