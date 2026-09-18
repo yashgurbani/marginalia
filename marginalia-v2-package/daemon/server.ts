@@ -15,8 +15,9 @@ import { runHostChecks } from '../contracts/host-checks.ts';
 import { LibrarySettingsService } from './library.ts';
 import { ConsentSessionService, handleConsentDecision, handleConsentSettingsChange, handleConsentSettingsRead, prepareConsentForTrustedHost } from './consent/index.ts';
 import { createSolverRoutes, SolverExecutionService, createConsentSolverAuthority, createStoreSolverContextSource,
-  unavailableSolverEvidence, unavailableSolverExecutionGate } from './solver/index.ts';
+  unavailableSolverEvidence } from './solver/index.ts';
 import { createJobSolverArtifactBindings } from './jobs/solver-bindings.ts';
+import { createJobSolverExecutionGate, uncollectedSolverConfinement, unavailableSolverCommitAuthority } from './jobs/solver-gate.ts';
 import { randomUUID } from 'node:crypto';
 
 export async function startServer(options: { database: string; port?: number; webRoot?: string; diagnostics?: (refresh?: boolean) => unknown;
@@ -38,10 +39,16 @@ export async function startServer(options: { database: string; port?: number; we
     context: createStoreSolverContextSource({ replies: store, jobs: jobs.store,
       bindings: createJobSolverArtifactBindings(jobs.store), limits: { timeoutMs: 5_000, maxOutputBytes: 65_536 } }),
     authority: createConsentSolverAuthority({ permissions: consent, jobs: jobs.store }),
-    gate: unavailableSolverExecutionGate('No durable saved-solver execution gate is mounted.'),
+    gate: createJobSolverExecutionGate({
+      store: jobs.store,
+      confinement: uncollectedSolverConfinement(
+        `No saved-solver confinement evidence collector is mounted for ${process.platform}.`),
+      authority: unavailableSolverCommitAuthority(
+        'No synchronous saved-solver permission re-read is mounted, so no recompute is committed.'),
+    }),
     evidence: unavailableSolverEvidence('No saved-solver confinement evidence collector is mounted.'),
     codexHome: resolve(dirname(options.database), 'solver-codex-home'), auditId: randomUUID(),
-    unavailableReason: 'Saved-solver execution has no mounted command transport or durable execution gate.',
+    unavailableReason: 'Saved-solver execution has no mounted command transport or confinement evidence collector.',
   });
   const handleSolverRoute = createSolverRoutes(solver);
   void jobs.recover().catch(() => { /* Per-job recovery records its own honest outcome. */ });
