@@ -12,7 +12,7 @@ export default defineConfig({
     action: { default_title: 'Open Marginalia' },
     side_panel: { default_path: 'panel.html' },
     incognito: 'not_allowed',
-    web_accessible_resources: [{ resources: ['panel.html', 'assets/*', 'chunks/*'], matches: ['http://*/*', 'https://*/*'] }],
-    content_security_policy: { extension_pages: "default-src 'self'; script-src 'self'; object-src 'none'; connect-src http://127.0.0.1:* ws://127.0.0.1:*; base-uri 'none'" },
+    web_accessible_resources: [{ resources: ['panel.html'], matches: ['http://*/*', 'https://*/*'] }],
+    content_security_policy: { extension_pages: "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; connect-src http://127.0.0.1:* ws://127.0.0.1:*; base-uri 'none'; frame-ancestors 'none'" },
   },
 });

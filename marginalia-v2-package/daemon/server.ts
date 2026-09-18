@@ -355,7 +355,7 @@ export async function startServer(options: { database: string; port?: number; we
         const mime: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' };
         try {
           const bytes = await readFile(file);
-          response.writeHead(200, { 'content-type': mime[extname(file)] ?? 'application/octet-stream', 'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'", 'x-content-type-options': 'nosniff' });
+          response.writeHead(200, { 'content-type': mime[extname(file)] ?? 'application/octet-stream', 'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'", 'x-content-type-options': 'nosniff' });
           response.end(bytes); return;
         } catch { return send(response, 404, { error: 'This page is unavailable.' }); }
       }

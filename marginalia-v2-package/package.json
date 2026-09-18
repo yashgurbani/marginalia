@@ -7,7 +7,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "test": "node --test tests/*.test.ts",
+    "test": "node --test tests/**/*.test.ts",
     "typecheck": "tsc --noEmit",
     "dev": "vite --config webapp/vite.config.ts webapp",
     "build": "vite build --config webapp/vite.config.ts webapp",
