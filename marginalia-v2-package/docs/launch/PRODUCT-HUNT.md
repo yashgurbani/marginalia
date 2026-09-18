@@ -8,9 +8,13 @@ Marginalia
 
 A personalized, agentic margin for the web
 
-## Description (252 characters)
+## Description (256 characters)
 
-Keep passages and notes beside the page. Park a thread and return later. Build a local library with source links and plain-file export. Ask a Codex agent for help after reviewing the outgoing text and recipient. Your notes stay senior to model replies.
+Select a passage and write your note. A Codex agent on GPT-6 Astra works on it: a model you can adjust, a check of what supports a claim, a worked example. You review what goes out. Replies stay pinned to the exact words. Park threads, search your library.
+
+## Long description (500 characters)
+
+Marginalia turns the margin of any web page into a working notebook with an agent in it. Select a passage and write your note first. Then a Codex agent on GPT-6 Astra does work on that passage: it builds a small model you can adjust, checks what supports a claim, defines a term, or works an example. Each reply stays pinned to the exact words, beneath your note. Park threads for later. Everything joins a local, searchable library with source links and export. You approve what leaves your machine.
 
 ## Topics
 
