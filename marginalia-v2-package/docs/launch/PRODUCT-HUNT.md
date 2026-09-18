@@ -36,9 +36,9 @@ Productivity, Open Source, Chrome Extensions
 
 I’m Yash, the team of one behind Marginalia. It puts your notes beside the web page you are reading. Select a passage, keep it, write a note or park the thread for later. Your saved reading collects in a local library with source attribution and plain-file export.
 
-The difference I care about is the relationship between the source, your note and the reply. The page stays as its author wrote it. Your note is senior to the model’s answer. Ask can request a definition, an example or a step-by-step explanation through Codex. You review the outgoing text and recipient before it sends.
+The difference I care about is the relationship between the source, your note and the reply. The page stays as its author wrote it. Your note is senior to the model’s answer. Ask can request a small model you can adjust, a check of what supports a claim, a definition, a worked example, a step-by-step explanation or a diagram through Codex. You review the outgoing text and recipient before it sends.
 
-For the GPT-6 Astra Challenge, I built with Astra through Codex, used ChatGPT Pro, and used Claude Code for integration and review. The build meant turning reading interactions into bounded tasks and checking the result against the code. The suite result is 961 tests: 955 pass, 0 fail, 6 skipped. Those tests do not stand in for a recorded real ask.
+For the GPT-6 Astra Challenge, I built with Astra through Codex, used ChatGPT Pro, and used Claude Code for integration and review. The build meant turning reading interactions into bounded tasks and checking the result against the code. The suite result is 964 tests: 958 pass, 0 fail, 6 skipped. Those tests do not stand in for a recorded real ask.
 
 Real asks require the optional reader-authorized mode, where solver confinement is requested but not observed; no recorded real run is in the evidence folder yet. Windows install is proven, while macOS and Linux have command-level CI evidence. PDF support is still ahead.
 
