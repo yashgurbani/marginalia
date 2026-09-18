@@ -13,8 +13,8 @@ describes.
 
 Your reading, your notes and your threads stay on your computer. Selecting text
 sends nothing anywhere. Asking for help sends the passage, your note and a
-bounded slice of the surrounding page to one recipient — the Codex runtime you
-configured — and the margin shows you the exact outgoing text before the first
+bounded slice of the surrounding page to the Codex runtime you
+configured, and the margin shows you the exact outgoing text before the first
 send for each site. There is no analytics, no tracking and no remote code.
 
 ## What is collected, and when
@@ -85,7 +85,7 @@ sent" sheet says so in those words (`ui/margin.ts:381`).
 ## What does not leave
 
 Selecting text. Reopening a page. Reconnecting to the helper. Recovering after a
-crash — reconnection throws rather than replaying a send
+crash: reconnection throws rather than replaying a send
 (`extension/lib/helper-reconnect.ts:54-56`), and recovery only marks an attempt
 failed or of unknown outcome (`daemon/jobs/service.ts:92-104`).
 
@@ -145,7 +145,8 @@ Marginalia's use of information received from Google APIs will adhere to the Chr
 
 - No run against a real model provider has been recorded. Reply behaviour is
   proven on deterministic fixtures only.
-- Solver confinement is requested but not yet observed.
+- Real asks run in a reader-authorized mode where solver confinement is requested
+  but not observed.
 - Native install is proven on Windows only. macOS and Linux have command-level CI
   evidence.
 - Deleting the job workspaces under `<data dir>/jobs/` is manual. Nothing expires
@@ -161,3 +162,5 @@ Marginalia's use of information received from Google APIs will adhere to the Chr
 
 The Chrome Web Store requires a public policy URL and a contact address. Neither
 is invented here.
+
+[Research whitepaper](Marginalia-Research-Whitepaper.pdf) ([source](sources/RESEARCH-WHITEPAPER-v3.md)) · [Credits](../../CREDITS.md) · [Third-party notices](../../THIRD-PARTY-NOTICES.md) · [Build scope](SCOPE-COVERAGE.md)

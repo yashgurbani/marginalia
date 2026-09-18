@@ -34,15 +34,17 @@ I’m Yash, the team of one behind Marginalia. It puts your notes beside the web
 
 The difference I care about is the relationship between the source, your note and the reply. The page stays as its author wrote it. Your note is senior to the model’s answer, and Remember vocabulary belongs to you. Ask can request a definition, an example or a step-by-step explanation through Codex. You review the outgoing text and recipient before it sends.
 
-For the GPT-6 Astra Challenge, I built with Astra through Codex, used ChatGPT Pro, and used Claude Code for integration and review. The build meant turning reading interactions into bounded tasks and checking the result against the code. The reported suite is 898 tests: 892 pass, 0 fail, 6 skipped. Those tests do not stand in for a recorded real ask.
+For the GPT-6 Astra Challenge, I built with Astra through Codex, used ChatGPT Pro, and used Claude Code for integration and review. The build meant turning reading interactions into bounded tasks and checking the result against the code. The suite result is 961 tests: 955 pass, 0 fail, 6 skipped. Those tests do not stand in for a recorded real ask.
 
-Real asks require the optional reader-authorized mode, where solver confinement is requested but not observed; no recorded real run is in the evidence folder yet. Windows install is proven, while macOS and Linux have command-level CI evidence. PDF support and reachable library search are still ahead.
+Real asks require the optional reader-authorized mode, where solver confinement is requested but not observed; no recorded real run is in the evidence folder yet. Windows install is proven, while macOS and Linux have command-level CI evidence. PDF support is still ahead.
 
 The [research whitepaper](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/Marginalia-Research-Whitepaper.pdf) ([source](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md)) explains the design and its research lineage. [Credits](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/CREDITS.md) name the prior art and tools; [third-party notices](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/THIRD-PARTY-NOTICES.md) record dependency licenses. The [build scope](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/SCOPE-COVERAGE.md) separates mapped work from evidence gaps.
 
+Library search and “Related saved passages” are available in the local library page. Code and automated tests support this claim; native browser acceptance has not been recorded.
+
 ## Next
 
-Library search, related saved reading, PDF support and listening (“Hear it”); topics and reading paths across papers, sharing, connectors and Firefox.
+PDF support and listening (“Hear it”); topics and reading paths across papers, sharing, connectors and Firefox.
 
 ## Gallery captions
 

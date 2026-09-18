@@ -26,12 +26,14 @@ The founding documents sit at the repository root: the research whitepaper, `PRO
 | [Source promises and release gates](evidence/consolidation-2026-09-18/final/source-gates.md) | Every promise, its evidence, and what is still unproven |
 | [evidence/](evidence/) | Test logs, review reports and QA receipts, kept with their original scope |
 
+Library search and “Related saved passages” are available in the local library page. Code and automated tests support this claim; native browser acceptance has not been recorded.
+
 ## Known limits
 
 These gates are open. Tests and CI do not close them.
 
 - A [reader-authorized real-ask path](READER-AUTHORIZED-RUNTIME.md) exists, but no recorded real run is in the evidence folder yet.
-- Solver confinement is requested but not yet observed.
+- Real asks run in a reader-authorized mode where solver confinement is requested but not observed.
 - Native install is proven on Windows only. macOS and Linux have command-level CI evidence.
 - The runtime direction for inference is undecided.
 - The owner's twenty-minute reading verdict on two real pages is pending.

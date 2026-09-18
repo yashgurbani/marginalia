@@ -1,4 +1,4 @@
-# Chrome Web Store listing — working document
+# Chrome Web Store listing: working document
 
 This file is not published. It holds the text to paste into the developer
 dashboard if and when a submission happens.
@@ -11,13 +11,14 @@ at a public URL, because the dashboard requires that URL and a contact address.
 
 ## Listing description
 
-Tagline, as the manifest already states it (`extension/wxt.config.ts:8`):
+Short description, matching the current manifest (`extension/wxt.config.ts:9`):
 
-> A margin beside whatever you are reading.
+> A personalized, agentic margin for the web. Keep local notes beside any page. Ask your own Codex about a passage you approve.
 
 Description to paste:
 
-> Marginalia puts a margin beside the page you are reading. Select a passage or
+> Marginalia requires a separate local helper program. It puts a margin beside
+> the page you are reading. Select a passage or
 > write a note, and the answer appears next to it, anchored to the words that
 > prompted it. The page itself is never changed.
 >
@@ -43,6 +44,8 @@ Description to paste:
 > policy.
 >
 > This is an alpha. No run against a real model provider has been recorded yet.
+> Real asks run in a reader-authorized mode where solver confinement is requested
+> but not observed.
 
 Chrome's single-purpose rule and the prominent-disclosure rule both rest on this
 text, so the helper requirement and the consent step must stay in it.
@@ -87,12 +90,8 @@ The three network destinations in browser code are all this loopback helper
 (`ui/helper.ts:110`, `ui/helper-management.ts:41`,
 `extension/lib/helper-reconnect.ts:80`).
 
-**activeTab — declared but unused.** `activeTab` is in the manifest and nothing
-in the source calls it. A search across the package returns only the declaration
-in `extension/wxt.config.ts:10`. Chrome rejects permissions an extension does not
-use, and no honest justification can be written for this one. Remove it from the
-manifest before submitting. That change belongs to the extension code, not to
-this document.
+**activeTab.** Already removed. The current manifest permissions in
+`extension/wxt.config.ts:11` do not include it.
 
 ## Broad host access justification
 
@@ -122,9 +121,9 @@ to prevent.
 
 | Dashboard category | Code path | Covered in PRIVACY.md by |
 |---|---|---|
-| Website content | `extension/lib/capture.ts:8`, `extension/lib/protocol.ts:2` | "What is collected, and when" — website content |
-| Web history | `extension/lib/protocol.ts:35`, `extension/entrypoints/background.ts:37` | "What is collected, and when" — page address and title |
-| User-generated content | notes and questions written in the margin, stored by `daemon/store.ts:176` | "What is collected, and when" — your own notes and questions |
+| Website content | `extension/lib/capture.ts:8`, `extension/lib/protocol.ts:2` | "What is collected, and when": website content |
+| Web history | `extension/lib/protocol.ts:35`, `extension/entrypoints/background.ts:37` | "What is collected, and when": page address and title |
+| User-generated content | notes and questions written in the margin, stored by `daemon/store.ts:176` | "What is collected, and when": your own notes and questions |
 | Authentication information | pairing token, `extension/lib/helper-reconnect.ts:74` | "Who else can see it" |
 
 Answer no to personally identifiable information, health information, financial
@@ -140,7 +139,6 @@ determination.
   extension cannot save or ask, which looks like a broken extension to a
   reviewer. The first screenshot and the first line of the description must both
   state the helper requirement.
-- **`activeTab` declared and unused.** See above. Remove it before submitting.
 - **`panel.html` is a web-accessible resource** matched to `http://*/*` and
   `https://*/*` (`extension/wxt.config.ts:19`), which lets any page detect the
   extension.
@@ -157,4 +155,6 @@ Only the maintainer can supply these:
 - [ ] A contact address for the developer account.
 - [ ] Screenshots, with the helper requirement visible in the first one.
 - [ ] The decision to submit at all.
-- [ ] Removal of `activeTab` from the manifest.
+- [x] `activeTab` removed from the manifest.
+
+[Research whitepaper](Marginalia-Research-Whitepaper.pdf) ([source](sources/RESEARCH-WHITEPAPER-v3.md)) · [Credits](../../CREDITS.md) · [Third-party notices](../../THIRD-PARTY-NOTICES.md) · [Build scope](SCOPE-COVERAGE.md)
