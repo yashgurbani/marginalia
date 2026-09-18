@@ -7,7 +7,7 @@ export default defineConfig({
   manifest: {
     name: 'Marginalia', version, description: 'A margin beside whatever you are reading.',
     minimum_chrome_version: '116',
-    permissions: ['storage', 'activeTab', 'tabs', 'webNavigation', 'sidePanel'],
+    permissions: ['storage', 'activeTab', 'tabs', 'webNavigation', 'sidePanel', 'alarms'],
     host_permissions: ['http://127.0.0.1/*'],
     action: { default_title: 'Open Marginalia' },
     side_panel: { default_path: 'panel.html' },

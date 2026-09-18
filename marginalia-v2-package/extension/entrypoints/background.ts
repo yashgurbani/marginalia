@@ -1,13 +1,14 @@
 import { defineBackground } from 'wxt/utils/define-background';
 import { browser } from 'wxt/browser';
 import { readReply, respondAsync } from '../lib/respond.ts';
-import { helperReconnect } from '../lib/helper-reconnect.ts';
+import { HELPER_RECONNECT_ALARM, helperReconnect } from '../lib/helper-reconnect.ts';
 import { allowedPage, isMessage, pageIdentity, validAnchor, validSnapshot } from '../lib/protocol.ts';
 import { liveSourceMatches, requestCaptureIdentity, requireWorkspaceSurface } from '../lib/surface-identity.ts';
 import { attachQuote, type QuoteAnchor } from '../../contracts/reader.ts';
 
 export default defineBackground(() => {
   const helper = helperReconnect();
+  browser.alarms.onAlarm.addListener(alarm => { if (alarm.name === HELPER_RECONNECT_ALARM) void helper.reconnect(); });
   // Pairing credentials and journal are durable in extension-origin IndexedDB.
   // Only the trusted worker transport reads a token; content scripts never do.
   const storageReady = Promise.all([
@@ -169,8 +170,24 @@ export default defineBackground(() => {
       readReply(await browser.tabs.sendMessage(tabId, { type: 'activate', version: 1, panel }, { frameId: 0 }));
     }).catch(() => {});
   });
-  browser.tabs.onRemoved.addListener(tabId => { void navigator.locks.request('marginalia-frame:' + tabId, () => browser.storage.session.remove('frame:' + tabId)); });
+  type WorkspaceBinding = { tabId: number; url: string; surfaceTab: number };
+  async function removeWorkspaces(tabId: number, url?: string) {
+    const session = await browser.storage.session.get(null);
+    await Promise.all(Object.keys(session).filter(key => key.startsWith('workspace:')).map(key => navigator.locks.request(key, async () => {
+      const binding = (await browser.storage.session.get(key))[key] as WorkspaceBinding | undefined;
+      const sourceChanged = binding?.tabId === tabId && url !== undefined && binding.url !== pageIdentity(url);
+      const surfaceChanged = binding?.surfaceTab === tabId && url !== undefined && pageIdentity(url) !== pageIdentity(workspaceUrl);
+      if (binding && ((url === undefined && (binding.tabId === tabId || binding.surfaceTab === tabId)) || sourceChanged || surfaceChanged)) await browser.storage.session.remove(key);
+    })));
+  }
+  browser.tabs.onRemoved.addListener(tabId => {
+    void navigator.locks.request('marginalia-frame:' + tabId, () => browser.storage.session.remove('frame:' + tabId));
+    void removeWorkspaces(tabId);
+  });
   browser.webNavigation.onCommitted.addListener(details => {
-    if (details.frameId === 0) void navigator.locks.request('marginalia-frame:' + details.tabId, () => browser.storage.session.remove('frame:' + details.tabId));
+    if (details.frameId === 0) {
+      void navigator.locks.request('marginalia-frame:' + details.tabId, () => browser.storage.session.remove('frame:' + details.tabId));
+      void removeWorkspaces(details.tabId, details.url);
+    }
   });
 });
