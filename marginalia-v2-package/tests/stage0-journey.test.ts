@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { ConsentPreview, ConsentGrant } from '../contracts/consent.ts';
 import type { PreparedJobPlan, JobSnapshot } from '../contracts/jobs.ts';
-import { capabilitiesForIntent, validateReply, type CandidateReply, type SolverBlock } from '../contracts/reply.ts';
+import { capabilitiesForIntent, type CandidateReply, type SolverBlock } from '../contracts/reply.ts';
 import type { AskingSelection } from '../ui/asking-host.ts';
 import { growthReply, growthSourceText } from '../fixtures/growth-reply.ts';
 import { journey, keepMutation, pollJob } from './journey-harness.ts';
@@ -23,12 +23,12 @@ function gridReply(): CandidateReply {
 }
 const solver: SolverBlock = { id: 'saved-solver', type: 'solver', path: 'solver/main.js', inputNames: ['gamma', 'f', 'y0'], outputBlocks: ['grid'] };
 
-test('Stage 0 selection, Move it, reviewed explicit send, saved grid and local slider; solver grant remains unavailable', async t => {
+test('Stage 0 selection, Move it, reviewed explicit send, saved grid, local slider and explicit solver preparation', async t => {
   const localFetch = globalThis.fetch;
   const e = { ...dom(t), ...storage(t) }, namespace = crypto.randomUUID();
   replaceGlobals(t, { fetch: localFetch });
   Object.assign(e.document, { createElementNS(_namespace: string, tag: string) { return e.document.createElement(tag); } });
-  const trip = await journey('stage0', ['samples']);
+  const trip = await journey('stage0', ['samples', 'solver']);
   const mutation = keepMutation('stage0-thread', 'stage0-keep', growthSourceText);
   mutation.anchor = { start: 0, end: growthSourceText.length, exact: growthSourceText, prefix: '', suffix: '' };
   const api = await mountMargin(asHost(e.root), { capture: mutation.capture, storageName: namespace, allowHelper: false });
@@ -40,8 +40,8 @@ test('Stage 0 selection, Move it, reviewed explicit send, saved grid and local s
     assert.equal(draft.intent, 'simulate'); assert.deepEqual(draft.anchor, mutation.anchor);
     assert.equal((await trip.calls()).length, 0);
     assert.equal((await daemon.request('POST', '/api/change', mutation)).status, 200);
-    const reply = gridReply();
-    await trip.script({ 'stage0-job': { behaviour: 'reply', reply } });
+    const reply = gridReply(); reply.blocks.push(solver); reply.requiredCapabilities!.push('solver');
+    await trip.script({ 'stage0-job': { behaviour: 'reply', reply, savedSolver: true } });
     const prepared = await daemon.request('POST', '/api/jobs/prepare', { id: 'stage0-job', idempotencyKey: 'stage0-key',
       threadId: mutation.threadId, intent: draft.intent, question: draft.question });
     assert.equal(prepared.status, 200, JSON.stringify(prepared.body));
@@ -63,7 +63,13 @@ test('Stage 0 selection, Move it, reviewed explicit send, saved grid and local s
     assert.equal((await trip.calls()).filter(call => call.kind === 'start').length, 1);
     const canvas = e.document.createElement('div'); e.document.body.append(canvas);
     const recomputes: unknown[] = [];
-    mounted = mountReply(asHost(canvas), saved, { sourceText: growthSourceText, capabilities: ['samples'], onRecompute: async request => { recomputes.push(request); } });
+    assert.deepEqual(saved.blocks.find(block => block.type === 'solver'), solver);
+    const recompute = createSolverRecompute({ replyVersionId: 'stage0-saved-reply', transport: {
+      async prepare(request) { recomputes.push(request); return { status: 'unavailable', code: 'not-configured', reason: 'Fixture has no execution runtime.' }; },
+      async execute() { throw new Error('Unavailable solver cannot execute'); }, async result() { return null; },
+    } });
+    mounted = mountReply(asHost(canvas), saved, { sourceText: growthSourceText, capabilities: capabilitiesForIntent('simulate'),
+      onRecompute: async request => { await recompute.run(request); } });
     const grid = canvas.querySelector('[data-block="grid"]')!; assert.ok(grid);
     const details = grid.querySelector('details')!; details.open = true; details.fire('toggle');
     assert.ok(details.querySelector('table'), 'recorded grid renders');
@@ -72,12 +78,12 @@ test('Stage 0 selection, Move it, reviewed explicit send, saved grid and local s
     assert.equal(mounted.getState().parameters.gamma, 1.5);
     await until(() => grid.textContent.includes('Recompute with these inputs'));
     assert.deepEqual(recomputes, []); assert.equal((await trip.calls()).filter(call => call.kind === 'start').length, 1);
-    assert.equal(button(grid, 'Recompute with these inputs').disabled, true);
-    button(grid, 'Recompute with these inputs').click(); assert.deepEqual(recomputes, []);
-    // This is the exact contract blocker to completing the requested new-job recompute walk.
-    const withSolver = { ...saved, requiredCapabilities: ['samples', 'solver'] as const, blocks: [...saved.blocks, solver] };
-    const checked = validateReply(withSolver, { sourceText: growthSourceText, capabilities: capabilitiesForIntent('simulate') });
-    assert.equal(checked.ok, false); assert.match(checked.errors.join('\n'), /capability solver is unavailable/);
+    assert.equal(button(grid, 'Recompute with these inputs').disabled, false);
+    button(grid, 'Recompute with these inputs').click();
+    await until(() => recomputes.length === 1);
+    assert.equal(recomputes.length, 1);
+    assert.equal((recomputes[0] as { inputs: { gamma: number } }).inputs.gamma, 1.5);
+    assert.equal((await trip.calls()).filter(call => call.kind === 'start').length, 1, 'recompute starts no model turn');
   } finally { mounted?.destroy(); api.destroy(); await api.drain(); await trip.dispose(); }
 });
 

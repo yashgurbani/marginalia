@@ -127,7 +127,9 @@ const statuses = new Set<ReplyStatus>(['partial', 'complete']);
 const relations = new Set<SourceRelation>(['quoted', 'computed', 'interpreted', 'analogy', 'fetched']);
 const capabilities = new Set<ReplyCapability>(['samples', 'solver', 'media.audio', 'media.image', 'media.video', 'network.citations', 'network.shelf']);
 
+/** All intents carry samples; evidence adds citations, explore adds shelf, and simulate adds solver so readers can explicitly recompute saved solvers without model turns. */
 export function capabilitiesForIntent(intent: Intent): readonly ReplyCapability[] {
+  if (intent === 'simulate') return ['samples', 'solver'];
   if (intent === 'evidence') return ['samples', 'network.citations'];
   if (intent === 'explore') return ['samples', 'network.shelf'];
   return ['samples'];
