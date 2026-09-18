@@ -20,6 +20,10 @@ export type AskingMountFactory = (host: HTMLElement, api: AskingContext) => {
 };
 export type AskingContext = {
   helper(): HelperClient; signal: AbortSignal; authorize(sourceUrl: string): Promise<void>;
+  /** Trusted mount classification; the flow still owns the final dispatch gate. */
+  surface: 'localhost' | 'native-panel' | 'floating';
+  /** Live page policy facts, re-read whenever the flow checks access. */
+  access(): { excluded: boolean; supported: boolean };
   currentThread(id: string): Thread | undefined;
   ensureContextSaved(selection: AskingSelection): Promise<void>;
   read<T>(key: string): Promise<T | undefined>; write(key: string, value: unknown): Promise<void>;
@@ -133,7 +137,6 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       currentSelection = structuredClone(selection);
       const thread = checkBinding(selection);
       client = context.helper(); connectionEpoch = client.connectionVersion;
-      if (typeof location === 'undefined' || client.origin !== location.origin) throw new Error('The current backend has no authenticated POST work-status bridge for this browser-panel surface. Your draft remains available; no model request was made.');
       await context.ensureContextSaved(selection);
       const peer = await loader(); if (!active(epoch)) return;
       const { mountConsentSheet } = await import('./consent.ts');
@@ -206,9 +209,9 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       const binding = currentBinding;
       flow = peer.createAskingFlow({ binding, host: peerHost, validateReply,
         currentBinding: () => { try { checkBinding(selection); return active(epoch) ? structuredClone(binding) : undefined; } catch { return undefined; } },
-        currentAccess: () => ({ epoch: `${captureId}:${context.helper().connectionVersion}:${context.helper().permissionVersion}`, paired: !!context.helper().token,
-          canAuthorize: context.helper().origin === location.origin, excluded: false, supported: true,
-          helper: connected ? 'connected' : 'unknown', surface: 'localhost', login: 'unknown' }),
+        currentAccess: () => { const access = context.access(); return { epoch: `${captureId}:${context.helper().connectionVersion}:${context.helper().permissionVersion}`, paired: !!context.helper().token,
+          canAuthorize: context.surface !== 'floating', excluded: access.excluded, supported: access.supported,
+          helper: connected ? 'connected' : 'unknown', surface: context.surface, login: 'unknown' }; },
         ensureContextSaved: async (_binding, signal) => { signal.throwIfAborted(); await context.ensureContextSaved(selection); await connection(); signal.throwIfAborted(); },
       });
       mountedFlow = flow;

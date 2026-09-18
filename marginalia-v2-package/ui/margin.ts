@@ -35,6 +35,7 @@ export type MarginOptions = {
   authorizeHelperSend?: (sourceUrl: string) => Promise<void>;
 };
 type Draft = MarginDraft;
+type RetainedRequest = { jobId: string; selection: AskingSelection };
 
 export function sectionIndexAt(sections: MarginSection[], position: number): number {
   const found = sections.findIndex(section => position >= section.start && position < section.end);
@@ -120,7 +121,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const management = options.helperManagement && options.allowHelper !== false ? mountHelperManagement(managementHost) : undefined;
   let suspended = false, readingPosition = 0, hydrationFinished = false, editorGeneration = 0;
   let alignedReadingPosition = -1;
-  let pairingDraft = '', questionDraft: AskingSelection | undefined;
+  let pairingDraft = '', questionDraft: AskingSelection | undefined, retainedRequests: RetainedRequest[] = [];
   const updateManagement = () => { if (!suspended && !setup.hidden && !shell.classList.contains('is-collapsed')) management?.open(); else management?.close(); };
   let sectionIndex = 0, held = false, draft: Draft | undefined, selected: QuoteAnchor | undefined;
   let helper: HelperClient | undefined, storageReady = false, saving = false;
@@ -416,6 +417,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       ...(value.answeredNote ? [el('p', `Your note, version ${value.answeredNote.revision}: ${value.answeredNote.text}`, 'm-note')] : []),
       suggestions, question, details, message, actions(contextOnDevice, saveHelper, reviewButton, button('Close question', closeQuestion), button('Retain draft in history and start another', () => { void archiveQuestion(); })));
     placeItems(); question.focus({ preventScroll: true });
+    return { message, reviewButton };
   }
   function closeQuestion() {
     if (!alive()) return;
@@ -449,6 +451,24 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (!retained.length) history.append(el('p', 'No earlier question drafts saved on this device.', 'm-meta'));
     footer.querySelector('.m-question-history')?.remove(); history.className = 'm-question-history'; footer.append(history);
   })));
+  function renderRetainedRequests() {
+    footer.querySelector('.m-saved-requests')?.remove();
+    const saved = retainedRequests.filter(item => item?.jobId && item.selection?.resumeJobId === item.jobId && item.selection.capture?.url === capture.url);
+    if (!saved.length) return;
+    const section = el('section', undefined, 'm-saved-requests');
+    section.append(el('p', 'Saved requests with an unconfirmed or unfinished outcome', 'm-meta'));
+    for (const item of saved) {
+      const open = button('Check saved request', () => { void safely(async () => {
+        const selection = structuredClone(item.selection);
+        if (questionDraft && canonicalReplyData(questionDraft) !== canonicalReplyData(selection)) throw new Error('Retain the current question in history before checking another saved request.');
+        await saveQuestion(selection);
+        const controls = showQuestion(selection);
+        await openQuestionWithHelper(controls.message, controls.reviewButton);
+      }); });
+      section.append(el('p', excerpt(item.selection.question || item.selection.anchor.exact || 'Saved request'), 'm-meta'), actions(open));
+    }
+    footer.append(section);
+  }
   async function openQuestionWithHelper(message: HTMLElement, button: HTMLButtonElement) {
     if (!questionDraft || questionSaving || !alive()) return;
     const request = ++questionRequest; questionSaving = true; button.disabled = true;
@@ -461,6 +481,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       if (!alive() || request !== questionRequest) return;
       askingMount ??= (options.asking ?? createT08Mount())(askingHost, {
         helper: trustedHelper, signal,
+        surface: options.allowHelper === false ? 'floating' : trustedHelper().origin === location.origin ? 'localhost' : 'native-panel',
+        access: () => ({ excluded: denied, supported: ['http:', 'https:'].includes(new URL(capture.url).protocol) }),
         authorize: async url => {
           if (!alive() || options.allowHelper === false || denied) throw new Error('This surface cannot authorize sending.');
           await options.authorizeHelperSend?.(url);
@@ -941,17 +963,18 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (options.allowHelper !== false) helper = documentHelper(namespace, options.helperOrigin ?? location.origin);
     const connectionEpoch = helper?.connectionVersion;
     await locked(() => journal.load()); storageReady = true;
-    const [savedDraft, pairing, block, theme, savedQuestion] = await Promise.all([draftBuffer.load(), options.allowHelper === false ? undefined : persistence.read<{ origin: string; token: string }>('pairing'), persistence.read<boolean>('denied:' + new URL(capture.url).origin), persistence.read<string>('theme'), questionBuffer.load()]);
+    const [savedDraft, pairing, block, theme, savedQuestion, savedRequests] = await Promise.all([draftBuffer.load(), options.allowHelper === false ? undefined : persistence.read<{ origin: string; token: string }>('pairing'), persistence.read<boolean>('denied:' + new URL(capture.url).origin), persistence.read<string>('theme'), questionBuffer.load(), persistence.values<RetainedRequest>('asking:' + draftKey + ':request:').catch(() => [])]);
     if (!alive()) return api;
     if (startupGeneration === editorGeneration) { draft = savedDraft; pendingNoteMutation = draft?.mutation; }
     questionDraft = savedQuestion;
+    retainedRequests = savedRequests;
     if (draft) { held = true; readingPosition = composerOffset(draft, 0); sectionIndex = sectionFor(readingPosition); }
     denied = !!block; if (theme && theme !== 'system') document.documentElement.dataset.theme = theme;
     if (helper && connectionEpoch === 0 && helper.connectionVersion === connectionEpoch && pairing?.origin === helper.origin) helper.token = pairing.token;
     announce(journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() ? 'Unsaved work recovered in this document. Retry saving or export before closing.' : 'Local storage is available. Model readiness has not been checked; asking requires a separate review.');
   } catch { announce('Local storage could not be restored. Current drafts remain in this document only; export before closing.'); }
   if (!alive()) return api;
-  hydrationFinished = true; renderCompose(); renderThreads(); renderSettings();
+  hydrationFinished = true; renderCompose(); renderThreads(); renderSettings(); renderRetainedRequests();
   if (questionDraft) footer.append(button('Return to retained question', () => { if (questionDraft) showQuestion(questionDraft); }));
   if (options.initialOpen === false || (options.initialOpen !== true && matchMedia('(max-width: 899px)').matches)) { shell.classList.add('is-collapsed'); rail.append(map); }
   channel?.addEventListener('message', event => {
