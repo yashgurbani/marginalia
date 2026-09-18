@@ -2,7 +2,7 @@
 
 label: wayfinder:task
 mode: AFK
-status: claimed (astra, 2026-09-18)
+status: closed
 blocked_by: H12
 route: Sol medium (critical if missing)
 
@@ -44,3 +44,9 @@ existing solver capability/gate copy. Use `tests/asking-flow.test.ts`,
 
 Existing behavior verification comes before implementation. Record baseline/final test
 totals in `docs/REPORT-E24-2026-09-18.md`; do not broaden this into solver wiring.
+
+## Resolution
+
+2026-09-18: Integrated `f88f651` through `848c5d9`. Before consent/start, a prepared and digest-bound `solver` capability renders the exact owner phrase “can run the model locally”; stale or absent capability fails closed. Mounting, selecting, reviewing, or changing inputs does not send or run, and explicit consent remains the only start path. Named regressions: `prepared Simulate review exposes its digest-bound local solver capability before consent or start`, `ui: digest-bound solver plan says it can run the model locally before any consent decision`, and `ui: local solver disclosure fails closed for absent capability or stale preview binding`. Verification: asking/consent 90/90, solver-gate coverage 67/67, full integration suite 800 total / 794 pass / 0 fail / 6 skip, and typecheck/prepare/extension typecheck pass. Evidence: `docs/evidence/qa-2026-09-18/e24-capability/` and `docs/REPORT-E24-2026-09-18.md`.
+
+The implementation report records GPT-5.6 Sol/high; actual model/effort telemetry was not independently exposed by the harness. No permission, provider authority, consent scope, or implicit-send behavior was added.

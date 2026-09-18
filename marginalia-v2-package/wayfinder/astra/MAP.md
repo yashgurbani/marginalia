@@ -41,6 +41,9 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 
 - Head `dc94636` pushed to origin on 2026-09-18 with this map, the handoff, the lead prompt and the next build plan; the GPT-6 Pro review landed the same day and is filed under `docs/` with tickets E14, E16 to E20 and H16.
 - Stage 1 position, egress record and retention, per-note removal, one-branch-open, migration message, alarm reconnect and workspace-key cleanup are merged on `codex/marginalia-v2` (d420221..fdb12dc, including P4 indexes, P9/P1/P7 hardening and CI, M14/M18 sheet and library) with suite 785/780/0/5 and both typechecks clean; see `../../docs/ASTRA-HANDOFF-2026-09-18.md` for the list and the installer run still in flight at handoff.
+- 2026-09-18: E04 closed at `81eff23`/`1c231a2`: one scoped production digest literal remains, named checks and integrated suite 797/791/0/6 pass, and the reviewed non-string rejection is accepted boundary hardening preserving typed-input behavior; it is not claimed as zero runtime-input change. Evidence: `docs/evidence/qa-2026-09-18/e04-digest/`.
+- 2026-09-18: E24 closed at `848c5d9`/`f88f651`: the digest-bound Simulate review discloses “can run the model locally” before consent, retains exact outgoing text and explicit approval, and passes its named regressions plus 800/794/0/6 integration checks. Evidence: `docs/evidence/qa-2026-09-18/e24-capability/`.
+- 2026-09-18: E05 closed at `29a4730`/`5892e65`: route extraction preserves the served surface, 94/94 focused route checks pass before and after, `server.ts` is 130 lines, independent review accepted, and CI 35307863347 is green on three OSes. Evidence: `docs/evidence/qa-2026-09-18/e05-routes/`.
 
 ## Tickets
 
