@@ -34,6 +34,10 @@ These gates are open. Tests and CI do not close them.
 - The runtime direction for inference is undecided.
 - The owner's twenty-minute reading verdict on two real pages is pending.
 
+## Design
+
+[design/](design/) holds the design pass briefs and their reconciliation.
+
 ## Process history
 
-Every other file in this folder is a handoff, plan, review or ledger written during the build. They are kept for provenance. Names starting with `FABLE-`, `ASTRA-`, `PRO-`, `CLAUDE-`, `T19`/`T20`, `STAGE`, and the dated `*-2026-09-18.md` plans belong to this group. You do not need them to use or evaluate Marginalia.
+[archive/](archive/) holds the handoffs, plans, reviews and ledgers written during the build. They are kept for provenance. You do not need them to use or evaluate Marginalia.
