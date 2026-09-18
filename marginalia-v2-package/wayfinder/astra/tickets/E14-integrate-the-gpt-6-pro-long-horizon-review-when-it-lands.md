@@ -2,7 +2,7 @@
 
 label: wayfinder:task
 mode: AFK
-status: open
+status: claimed (astra, 2026-09-18)
 blocked_by: E01
 route: Astra low triages; Sol medium verifies rows that need code reading
 

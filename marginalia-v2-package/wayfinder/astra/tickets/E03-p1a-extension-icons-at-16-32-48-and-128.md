@@ -2,7 +2,7 @@
 
 label: wayfinder:task
 mode: AFK
-status: open
+status: claimed (astra, 2026-09-18)
 blocked_by: (none)
 route: Astra low (visual), Opus 4.8 taste check optional
 
