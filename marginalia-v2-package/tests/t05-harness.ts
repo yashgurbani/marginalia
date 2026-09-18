@@ -8,7 +8,7 @@ import type { ReplyState } from '../ui/persistence.ts';
  * owned boundaries. These fixtures do not certify scientific claims or consent.
  * ReaderJournal, reader validation, persistence, helper and T05 UI remain real. */
 export const boundaries = {
-  replyMounts: [] as { intent: string | undefined; capabilities: readonly string[] | undefined }[],
+  replyMounts: [] as { intent: string | undefined; capabilities: readonly string[] | undefined; onFollowup?: (context: any) => Promise<void> }[],
   libraryOptions: undefined as any,
   libraryMounts: 0,
   canonicalReplyData(value: unknown): string {
@@ -21,7 +21,7 @@ export const boundaries = {
   validateReply(value: any) { return value?.schema === 't05.fixture' ? { ok: true, value } : { ok: false, errors: ['Rejected fixture; not a scientific validator.'] }; },
   capabilitiesForIntent(intent: string) { return intent === 'evidence' ? ['samples', 'network.citations'] : intent === 'explore' ? ['samples', 'network.shelf'] : ['samples']; },
   mountReply(root: HTMLElement, reply: any, options: any) {
-    boundaries.replyMounts.push({ intent: reply.intent, capabilities: options.capabilities && [...options.capabilities] });
+    boundaries.replyMounts.push({ intent: reply.intent, capabilities: options.capabilities && [...options.capabilities], onFollowup: options.onFollowup });
     let state = structuredClone(options.initialState ?? { parameters: { x: 0 }, view: {} }) as ReplyState;
     if (reply.normalize) state.parameters.x = 0;
     const field = document.createElement('input'); field.type = 'number'; field.setAttribute('aria-label', 'Controlled reply input'); field.value = String(state.parameters.x); root.append(field);

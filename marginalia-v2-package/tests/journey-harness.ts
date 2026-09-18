@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { ReaderStore } from '../daemon/store.ts';
 import type { JobSnapshot } from '../contracts/jobs.ts';
 import type { ReaderMutation } from '../contracts/reader.ts';
-import type { CandidateReply } from '../contracts/reply.ts';
+import type { CandidateReply, ReplyCapability } from '../contracts/reply.ts';
 
 export const EXTENSION_ORIGIN = 'chrome-extension://' + 'a'.repeat(32);
 export type RuntimeBehaviour = 'reply' | 'hang' | 'unknown-throw' | 'cancel';
@@ -28,12 +28,12 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
-export async function journey(name: string): Promise<Journey> {
+export async function journey(name: string, capabilities: ReplyCapability[] = []): Promise<Journey> {
   const root = await mkdtemp(join(tmpdir(), `marginalia-${name}-`));
   const data = join(root, 'data'), runtime = join(root, 'runtime'), database = join(data, 'marginalia.sqlite');
   const runtimeModule = join(root, 'fake-runtime.mjs'), scriptPath = join(runtime, 'script.json');
   await mkdir(runtime);
-  await writeFile(runtimeModule, FAKE_RUNTIME_SOURCE, 'utf8');
+  await writeFile(runtimeModule, FAKE_RUNTIME_SOURCE.replace('capabilities: []', `capabilities: ${JSON.stringify(capabilities)}`), 'utf8');
   await writeFile(scriptPath, '{}', 'utf8');
   const port = await freePort();
   const children = new Set<Daemon>();

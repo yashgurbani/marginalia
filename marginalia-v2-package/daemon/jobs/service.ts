@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ProviderNotSentError, type ProviderHandle, type ProviderRequest } from '../../contracts/job-runner.ts';
-import { canonicalReplyData, parseAndValidateReply, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
+import { capabilitiesForIntent, canonicalReplyData, parseAndValidateReply, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
 import type { FollowupJobInput, FrozenJobContext, JobSnapshot, PreparedJobResult, PrepareFollowupJobInput, PrepareJobInput, PrepareRetryJobInput, RetryJobInput, StartJobInput } from '../../contracts/jobs.ts';
 import type { OutgoingPart, PrepareConsentInput } from '../../contracts/consent.ts';
 import type { ReaderStore } from '../store.ts';
@@ -146,7 +146,7 @@ export class JobService {
     const selection = this.library.modelFor(tier);
     const mode = this.modeFor(draft.intent);
     const input: StartJobInput = { ...draft, provider: this.defaults.provider, mode: mode,
-      capabilities: [...this.defaults.capabilities], model: selection.model,
+      capabilities: this.grantedCapabilities(draft.intent), model: selection.model,
       policyKey: this.policyFor(draft.id, mode, selection.model), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64) };
     const context = this.freezeContext(input, selection);
     const prepared = await this.prepared(input, context);
@@ -163,7 +163,7 @@ export class JobService {
     const mode = this.modeFor(previous.context.intent);
     const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: previous.threadId, intent: previous.context.intent,
       question: previous.context.question, provider: this.defaults.provider, mode: mode,
-      capabilities: [...this.defaults.capabilities], model: selection.model,
+      capabilities: this.store.capabilities(previous.id), model: selection.model,
       policyKey: this.policyFor(raw.id, mode, selection.model), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64), parentReplyId: previous.context.parentReplyId };
     const context: FrozenJobContext = { ...structuredClone(previous.context), retryOfJobId: previous.id, parentJobId: undefined,
       parentAttemptId: undefined, preparedPayloadDigest: input.preparedPayloadDigest,
@@ -184,7 +184,7 @@ export class JobService {
     const mode = this.modeFor(parent.context.intent);
     const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: parent.threadId, intent: parent.context.intent,
       question: raw.question.trim(), provider: this.defaults.provider, mode: mode,
-      capabilities: [...this.defaults.capabilities], model: selection.model,
+      capabilities: this.store.capabilities(parent.id), model: selection.model,
       policyKey: this.policyFor(raw.id, mode, selection.model, parent), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64), parentReplyId: parent.replyVersionId };
     const context = this.followupContext(parent, input, selection);
     const prepared = await this.prepared(input, context);
@@ -224,7 +224,7 @@ export class JobService {
     const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: previous.threadId, intent: previous.context.intent,
       question: previous.context.question, provider: this.defaults.provider, model: selection.model, mode: mode, policyKey: this.policyFor(raw.id, mode, selection.model),
       grantId: raw.grantId, preparedPayloadDigest: raw.preparedPayloadDigest, parentReplyId: previous.context.parentReplyId,
-      capabilities: [...this.defaults.capabilities] };
+      capabilities: this.store.capabilities(previous.id) };
     const context: FrozenJobContext = { ...structuredClone(previous.context), retryOfJobId: previous.id, parentJobId: undefined,
       parentAttemptId: undefined, preparedPayloadDigest: raw.preparedPayloadDigest,
       modelSettingsRevision: selection.settingsRevision, modelCompatibilityKey: selection.compatibilityKey };
@@ -254,7 +254,7 @@ export class JobService {
     const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: parent.threadId, intent: parent.context.intent,
       question: raw.question, provider: this.defaults.provider, model: selection.model,
       mode: mode, policyKey: this.policyFor(raw.id, mode, selection.model, parent),
-      grantId: raw.grantId, preparedPayloadDigest: raw.preparedPayloadDigest, parentReplyId: parent.replyVersionId, capabilities: [...this.defaults.capabilities] };
+      grantId: raw.grantId, preparedPayloadDigest: raw.preparedPayloadDigest, parentReplyId: parent.replyVersionId, capabilities: this.store.capabilities(parent.id) };
     const requestDigest = packetDigest(input);
     const prior = this.store.findByIdempotencyKey(input.idempotencyKey);
     if (prior) {
@@ -574,9 +574,12 @@ export class JobService {
     if (!['structured-final', 'workspace-files'].includes(mode)) throw new JobConflictError('The host execution mode is unavailable.');
     return mode;
   }
+  private grantedCapabilities(intent: StartJobInput['intent']): ReplyCapability[] {
+    return capabilitiesForIntent(intent).filter(capability => this.defaults!.capabilities.includes(capability));
+  }
   private assertHostPlan(input: StartJobInput) {
     if (!this.defaults || input.provider !== this.defaults.provider || input.mode !== this.modeFor(input.intent) || input.policyKey !== this.policyFor(input.id, input.mode, input.model) ||
-      packetDigest(input.capabilities ?? []) !== packetDigest(this.defaults.capabilities)) throw new JobConflictError('The requested execution plan is not the current host plan. Review it again.');
+      packetDigest(input.capabilities ?? []) !== packetDigest(this.grantedCapabilities(input.intent))) throw new JobConflictError('The requested execution plan is not the current host plan. Review it again.');
   }
   private policyFor(jobId: string, mode: StartJobInput['mode'], model: string, parent?: JobSnapshot): string {
     const defaults = this.defaults;

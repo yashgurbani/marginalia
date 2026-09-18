@@ -1,3 +1,4 @@
+import { followupQuestion } from './asking/surfaces.ts';
 import type { QuoteAnchor, ReaderMutation, SourceCapture, Thread } from '../contracts/reader.ts';
 import { wholePageAnchor, attachQuote } from '../contracts/reader.ts';
 import { el, button } from './dom.ts';
@@ -10,6 +11,11 @@ import { createT08Mount, type AskingMountFactory, type AskingSelection } from '.
 import type { MountedReply } from '../renderer/index.ts';
 import { canonicalReplyData, capabilitiesForIntent, validateReply, type SourceBinding } from '../contracts/reply.ts';
 import { mountSolverRecompute } from './solver-recompute.ts';
+
+const selectionSuggestions = [
+  { intent: 'simulate', label: 'Move it', question: 'Help me explore this passage by moving its inputs.' },
+  { intent: 'evidence', label: 'Check this', question: 'Check the evidence for this passage.' },
+] as const;
 
 export type MarginSection = { title: string; start: number; end: number };
 export type MarginOptions = {
@@ -390,7 +396,12 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const message = el('p', 'Draft only. Preparing a review is separate from authorizing a model request.', 'm-meta'); message.setAttribute('role', 'status');
     const persist = () => { if (!questionDraft) return; questionDraft.question = question.value; questionDraft.context = context.value; void saveQuestion(questionDraft).catch(fail); };
     question.addEventListener('input', persist); context.addEventListener('input', persist);
-    const suggestions = actions(...(['define', 'instantiate', 'derive'] as const).map((intent, index) => button(['Define this', 'Show me an example', 'Explain step by step'][index], () => { questionDraft!.intent = intent; question.value = ['Define this passage in context.', 'Show a worked example of this passage.', 'Explain this passage step by step.'][index]; persist(); question.focus(); })));
+    const suggestions = actions(...([
+      { intent: 'define', label: 'Define this', question: 'Define this passage in context.' },
+      { intent: 'instantiate', label: 'Show me an example', question: 'Show a worked example of this passage.' },
+      { intent: 'derive', label: 'Explain step by step', question: 'Explain this passage step by step.' },
+      ...(value.anchor.kind === 'whole-page' ? [] : selectionSuggestions),
+    ] as const).map(suggestion => button(suggestion.label, () => { questionDraft!.intent = suggestion.intent; question.value = suggestion.question; persist(); question.focus(); })));
     const contextOnDevice = button('Keep this context on this device', () => { void safely(async () => {
       if (!questionDraft || questionSaving) return; questionSaving = true; contextOnDevice.disabled = true;
       const selection = structuredClone(questionDraft);
@@ -690,6 +701,17 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
           hostReport: saved.reports?.[canonicalReplyData(saved.local.parameters)] ?? saved.report ?? saved.version.validation,
           sampleGenerationRecords: saved.sampleGenerationRecords,
           onStateChange: persistView,
+          onFollowup: async context => {
+            if (closed || !current()) return;
+            const question = followupQuestion(context);
+            const existing = questionDraft;
+            ask(thread.anchor, currentThread(thread.id) ?? thread, undefined, saved.version.id);
+            if (existing || !questionDraft) return;
+            await saveQuestion({ ...questionDraft, intent: saved.version.reply.intent, question,
+              capture: { ...questionDraft.capture, text: saved.source.text },
+              answeredNote: saved.version.answeredNote ?? undefined });
+            if (current()) showQuestion(questionDraft!);
+          },
           onSourceHighlight: binding => {
             if (closed || !alive()) return;
             highlight(binding ? bindingAnchor(binding, saved.source.text) ?? null : null);
