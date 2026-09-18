@@ -141,6 +141,22 @@ test('WebSocket authenticates before replay, delivers live changes, resumes afte
   } finally { await helper.close(); }
 });
 
+test('change route removes and restores one note', async () => {
+  const helper = await startServer({ database: ':memory:', port: 0, diagnostics });
+  try {
+    const token = await pair(helper), headers = { Origin: extensionOrigin, Authorization: `Bearer ${token}` };
+    const seeded = { ...keep, note: 'A removable note.' };
+    assert.equal((await fetch(helper.origin + '/api/change', { method: 'POST', headers, body: JSON.stringify(seeded) })).status, 200);
+    const note = helper.store.get(keep.threadId)!.notes[0];
+    const remove = await fetch(helper.origin + '/api/change', { method: 'POST', headers, body: JSON.stringify({ id: 'remove-note', kind: 'note-remove', threadId: keep.threadId, noteId: note.id, expectedRevision: 1, removed: true }) });
+    assert.deepEqual(await remove.json(), { threadId: keep.threadId, revision: 2 });
+    assert.ok(helper.store.get(keep.threadId)!.notes[0].deletedAt);
+    const restore = await fetch(helper.origin + '/api/change', { method: 'POST', headers, body: JSON.stringify({ id: 'restore-note', kind: 'note-remove', threadId: keep.threadId, noteId: note.id, expectedRevision: 2, removed: false }) });
+    assert.deepEqual(await restore.json(), { threadId: keep.threadId, revision: 3 });
+    assert.equal(helper.store.get(keep.threadId)!.notes[0].deletedAt, null);
+  } finally { await helper.close(); }
+});
+
 test('WebSocket rejects hostile hosts/origins, missing origins, malformed credentials and future cursors', async () => {
   const helper = await startServer({ database: ':memory:', port: 0, diagnostics });
   try {

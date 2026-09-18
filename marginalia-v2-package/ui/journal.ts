@@ -521,6 +521,12 @@ function applyMutation(state: JournalState, mutation: ReaderMutation) {
     } else {
       thread.notes.push({ id: mutation.noteId, threadId: mutation.threadId, text: mutation.text, revision: 1, createdAt: now, deletedAt: null });
     }
+  } else if (mutation.kind === 'note-remove') {
+    if (thread.deletedAt) throw new RecoverableMutationConflict('The saved passage was removed. Your change was kept for review.');
+    const note = thread.notes.find(candidate => candidate.id === mutation.noteId);
+    if (!note || note.revision !== mutation.expectedRevision) throw new RecoverableMutationConflict('The note changed. Your change was kept for review.');
+    note.deletedAt = mutation.removed ? now : null;
+    note.revision++;
   } else {
     if (thread.deletedAt && (mutation.kind === 'thread-state' || mutation.removed)) throw new RecoverableMutationConflict('The saved passage was removed. Your change was kept for review.');
     if (thread.revision !== mutation.expectedRevision) throw new RecoverableMutationConflict('This thread changed. Your change was kept for review.');

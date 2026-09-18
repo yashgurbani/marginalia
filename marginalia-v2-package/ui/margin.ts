@@ -688,7 +688,16 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     }
     for (const note of thread.notes.filter(note => !note.deletedAt)) {
       const edit = button('Edit note', () => beginDraft(thread.anchor, thread, note.id)); edit.dataset.focusKey = thread.id + ':note:' + note.id;
-      const noteBlock = el('div', undefined, 'm-reader-note'); noteBlock.append(el('p', note.text, 'm-note'), edit, button('Ask about this note', () => ask(thread.anchor, currentThread(thread.id), { noteId: note.id, revision: note.revision, text: note.text }))); body.append(noteBlock);
+      const remove = button('Remove this note', () => safely(async () => {
+        await change({ id: id(), kind: 'note-remove', threadId: thread.id, noteId: note.id, removed: true, expectedRevision: note.revision });
+        toast.hidden = false; const undo = button('Undo', () => safely(async () => {
+          const current = currentThread(thread.id)!, removed = current.notes.find(item => item.id === note.id)!;
+          await change({ id: id(), kind: 'note-remove', threadId: thread.id, noteId: note.id, removed: false, expectedRevision: removed.revision });
+          toast.hidden = true; threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); announce('Note restored.');
+        }));
+        toast.replaceChildren(el('span', 'Note removed.'), undo); undo.focus();
+      }));
+      const noteBlock = el('div', undefined, 'm-reader-note'); noteBlock.append(el('p', note.text, 'm-note'), edit, button('Ask about this note', () => ask(thread.anchor, currentThread(thread.id), { noteId: note.id, revision: note.revision, text: note.text })), remove); body.append(noteBlock);
     }
     const state = el('select'); state.setAttribute('aria-label', 'Thread state');
     for (const value of ['open', 'parked', 'done', 'archived'] as const) { const option = el('option', value[0].toUpperCase() + value.slice(1)); option.value = value; state.append(option); } state.value = thread.state;

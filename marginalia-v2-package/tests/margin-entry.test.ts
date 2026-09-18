@@ -205,6 +205,24 @@ test('explicit helper review invokes injected T08 only for acknowledged context;
   hostContext.retainedQuestion({ ...selected, question: 'More precise retained question' }); button(e.root, 'Close question').click(); await api.drain(); assert.equal(destroyed, 1);
   api.destroy(); await api.drain(); assert.equal(seeded.journal.state.pending.length, 0);
 });
+test('removing a note hides only the note and undo restores it without disturbing its thread or replies', async t => {
+  const e = env(t), seeded = await threadFixture(e.namespace, true), reply = cached(seeded.thread);
+  await seeded.persistence.replies.cache(e.document.location.origin, seeded.thread.id, reply.source, [reply.version], [reply.view]);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  await until(() => !!e.root.querySelector('[aria-label="Controlled reply input"]'));
+  const replyControl = e.root.querySelector('[aria-label="Controlled reply input"]')!;
+  button(e.root, 'Remove this note').click(); await api.drain();
+  assert.doesNotMatch(e.root.textContent, /Original reader note/);
+  assert.match(e.root.textContent, /First passage/);
+  assert.equal(e.root.querySelector('[data-thread="thread"]') !== null, true);
+  assert.equal(e.root.querySelector('[aria-label="Controlled reply input"]'), replyControl);
+  assert.match(e.root.textContent, /Note removed\.Undo/);
+  button(e.root, 'Undo').click(); await api.drain();
+  assert.match(e.root.textContent, /Original reader note/);
+  assert.equal(e.root.querySelector('[data-thread="thread"]') !== null, true);
+  assert.equal(e.root.querySelector('[aria-label="Controlled reply input"]'), replyControl);
+  api.destroy(); await api.drain();
+});
 test('map encodes distinct lengths, density, marks/current position and line/tick/focus sizes', async t => {
   const e = env(t), { thread } = await threadFixture(e.namespace);
   const second = { ...thread, id: 'second', anchor: anchor(15, 30), notes: [] }, third = { ...thread, id: 'third', anchor: anchor(31, 44), notes: [] };

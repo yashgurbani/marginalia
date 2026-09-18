@@ -154,6 +154,11 @@ export class ReaderStore {
         if (mutation.kind === 'note') {
           if (thread.deletedAt) throw new ConflictError('Restore the thread before editing it.');
           this.writeNote(mutation.noteId, mutation.threadId, mutation.text, mutation.expectedRevision, now);
+        } else if (mutation.kind === 'note-remove') {
+          if (thread.deletedAt) throw new ConflictError('Restore the thread before changing its notes.');
+          const note = thread.notes.find(candidate => candidate.id === mutation.noteId);
+          if (!note || note.revision !== mutation.expectedRevision) throw new ConflictError('This note changed elsewhere. Review the saved version before applying your change.');
+          this.db.prepare('UPDATE notes SET deletedAt=?,revision=revision+1 WHERE id=?').run(mutation.removed ? now : null, mutation.noteId);
         } else {
           if (thread.revision !== mutation.expectedRevision) throw new ConflictError('This thread changed elsewhere. Review the saved version before applying your change.');
           if (mutation.kind === 'thread-state') this.db.prepare('UPDATE threads SET state=? WHERE id=?').run(mutation.state, mutation.threadId);

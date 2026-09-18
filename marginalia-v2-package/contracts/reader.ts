@@ -17,6 +17,7 @@ export type ThreadState = 'open' | 'parked' | 'done' | 'archived';
 export type ReaderMutation =
   | { id: string; kind: 'keep'; threadId: string; capture: SourceCapture; anchor: QuoteAnchor; note?: string }
   | { id: string; kind: 'note'; threadId: string; noteId: string; text: string; expectedRevision: number }
+  | { id: string; kind: 'note-remove'; threadId: string; noteId: string; removed: boolean; expectedRevision: number }
   | { id: string; kind: 'thread-state'; threadId: string; state: ThreadState; expectedRevision: number }
   | { id: string; kind: 'remove'; threadId: string; removed: boolean; expectedRevision: number };
 export type Note = { id: string; threadId: string; text: string; revision: number; createdAt: string; deletedAt: string | null };
@@ -64,6 +65,8 @@ export function validateReaderMutation(value: unknown): asserts value is ReaderM
     if (!Number.isSafeInteger(m.expectedRevision) || m.expectedRevision < 0) invalidReaderMutation('Invalid revision.');
     if (m.kind === 'note') {
       if (typeof m.text !== 'string' || m.text.length > 20000 || !readerId(m.noteId)) invalidReaderMutation('Invalid note.');
+    } else if (m.kind === 'note-remove') {
+      if (!readerId(m.noteId) || typeof m.removed !== 'boolean') invalidReaderMutation('Invalid note removal.');
     } else if (m.kind === 'thread-state') {
       if (!['open', 'parked', 'done', 'archived'].includes(m.state)) invalidReaderMutation('Invalid thread state.');
     } else if (m.kind === 'remove') {
