@@ -208,3 +208,11 @@ Each document starts with a two-line header: the commit you read (`0360a1c`), an
 - If Pro asks for a file that is on GitHub, give it the pinned link; if it asks for the whitepaper, PRODUCT.md, or BUILD-PLAN.md, it needs the attachment.
 - If the branch moves past `0360a1c` before Pro finishes, that is fine; the pinned links stay valid and Fable reconciles the delta on integration.
 - Expected shape of a good run: Phase 1 is the longest; Phases 2 and 5 are where the judgment is. If Phase 1 comes back under 50 rows, reply "the whitepaper makes more promises than that; re-read sections on the reading minute and on notes, and extend the ledger."
+
+## 9. Single-message variant (use this if the run pauses after section 1)
+
+The opening message ends with "wait for the Phase 1 message", so a Pro run that stops there is behaving as designed; pasting section 3 continues it. If you would rather queue the whole task in one message, paste section 1 with its final paragraph replaced by this:
+
+> Do not pause between phases. Run Phases 1 to 5 from the phase descriptions appended below in one response, in order, each phase building on the previous one. Do not run code or tests; you have none. Do not stop to ask whether to continue. Write the four deliverable files in full in your answer, each under its own heading and filename, and end with the self-refutation pass from Phase 5. If the answer runs long, finish every phase at reduced length rather than stopping early.
+
+Then append sections 3 to 7 below it in the same message, removing each section's "Reply with" or "wait" instruction. Attach the section 2 files as before.
