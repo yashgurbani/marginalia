@@ -10,6 +10,8 @@ export type ConsentSheetOptions = {
   onNotNow?(): void;
   /** Compatibility callback when onNotNow is not supplied. */
   onBack?(): void;
+  /** Open the existing host-owned settings surface; this sheet owns no settings UI. */
+  onOpenSettings?(): void;
   returnFocus?: HTMLElement;
 };
 
@@ -25,7 +27,6 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
   let preview = structuredClone(options.preview), busy = false, destroyed = false, generation = 0;
   let pendingDecision: AbortController | undefined;
   const root = document.createElement('section');
-  // Contain keyboard traversal in this sheet, not the reader's whole document.
   // Escape/Not now exits; the page remains interactive, so do not claim modality.
   root.className = 'm-consent'; root.dataset.surface = surface; root.tabIndex = -1;
   root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'false');
@@ -40,20 +41,25 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
     const exact = element('div', undefined, 'm-consent__outgoing');
     for (const part of preview.outgoing) {
       const item = element('section', undefined, 'm-consent__part');
-      item.append(element('h3', part.label), element('pre', part.text)); exact.append(item);
+      const heading = element('h3', part.label); heading.id = `m-consent-part-${safeId(preview.id)}-${exact.children.length}`;
+      const outgoing = element('pre', part.text); outgoing.tabIndex = 0; outgoing.setAttribute('aria-labelledby', heading.id);
+      item.append(heading, outgoing); exact.append(item);
     }
     const explanation = preview.scope === 'open-session'
       ? element('p', 'This also permits separate web access for this site. Fetched pages are recorded; the record says incomplete if another route could fetch outside the observed broker.', 'm-consent__note')
       : element('p', 'Codex is a cloud service. Tool network access stays closed for this request; necessary model-service traffic is separate.', 'm-consent__note');
     const controls = element('div', undefined, 'm-consent__actions');
     if (preview.state === 'excluded') controls.append(element('p', 'This site is excluded. Nothing can be sent until you change the exclusion in Settings.', 'm-consent__blocked'));
-    else if (preview.state === 'denied') controls.append(element('p', 'Sending is denied for this site. Change that decision in Settings before asking again.', 'm-consent__blocked'));
+    else if (preview.state === 'denied') {
+      controls.append(element('p', 'Sending is denied for this site. Change that decision in Settings before asking again.', 'm-consent__blocked'));
+      if (options.onOpenSettings) controls.append(action('Settings', options.onOpenSettings, 'm-consent__settings'));
+    }
     else if (!canAuthorize) controls.append(element('p', 'Open the browser-owned margin to approve or send this request.', 'm-consent__blocked'));
     else {
       controls.append(
-        action('This time', () => choose('this-time')),
-        action(`Always on ${preview.site}`, () => choose('always-site')),
-        action(`Never on ${preview.site}`, () => choose('never-site')),
+        action('This time', () => choose('this-time'), 'm-consent__this-time'),
+        action(`Always on ${preview.site}`, () => choose('always-site'), 'm-consent__always-site'),
+        action(`Never on ${preview.site}`, () => choose('never-site'), 'm-consent__never-site'),
       );
     }
     const dismiss = action('Not now', notNow); dismiss.dataset.dismiss = 'true'; controls.append(dismiss);
@@ -95,7 +101,7 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
     return Array.from(root.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, [tabindex]'))
       .filter(node => node.tabIndex >= 0 && !node.matches(':disabled') && !node.closest('[hidden], [inert]'));
   }
-  function focusEntry() { (focusable()[0] ?? root).focus({ preventScroll: true }); }
+  function focusEntry() { (root.querySelector<HTMLElement>('button:not([disabled])') ?? focusable()[0] ?? root).focus({ preventScroll: true }); }
   function destroy() {
     if (destroyed) return;
     const ownedFocus = root.contains(document.activeElement);
@@ -110,13 +116,6 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
   }
   root.addEventListener('keydown', event => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); notNow(); return; }
-    if (event.key !== 'Tab') return;
-    const nodes = focusable(), first = nodes[0], last = nodes.at(-1);
-    if (!first) { event.preventDefault(); root.focus(); return; }
-    const active = document.activeElement;
-    if (!nodes.some(node => node === active) || (event.shiftKey ? active === first : active === last)) {
-      event.preventDefault(); (event.shiftKey ? last! : first).focus({ preventScroll: true });
-    }
   }, { signal: abort.signal });
   render();
   const initialFocus = requestAnimationFrame(() => { if (!destroyed && root.isConnected) focusEntry(); });

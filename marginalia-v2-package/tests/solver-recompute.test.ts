@@ -138,13 +138,13 @@ test('the complete declared parameter tuple is sent unfiltered', async () => {
   assert.equal(validateSolverExecuteRequest(fake.calls.execute[0]).ok, true);
 });
 
-test('unconfirmed confinement is reported as unverified, never as a sandbox', async () => {
+test('unconfirmed confinement is reported as unverified', async () => {
   const fake = fakeTransport();
   fake.prepareWith(async () => ({ status: 'unavailable', code: 'isolation-evidence-unavailable',
     reason: 'The isolated environment could not be confirmed, so no saved solver was run.', issues: ['policy-drift:cwd'] }));
   const view = await adapter(fake.transport).run(request()), copy = view.headline + view.detail;
   assert.equal(view.state, 'unconfirmed-confinement'); assert.match(copy, /Nothing ran/);
-  assert.match(copy, /Asking for a sandbox is not proof/); assert.doesNotMatch(copy, /policy-drift|cwd/);
+  assert.match(copy, /Asking for confinement is not proof/); assert.doesNotMatch(copy, /policy-drift|cwd/);
 });
 
 test('a refusal never echoes the helper reason text', async () => {

@@ -13,7 +13,7 @@ registerHooks({ resolve(specifier, context, next) {
   if (context.parentURL?.endsWith('/ui/asking-host.ts') && specifier === '../renderer/index.ts') return {url:'t05:renderer',shortCircuit:true};
   return next(specifier,context);
 }, load(url,context,next) {
-  if(url==='t05:canonical') return {format:'module',shortCircuit:true,source:`export function canonicalReplyData(v){return Array.isArray(v)?'['+v.map(canonicalReplyData).join(',')+']':v&&typeof v==='object'?'{'+Object.entries(v).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>JSON.stringify(k)+':'+canonicalReplyData(v)).join(',')+'}':JSON.stringify(v)};export const validateReply=()=>({ok:false,errors:['fixture']});`};
+  if(url==='t05:canonical') return {format:'module',shortCircuit:true,source:`export function canonicalReplyData(v){return Array.isArray(v)?'['+v.map(canonicalReplyData).join(',')+']':v&&typeof v==='object'?'{'+Object.entries(v).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>JSON.stringify(k)+':'+canonicalReplyData(v)).join(',')+'}':JSON.stringify(v)};export const validateReply=()=>({ok:false,errors:['fixture']});export const capabilitiesForIntent=i=>i==='evidence'?['samples','network.citations']:i==='explore'?['samples','network.shelf']:['samples'];`};
   if(url==='t05:consent')return{format:'module',shortCircuit:true,source:'export const mountConsentSheet=()=>{throw Error("not exercised")};'};
   if(url==='t05:renderer')return{format:'module',shortCircuit:true,source:'export const mountReply=()=>{throw Error("not exercised")};'};
   return next(url,context);

@@ -15,10 +15,10 @@ async function threadFixture(namespace: string, remote = false) {
   if (remote) { const threads = structuredClone(journal.state.threads); threads[0].sourceVersionId = 'source'; await journal.sync(async () => {}, async () => threads); }
   return { journal, persistence, thread: structuredClone(journal.state.threads[0]) };
 }
-function cached(thread: Thread) {
+function cached(thread: Thread, intent = 'define', replyId = 'reply') {
   return { source: { id: 'source', sourceId: 'page', hash: 'source-hash', text: capture.text, title: capture.title, capturedAt: capture.capturedAt, extractionVersion: capture.extractionVersion, pageType: capture.pageType, metadataStatus: 'provided' },
-    version: { id: 'reply', threadId: thread.id, parentId: null, supersedes: null, hash: 'reply-hash', reply: { schema: 't05.fixture' }, validation: {}, answeredNote: null, revision: 1, createdAt: capture.capturedAt, deletedAt: null },
-    view: { replyVersionId: 'reply', parameters: { x: 1 }, view: {}, revision: 1, updatedAt: capture.capturedAt } } as any;
+    version: { id: replyId, threadId: thread.id, parentId: null, supersedes: null, hash: `reply-hash-${replyId}`, reply: { schema: 't05.fixture', intent }, validation: {}, answeredNote: null, revision: 1, createdAt: capture.capturedAt, deletedAt: null },
+    view: { replyVersionId: replyId, parameters: { x: 1 }, view: {}, revision: 1, updatedAt: capture.capturedAt } } as any;
 }
 test('reading-position editor is connected, anchored and single-map across save failure, collapse and suspend', async t => {
   const e = env(t); const api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false });
@@ -65,6 +65,24 @@ test('equal-revision metadata refresh preserves focused reply controls and resol
   const paths: string[] = []; replaceGlobals(t, { fetch: async (url: string) => { paths.push(new URL(url).pathname); return Response.json({ source: reply.source, replies: [reply.version], views: [reply.view] }); } });
   button(e.root, 'Load replies from helper').click(); await api.drain(); assert.deepEqual(paths, ['/api/read/replies']); assert.doesNotMatch(e.root.textContent, /different source version/);
   api.destroy(); await api.drain(); channel.close();
+});
+test('saved replies receive intent capabilities and solver only at the paired recompute gate', async t => {
+  const e = env(t), seeded = await threadFixture(e.namespace);
+  const replies = [cached(seeded.thread, 'evidence', 'evidence'), cached(seeded.thread, 'explore', 'explore'), cached(seeded.thread, 'define', 'define')];
+  await seeded.persistence.replies.cache(e.document.location.origin, seeded.thread.id, replies[0].source, replies.map(item => item.version), replies.map(item => item.view));
+  boundaries.replyMounts.length = 0;
+  let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  await until(() => boundaries.replyMounts.length === 3);
+  assert.deepEqual(Object.fromEntries(boundaries.replyMounts.map(item => [item.intent, item.capabilities])), {
+    evidence: ['samples', 'network.citations'], explore: ['samples', 'network.shelf'], define: ['samples'],
+  });
+  api.destroy(); await api.drain();
+
+  e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) }); boundaries.replyMounts.length = 0;
+  api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperOrigin: e.document.location.origin });
+  await until(() => boundaries.replyMounts.length === 3);
+  assert.ok(boundaries.replyMounts.every(item => item.capabilities?.at(-1) === 'solver'));
+  api.destroy(); await api.drain();
 });
 test('embedded margin never reads a pairing credential or exposes management/privileged dispatch', async t => {
   const e = env(t), reads: string[] = []; e.onRead(async key => { reads.push(key); }); e.data(e.namespace).set('pairing', { token: 'must-not-read' });

@@ -115,7 +115,7 @@ function outcomeView(outcome: SolverOutcome | SolverPlanOutcome, stateKey: strin
   if (outcome.status === 'unavailable') {
     if (outcome.code === 'isolation-evidence-unavailable') {
       return baseView('unconfirmed-confinement', 'This machine could not confirm the isolated environment. Nothing ran.',
-        'Asking for a sandbox is not proof of one. The helper reports only what it actually observed, and here it observed nothing it could confirm.');
+        'Asking for confinement is not proof of it. The helper reports only what it actually observed, and here it observed nothing it could confirm.');
     }
     return baseView('unavailable', unavailableHeadline[outcome.code],
       'No result was accepted. No model turn was made.');

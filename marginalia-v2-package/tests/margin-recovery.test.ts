@@ -14,7 +14,7 @@ registerHooks({ resolve(specifier, context, next) {
   if (specifier === '../contracts/reply.ts') return { url: 't05:canonical', shortCircuit: true };
   return next(specifier, context);
 }, load(url, context, next) {
-  if (url === 't05:canonical') return { format: 'module', shortCircuit: true, source: `export function canonicalReplyData(v) { return Array.isArray(v) ? '['+v.map(canonicalReplyData).join(',')+']' : v && typeof v==='object' ? '{'+Object.entries(v).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>JSON.stringify(k)+':'+canonicalReplyData(v)).join(',')+'}' : JSON.stringify(v); } export const validateReply = () => ({ok:false,errors:['Scientific validation outside this fixture']});` };
+  if (url === 't05:canonical') return { format: 'module', shortCircuit: true, source: `export function canonicalReplyData(v) { return Array.isArray(v) ? '['+v.map(canonicalReplyData).join(',')+']' : v && typeof v==='object' ? '{'+Object.entries(v).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>JSON.stringify(k)+':'+canonicalReplyData(v)).join(',')+'}' : JSON.stringify(v); } export const capabilitiesForIntent = intent => intent === 'evidence' ? ['samples', 'network.citations'] : intent === 'explore' ? ['samples', 'network.shelf'] : ['samples']; export const validateReply = () => ({ok:false,errors:['Scientific validation outside this fixture']});` };
   return next(url, context);
 } });
 const { applyIntendedNote, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle,
