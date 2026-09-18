@@ -4,7 +4,7 @@ import { boundaries, storage, asHost } from './t05-harness.ts';
 import { dom, button, until, settle, deferred, replaceGlobals } from './t05-dom.ts';
 import { ReaderJournal, type JournalState } from '../ui/journal.ts';
 import type { SourceCapture, Thread } from '../contracts/reader.ts';
-const { mountMargin, sectionMapState, marginItemSize } = await import('../ui/margin.ts');
+const { mountMargin, sectionMapState, marginItemSize, egressMeasurements } = await import('../ui/margin.ts');
 const { localPersistence, documentJournal } = await import('../ui/persistence.ts');
 const capture: SourceCapture = { url: 'https://example.org/a', title: 'Original source', pageType: 'article', text: 'First passage. Second passage. Third passage.', capturedAt: '2026-09-17T00:00:00Z', extractionVersion: 'test', sections: [{ title: 'First', start: 0, end: 15 }, { title: 'Second', start: 15, end: 31 }, { title: 'Third', start: 31, end: 45 }] };
 function env(t: import('node:test').TestContext) { return { ...dom(t), ...storage(t), namespace: crypto.randomUUID() }; }
@@ -39,7 +39,9 @@ for (const outcome of ['succeeded', 'cancelled', 'failed', 'outcome_unknown', 'c
       id: 'stored-job', provider: 'app-server', model: 'recorded-model',
       state: outcome === 'cancelled-after-handoff' ? 'cancelled' : outcome,
       createdAt: '2026-09-18T09:00:00Z', updatedAt: '2026-09-18T09:01:00Z', preparedPayloadDigest: 'a'.repeat(64),
-      attempts: [{ number: 1, handoffMarked: !noSend, dispatchClaimed: !noSend, ...(!noSend ? { startedAt: '2026-09-18T09:00:01Z' } : {}) }],
+      latestAttemptId: 'attempt-1',
+      attempts: [{ id: 'attempt-1', number: 1, handoffMarked: !noSend, dispatchClaimed: !noSend,
+        ...(!noSend ? { startedAt: '2026-09-18T09:00:01Z', sentContent: [{ label: 'Question', text: 'two bytes', sha256: 'b'.repeat(64) }] } : {}) }],
       context: { outgoing: { question: 'The frozen question <script>', selection: { exact: 'Reviewed passage' }, availableCapabilities: ['samples', 'solver'] } },
     };
     const requests: { path: string; method: string; body: unknown }[] = [];
@@ -58,6 +60,9 @@ for (const outcome of ['succeeded', 'cancelled', 'failed', 'outcome_unknown', 'c
     assert.equal(sheet.querySelectorAll('textarea,input,select,script').length, 0);
     assert.equal(sheet.textContent.includes('Nothing left this machine'), noSend);
     if (!noSend) assert.match(sheet.textContent, /2026-09-18T09:00:01Z/);
+    assert.match(sheet.textContent, noSend ? /Unknown for this record\. No measurement is backfilled\./ : /9 UTF-8 bytes\. This is reviewed content size, not bytes transmitted\./);
+    assert.match(sheet.textContent, noSend ? /No durable provider handoff is recorded\./ : /Provider handoffRecorded in the durable attempt record\./);
+    assert.match(sheet.textContent, /Observed transmissionNot observed\. This record can establish provider handoff, but it does not prove physical transmission\./);
     if (outcome === 'succeeded') assert.match(sheet.textContent, /Ready/);
     if (outcome === 'outcome_unknown') assert.match(sheet.textContent, /Outcome unconfirmed/);
     assert.deepEqual(requests, [{ path: '/api/jobs/stored-job', method: 'GET', body: undefined }]);
@@ -86,6 +91,30 @@ test('collapsed saved-work dot identifies and opens its thread without sending',
   e.root.fire('keydown', { key: 'Escape' });
   assert.equal(e.document.activeElement, dot);
   assert.equal(asks, 0);
+  api.destroy(); await api.drain();
+});
+
+test('sending status follows the durable record rather than asking-flow state', async t => {
+  const e = env(t); await threadFixture(e.namespace, true);
+  e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+  let context: any, selection: any;
+  const job = { id: 'record-job', provider: 'app-server', model: 'recorded-model', state: 'sending', latestAttemptId: 'attempt-1',
+    attempts: [{ id: 'attempt-1', handoffMarked: true, dispatchClaimed: true, sentContent: [{ label: 'Question', text: 'é', sha256: 'b'.repeat(64) }] }] };
+  const reads: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => { reads.push(new URL(url).pathname); return Response.json(job); } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: (_root, value) => {
+    context = value; return { open(current) { selection = current; }, setVisible() {}, destroy() {} };
+  } });
+  button(e.root, 'Ask about this note').click(); button(e.root, 'Review with local helper').click(); await api.drain();
+  context.activity({ phase: 'sending', sending: true });
+  assert.equal(e.root.querySelector('.m-activity')!.textContent, 'Working');
+  assert.equal(e.root.querySelector('.m-activity')!.dataset.sending, 'false');
+  context.retainedQuestion({ ...selection, resumeJobId: job.id });
+  context.activity({ phase: 'sending', sending: true });
+  await until(() => e.root.querySelector('.m-activity')!.textContent === 'Request passed to Codex');
+  assert.equal(e.root.querySelector('.m-activity')!.dataset.sending, 'false');
+  assert.deepEqual(reads.filter(path => path.startsWith('/api/jobs/')), ['/api/jobs/record-job']);
+  assert.deepEqual(egressMeasurements(job as any), { reviewedBytes: 2, handoffRecorded: true, observedSentBytes: null, transmissionObserved: false });
   api.destroy(); await api.drain();
 });
 test('reading-position editor is connected, anchored and single-map across save failure, collapse and suspend', async t => {
