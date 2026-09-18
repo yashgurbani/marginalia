@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ReaderMutation } from '../contracts/reader.ts';
 import type { CandidateReply } from '../contracts/reply.ts';
+import { withFixtureOrigins } from './origins-fixture.ts';
 
 const diagnostics = () => ({ status: 'unavailable', login: 'unknown', sandbox: 'unverified' });
 const extensionOrigin = 'chrome-extension://' + 'a'.repeat(32);
@@ -96,7 +97,7 @@ test('reply-check accepts only exact finite parameters within the declared range
       parameters: [{ name: 'x', label: 'Value', default: 1, min: 0, max: 2, unit: '' }],
       assumptions: [], limitations: [], blocks: [{ id: 'text', type: 'text', md: 'A source passage.' }],
       checks: [], staticFallback: 'A saved reply.' };
-    helper.store.commitReply({ id: 'checked-reply', threadId: keep.threadId, reply });
+    helper.store.commitReply({ id: 'checked-reply', threadId: keep.threadId, reply: withFixtureOrigins(reply) });
     const token = await pair(helper);
     const headers = { Origin: extensionOrigin, Authorization: `Bearer ${token}` };
     const input = (parameters: unknown) => JSON.stringify({ threadId: keep.threadId, replyVersionId: 'checked-reply', parameters });

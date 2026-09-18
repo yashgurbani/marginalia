@@ -63,6 +63,27 @@ test('the reader journey completes end to end through the real daemon and saves 
   } finally { await trip.dispose(); }
 });
 
+test('E30 real daemon declines new provider replies with missing or incomplete origins', async () => {
+  const trip = await journey('origins-missing');
+  try {
+    const daemon = await trip.start('origins-missing');
+    for (const kind of ['missing', 'incomplete'] as const) {
+      const reply = scriptedReply();
+      if (kind === 'missing') delete reply.origins;
+      else delete reply.origins!.parts['/blocks/0'];
+      const jobId = `job-origin-${kind}`, threadId = `thread-origin-${kind}`;
+      await trip.script({ [jobId]: { behaviour: 'reply', reply } });
+      const submission = await submit(daemon, { threadId, mutationId: `keep-origin-${kind}`, jobId, idempotencyKey: `key-origin-${kind}` });
+      const grant = await approve(daemon, submission.preview);
+      const created = await start(daemon, submission, grant);
+      const failed = await pollJob(daemon, created.id, job => job.state === 'failed');
+      assert.equal(failed.replyVersionId, undefined);
+      const saved = await daemon.request('GET', `/api/replies?threadId=${threadId}`);
+      assert.deepEqual(saved.body.replies, []);
+    }
+  } finally { await trip.dispose(); }
+});
+
 test('nothing reaches the runtime before the reader approves the exact request', async () => {
   const trip = await journey('before-consent');
   try {

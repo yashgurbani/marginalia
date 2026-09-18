@@ -2,13 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { startServer } from '../daemon/server.ts';
+import { withFixtureOrigins } from './origins-fixture.ts';
 
 const origin = 'chrome-extension://' + 'a'.repeat(32);
 const otherOrigin = 'chrome-extension://' + 'b'.repeat(32);
 async function fixture() {
   const helper = await startServer({ database: ':memory:', port: 0, diagnostics: () => ({ status: 'unavailable' }) });
   helper.store.apply({ id: 'keep-1', kind: 'keep', threadId: 'thread-1', capture: { url: 'https://fixture.invalid/paper', title: 'Fixture', pageType: 'paper', text: 'A source passage.', capturedAt: '2026-09-17T00:00:00Z', extractionVersion: 'text-v1' }, anchor: { exact: 'A source passage.', prefix: '', suffix: '', start: 0, end: 17 } });
-  helper.store.commitReply({ id: 'reply-1', threadId: 'thread-1', reply: { schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title: 'Fixture', summary: 'Fixture reply.', sourceBindings: [], parameters: [], assumptions: [], limitations: [], blocks: [{ id: 'text', type: 'text', md: 'Fixture only.' }], checks: [], staticFallback: 'Fixture only.' } });
+  helper.store.commitReply({ id: 'reply-1', threadId: 'thread-1', reply: withFixtureOrigins({ schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title: 'Fixture', summary: 'Fixture reply.', sourceBindings: [], parameters: [], assumptions: [], limitations: [], blocks: [{ id: 'text', type: 'text', md: 'Fixture only.' }], checks: [], staticFallback: 'Fixture only.' }) });
   const token = helper.pairing.exchange(helper.challenge, origin);
   const headers = { Origin: origin, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
   const post = (path: string, body = '{}', overrides: Record<string, string> = {}) => fetch(helper.origin + path, { method: 'POST', headers: { ...headers, ...overrides }, body });

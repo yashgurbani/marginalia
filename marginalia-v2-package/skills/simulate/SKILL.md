@@ -17,7 +17,7 @@ source was verified. The host separately validates and renders accepted reply da
 1. Every parameter carries finite `min`, `max`, `default`, and `unit` values. Keep the default
    within its bounds, use meaningful units (an empty unit is acceptable only for a dimensionless
    quantity), and keep all expressions within the declared parameter and state names.
-2. A `headline: true` classification must cite an installed criterion. Today the only installed criterion is `growth-v1`; link the classification to its matching `checks` entry and declared
+2. A `headline: true` classification must cite an installed criterion. The installed criteria are `growth-v1` and `cooling-v1`; link the classification to its matching `checks` entry and declared
    model. Otherwise set `headline: false` and do not imply an independently checked result.
 3. A stand-in model requires the illustration statement: set `illustration.value` to `true` and
    state plainly what the model stands in for and what it does not reproduce.
@@ -27,6 +27,15 @@ source was verified. The host separately validates and renders accepted reply da
    limitations directly. Prefer a smaller honest model to invented detail.
 
 ## Output
+
+Every model requires `illustration` with a plain purpose statement. Title, summary and ordinary
+text are unassessed descriptive copy, including legacy copy. To request a checked result in one
+of those locations, add a `resultClaims` entry with `target` (`title`, `summary`, or `text`),
+`block` for a text target, and the matching headline `classification` ID. The host supplies the
+result sentence for the shown inputs. No authored declaration or generic check certifies prose.
+`cooling-v1` supports only temp' = -rate*(temp-ambient), initial temp = initial, three distinct
+parameter mappings named rate/ambient/initial, rate in 1/min, temperatures in °C, non-negative
+rate, and no events. It gives the exact temperature at the declared horizon in minutes.
 
 Return only one candidate object conforming to the current host-supplied
 `marginalia.reply.v1` schema with `intent: "simulate"`. The simulate-allowed block subset is

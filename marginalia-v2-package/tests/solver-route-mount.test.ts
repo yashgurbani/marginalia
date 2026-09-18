@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer } from '../daemon/server.ts';
 import type { CandidateReply } from '../contracts/reply.ts';
+import { withFixtureOrigins } from './origins-fixture.ts';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,9 +18,9 @@ const OTHER_ORIGIN = 'chrome-extension://' + 'b'.repeat(32);
 const STATE_KEY = 'e'.repeat(64);
 
 function reply(title: string): CandidateReply {
-  return { schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title, summary: title,
+  return withFixtureOrigins({ schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title, summary: title,
     sourceBindings: [], parameters: [], assumptions: [], limitations: [], blocks: [{ id: 'text', type: 'text', md: title }],
-    checks: [], staticFallback: title };
+    checks: [], staticFallback: title });
 }
 
 async function fixture(solver?: { transport: SolverCommandTransport; probeRoot: string }) {
@@ -152,13 +153,13 @@ test('the mounted collector surfaces a loopback confinement falsification and no
     mounted.helper.store.db.prepare(`UPDATE job_attempts SET state='validating',revision=1,dispatchClaimed=1,handoffMarked=1,
       workspacePrepared=1,providerHandle=? WHERE id=?`).run(JSON.stringify(handle), attempt.id);
     mounted.helper.store.db.prepare("UPDATE jobs SET state='validating' WHERE id=?").run(input.id);
-    const solverReply: CandidateReply = { schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete',
+    const solverReply: CandidateReply = withFixtureOrigins({ schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete',
       title: 'Solver', summary: 'Solver', sourceBindings: [],
       parameters: [{ name: 'x', label: 'X', default: 1, min: 0, max: 2, unit: '' }], assumptions: [], limitations: [],
       requiredCapabilities: ['solver'], blocks: [
         { id: 'answer', type: 'derived', name: 'answer', expression: 'x + 1', label: 'Answer', unit: '' },
         { id: 'solver-1', type: 'solver', path: 'solver/main.js', inputNames: ['x'], outputBlocks: ['answer'] },
-      ], checks: [], staticFallback: 'Unavailable.' };
+      ], checks: [], staticFallback: 'Unavailable.' });
     const resultAuthority = { withResultAcceptance: <T>(_job: unknown, _attemptId: string, commit: () => T) => commit() } as unknown as JobConsentAuthority;
     await commitSucceededReplyWithSolverBindings({ store: jobs, authority: resultAuthority, job: jobs.get(input.id)!,
       attemptId: attempt.id, expectedRevision: 1, reply: solverReply, workspace });

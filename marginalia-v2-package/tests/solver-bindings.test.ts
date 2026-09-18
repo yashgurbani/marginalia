@@ -11,6 +11,7 @@ import { commitSucceededReplyWithSolverBindings, createJobSolverArtifactBindings
 import { createStoreSolverContextSource, unavailableSolverEvidence, unavailableSolverExecutionGate } from '../daemon/solver/adapters.ts';
 import { SolverExecutionService } from '../daemon/solver/service.ts';
 import type { CandidateReply } from '../contracts/reply.ts';
+import { withFixtureOrigins } from './origins-fixture.ts';
 import type { FrozenJobContext, JobConsentAuthority, StartJobInput } from '../contracts/jobs.ts';
 import type { ProviderHandle } from '../contracts/job-runner.ts';
 
@@ -18,14 +19,14 @@ const SOURCE = 'A source passage.';
 const SOLVER_SOURCE = 'process.stdout.write(JSON.stringify({schema:"marginalia.solver-output.v1",values:{answer:2}}));\n';
 
 function candidate(withSolver = true): CandidateReply {
-  return { schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title: 'Saved computation', summary: 'Saved computation.',
+  return withFixtureOrigins({ schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title: 'Saved computation', summary: 'Saved computation.',
     sourceBindings: [], parameters: [{ name: 'x', label: 'Input', default: 1, min: 0, max: 10, unit: '' }],
     assumptions: [], limitations: [], ...(withSolver ? { requiredCapabilities: ['solver' as const] } : {}),
     blocks: withSolver ? [
       { id: 'answer', type: 'derived', name: 'answer', expression: 'x + 1', unit: '', label: 'Answer' },
       { id: 'solver-1', type: 'solver', path: 'solver/main.js', inputNames: ['x'], outputBlocks: ['answer'] },
     ] : [{ id: 'text', type: 'text', md: 'No executable artifact.' }],
-    checks: [], staticFallback: 'Saved computation.' };
+    checks: [], staticFallback: 'Saved computation.' });
 }
 
 const authority = {

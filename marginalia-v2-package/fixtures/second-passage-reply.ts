@@ -1,5 +1,6 @@
 /** Authored demonstration data, not a recorded live run. */
 import type { CandidateReply } from '../contracts/reply.ts';
+import { illustrationOrigins } from './illustration-origins.ts';
 
 export const secondPassageSourceText = 'A warm cup starts at 80 degrees while the room stays at 20 degrees, and its temperature approaches the room over time.';
 
@@ -38,8 +39,8 @@ export const secondPassageReply: CandidateReply = {
     { id: 'cooling-plot', type: 'plot', from: 'cooling-model', x: 't', y: ['temp'], labels: { t: 'time (min)', temp: 'temperature (°C)' } },
     { id: 'initial-gap', type: 'derived', name: 'gap', expression: 'temp0-ambient', unit: '°C', label: 'initial temperature gap', model: 'cooling-model' },
     {
-      id: 'cooling-classification', type: 'classification', model: 'cooling-model', headline: false,
-      rule: 'Authored cooling-v1 classification; no independent implementation is installed.', check: 'check-cooling',
+      id: 'cooling-classification', type: 'classification', model: 'cooling-model', headline: true,
+      rule: 'Installed cooling-v1 exact solution with interpreter probe.', check: 'check-cooling',
       labels: { cooling: 'Cooling', warming: 'Warming' },
     },
   ],
@@ -47,7 +48,8 @@ export const secondPassageReply: CandidateReply = {
     id: 'check-cooling', criterion: 'cooling-v1', model: 'cooling-model', classification: 'cooling-classification',
     inputs: { rate: 'k', ambient: 'ambient', initial: 'temp0' },
   }],
-  staticFallback: 'This authored cooling illustration requires the packaged renderer; no checked headline is available.',
+  staticFallback: 'Authored cooling illustration. A checked conclusion requires a matching check for the displayed inputs.',
 };
 
 export const secondPassageDefaultParameters = { k: 0.3, ambient: 20, temp0: 80 } as const;
+secondPassageReply.origins = illustrationOrigins(secondPassageReply);

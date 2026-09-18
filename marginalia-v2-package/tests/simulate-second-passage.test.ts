@@ -6,29 +6,35 @@ import { calculateReply } from '../renderer/state.ts';
 import { secondPassageDefaultParameters, secondPassageReply, secondPassageSourceText } from '../fixtures/second-passage-reply.ts';
 
 test('authored second-passage simulation validates against only its own captured passage', () => {
-  const validated = validateReply(secondPassageReply, { sourceText: secondPassageSourceText, capabilities: ['samples'] });
+  const validated = validateReply(secondPassageReply, { sourceText: secondPassageSourceText, capabilities: ['samples'], requireOrigins: true });
   assert.equal(validated.ok, true, validated.ok ? '' : validated.errors.join('\n'));
   for (const binding of secondPassageReply.sourceBindings) {
     assert.ok(secondPassageSourceText.includes(binding.selector.exact), binding.selector.exact);
   }
 });
 
-test('uninstalled second-passage criterion stays unsupported and its finite local model has no headline', () => {
-  assert.deepEqual(computeIndependentChecks(secondPassageReply, secondPassageDefaultParameters), [{
-    requestId: 'check-cooling',
-    criterion: 'cooling-v1',
-    model: 'cooling-model',
-    classification: 'cooling-classification',
-    status: 'unsupported',
-    reason: 'No independent implementation is installed for cooling-v1.',
-  }]);
+test('second-passage cooling criterion matches the closed form and interpreter probe', () => {
+  const [check] = computeIndependentChecks(secondPassageReply, secondPassageDefaultParameters);
+  assert.equal(check.status, 'pass');
+  assert.equal(check.outcome?.kind, 'cooling');
+  assert.ok(check.outcome && 'value' in check.outcome && Math.abs(check.outcome.value - (20 + 60 * Math.exp(-3))) < 1e-12);
 
   const report = runHostChecks(secondPassageReply, secondPassageDefaultParameters);
   assert.deepEqual(classificationViews(secondPassageReply, secondPassageDefaultParameters, report), [{
     blockId: 'cooling-classification',
-    state: 'withheld',
-    reason: 'This classification is not declared as a headline.',
+    state: 'verified',
+    label: 'At 10 min, this model gives 22.9872 °C. No conclusion beyond the shown interval.',
   }]);
+
+  for (const mutation of ['equation', 'unit'] as const) {
+    const altered = structuredClone(secondPassageReply);
+    const alteredModel = altered.blocks.find(block => block.type === 'model');
+    if (alteredModel?.type !== 'model' || alteredModel.kind !== 'ode') assert.fail();
+    if (mutation === 'equation') alteredModel.rhs.temp = 'k*(temp-ambient)';
+    else altered.parameters[0].unit = '1/s';
+    assert.equal(computeIndependentChecks(altered, secondPassageDefaultParameters)[0].status, 'fail');
+    assert.equal(classificationViews(altered, secondPassageDefaultParameters, report)[0].state, 'withheld');
+  }
 
   const calculation = calculateReply(secondPassageReply, secondPassageDefaultParameters);
   const model = calculation.models.get('cooling-model');

@@ -33,6 +33,10 @@ and capability validation are defined in `contracts/reply.ts`.
 Use no tools, no fetch, and no code execution. Make no provenance or execution claims.
 
 Every parameter carries finite `min`, `max`, `default`, and `unit` values.
-A `headline: true` classification must cite an installed criterion; today the only installed criterion is `growth-v1`.
+A `headline: true` classification must cite an installed criterion; the installed criteria are `growth-v1` and `cooling-v1`.
 A stand-in model requires the illustration statement, with `illustration.value: true` and a plain account of what is not reproduced.
+Every model requires an illustration purpose statement. All prose is unassessed by default.
+`resultClaims` targets title, summary, or a named text block and references a headline
+classification. Only its matching host-generated sentence can appear checked; authored prose
+and generic checks never grant authority.
 A `samples` block is allowed only under the granted `samples` capability, declared by both the packet and the reply.

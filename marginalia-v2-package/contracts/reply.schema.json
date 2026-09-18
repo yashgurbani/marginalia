@@ -4,13 +4,27 @@
   "title": "Marginalia candidate reply v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "intent", "status", "title", "summary", "sourceBindings", "parameters", "assumptions", "limitations", "blocks", "checks", "staticFallback"],
+  "required": ["schema", "intent", "status", "title", "summary", "origins", "sourceBindings", "parameters", "assumptions", "limitations", "blocks", "checks", "staticFallback"],
+  "allOf": [{ "if": { "properties": { "blocks": { "contains": { "properties": { "type": { "const": "model" } }, "required": ["type"] } } }, "required": ["blocks"] }, "then": { "required": ["illustration"] } }],
   "properties": {
     "schema": { "const": "marginalia.reply.v1" },
     "intent": { "enum": ["define", "simulate", "instantiate", "derive", "diagram", "evidence", "explore", "unsure"] },
     "status": { "enum": ["partial", "complete"] },
     "title": { "$ref": "#/$defs/safeShortText" },
     "summary": { "$ref": "#/$defs/safeText" },
+    "resultClaims": {
+      "description": "All authored prose is unassessed by default. These slots request only the host-generated sentence of a matching classification; they cannot certify authored text.",
+      "type": "array", "maxItems": 66,
+      "items": { "type": "object", "additionalProperties": false, "required": ["target", "classification"],
+        "properties": { "target": { "enum": ["title", "summary", "text"] }, "block": { "$ref": "#/$defs/id" }, "classification": { "$ref": "#/$defs/id" } },
+        "allOf": [{ "if": { "properties": { "target": { "const": "text" } } }, "then": { "required": ["block"] }, "else": { "not": { "required": ["block"] } } }]
+      }
+    },
+    "origins": {
+      "description": "Supply for every new reply. Absence is historical data with unavailable origins, never evidence. Every reader-visible part needs its own JSON-pointer entry: title, summary, staticFallback, illustration, sourceBindings/N, parameters/N, assumptions/N, limitations/N, blocks/N and each diagram node/edge/group, step, comparison variant, answer, table column/cell, citation claim/support/source, shelf title/reason, sample/envelope and media description/transcript/timecode. The host checks complete coverage. These are author declarations; fetched does not establish support.",
+      "type": "object", "additionalProperties": false, "required": ["version", "parts"],
+      "properties": { "version": { "const": 1 }, "parts": { "type": "object", "propertyNames": { "pattern": "^/" }, "additionalProperties": { "$ref": "#/$defs/partOrigin" } } }
+    },
     "illustration": {
       "type": "object",
       "additionalProperties": false,
@@ -30,6 +44,14 @@
     "staticFallback": { "$ref": "#/$defs/safeLongText" }
   },
   "$defs": {
+    "partOrigin": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["kind", "binding"], "properties": { "kind": { "const": "source-page" }, "binding": { "$ref": "#/$defs/id" } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "noteId", "revision"], "properties": { "kind": { "const": "reader-note" }, "noteId": { "$ref": "#/$defs/id" }, "revision": { "type": "integer", "minimum": 1, "maximum": 1000000000 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "description"], "properties": { "kind": { "enum": ["computed", "analogy", "authored"] }, "description": { "$ref": "#/$defs/safeText", "maxLength": 1024 } } },
+        { "type": "object", "additionalProperties": false, "required": ["kind", "url"], "properties": { "kind": { "const": "fetched" }, "url": { "$ref": "#/$defs/httpsUrl" } } }
+      ]
+    },
     "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" },
     "mathName": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$" },
     "finite": { "type": "number", "minimum": -1000000000000, "maximum": 1000000000000 },
@@ -144,11 +166,13 @@
       }
     },
     "diagramBlock": {
-      "type": "object", "additionalProperties": false, "required": ["id", "type", "nodes", "edges"],
+      "type": "object", "additionalProperties": false, "required": ["id", "type", "nodes", "edges", "correspondence"],
+      "allOf": [{ "if": { "properties": { "correspondence": { "const": "source" } }, "required": ["correspondence"] }, "then": { "properties": { "nodes": { "items": { "required": ["binding"] } }, "edges": { "items": { "required": ["binding"] } } } } }],
       "properties": {
         "id": { "$ref": "#/$defs/id" }, "type": { "const": "diagram" },
+        "correspondence": { "enum": ["source", "illustration"] },
         "nodes": { "type": "array", "maxItems": 100, "items": { "type": "object", "additionalProperties": false, "required": ["id", "label"], "properties": { "id": { "$ref": "#/$defs/id" }, "label": { "$ref": "#/$defs/safeText" }, "binding": { "$ref": "#/$defs/id" } } } },
-        "edges": { "type": "array", "maxItems": 200, "items": { "type": "object", "additionalProperties": false, "required": ["id", "from", "to"], "properties": { "id": { "$ref": "#/$defs/id" }, "from": { "$ref": "#/$defs/id" }, "to": { "$ref": "#/$defs/id" }, "label": { "$ref": "#/$defs/safeText" } } } },
+        "edges": { "type": "array", "maxItems": 200, "items": { "type": "object", "additionalProperties": false, "required": ["id", "from", "to"], "properties": { "id": { "$ref": "#/$defs/id" }, "from": { "$ref": "#/$defs/id" }, "to": { "$ref": "#/$defs/id" }, "label": { "$ref": "#/$defs/safeText" }, "binding": { "$ref": "#/$defs/id" } } } },
         "groups": { "type": "array", "maxItems": 32, "items": { "type": "object", "additionalProperties": false, "required": ["id", "label", "nodes"], "properties": { "id": { "$ref": "#/$defs/id" }, "label": { "$ref": "#/$defs/safeText" }, "nodes": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/id" } } } } }
       }
     },

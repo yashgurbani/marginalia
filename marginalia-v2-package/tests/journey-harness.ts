@@ -9,6 +9,7 @@ import { ReaderStore } from '../daemon/store.ts';
 import type { JobSnapshot } from '../contracts/jobs.ts';
 import type { ReaderMutation } from '../contracts/reader.ts';
 import type { CandidateReply, ReplyCapability } from '../contracts/reply.ts';
+import { withFixtureOrigins } from './origins-fixture.ts';
 
 export const EXTENSION_ORIGIN = 'chrome-extension://' + 'a'.repeat(32);
 export type RuntimeBehaviour = 'reply' | 'hang' | 'unknown-throw' | 'cancel';
@@ -126,8 +127,8 @@ export function keepMutation(threadId: string, id: string, text = 'Start with th
 }
 
 export function scriptedReply(title = 'Contextual meaning'): CandidateReply {
-  return { schema: 'marginalia.reply.v1', intent: 'explore', status: 'complete', title, summary: 'Meaning in this passage',
-    blocks: [{ id: 'meaning', type: 'text', md: 'Start with this passage.' }], sourceBindings: [], parameters: [], assumptions: [], checks: [], limitations: [], staticFallback: 'Start with this passage.' };
+  return withFixtureOrigins({ schema: 'marginalia.reply.v1', intent: 'explore', status: 'complete', title, summary: 'Meaning in this passage',
+    blocks: [{ id: 'meaning', type: 'text', md: 'Start with this passage.' }], sourceBindings: [], parameters: [], assumptions: [], checks: [], limitations: [], staticFallback: 'Start with this passage.' });
 }
 
 export const FAKE_RUNTIME_SOURCE = String.raw`import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';

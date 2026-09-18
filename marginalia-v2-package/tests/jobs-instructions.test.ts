@@ -32,7 +32,10 @@ test('every supported instruction bundle includes its canonical installed conten
 
 test('definition instruction bytes retain the installed digest fixture', async () => {
   const bundle = await loadHostInstructions('define'); assert.ok(bundle);
-  assert.equal(bundle.sha256, '2699f7f826f533dbe09e15c909a1ab65ef5fdaf6e27e05626601fe4a2dd6d8dd');
+  assert.equal(bundle.sha256, 'b9db5652bac51b329f26ef806d4981033e0f02f1d4e52f81b5b19758b933d611');
+  assert.match(bundle.text, /Reply admission revision: result-claims-origins-v1/);
+  assert.match(bundle.text, /Every new reply requires complete per-part origins/);
+  assert.match(bundle.text, /No model declaration or generic check certifies arbitrary prose/);
 });
 
 test('instruction bindings have one digest for CRLF and LF installations', async t => {

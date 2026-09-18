@@ -9,6 +9,7 @@ import { commitSucceededReplyWithSolverBindings } from '../daemon/jobs/solver-bi
 import { createJobSolverExecutionGate, uncollectedSolverConfinement,
   type SolverCommitAuthorityReader, type SolverConfinementSource } from '../daemon/jobs/solver-gate.ts';
 import type { CandidateReply } from '../contracts/reply.ts';
+import { withFixtureOrigins } from './origins-fixture.ts';
 import type { FrozenJobContext, JobConsentAuthority, StartJobInput } from '../contracts/jobs.ts';
 import type { ProviderHandle } from '../contracts/job-runner.ts';
 import type { SolverAuthorization, SolverFinalizationInput } from '../daemon/solver/service.ts';
@@ -16,7 +17,7 @@ import type { SolverAuthorization, SolverFinalizationInput } from '../daemon/sol
 const SOURCE = 'A source passage.';
 const SOLVER_SOURCE = 'process.stdout.write(JSON.stringify({schema:"marginalia.solver-output.v1",values:{answer:2}}));\n';
 
-const reply: CandidateReply = {
+const reply: CandidateReply = withFixtureOrigins({
   schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title: 'Saved computation', summary: 'Saved computation.',
   sourceBindings: [], parameters: [{ name: 'x', label: 'Input', default: 1, min: 0, max: 10, unit: '' }],
   assumptions: [], limitations: [], requiredCapabilities: ['solver'],
@@ -25,7 +26,7 @@ const reply: CandidateReply = {
     { id: 'solver-1', type: 'solver', path: 'solver/main.js', inputNames: ['x'], outputBlocks: ['answer'] },
   ],
   checks: [], staticFallback: 'Saved computation.',
-};
+});
 
 const resultAuthority = {
   withResultAcceptance: <T>(_job: unknown, _attemptId: string, commit: () => T) => commit(),

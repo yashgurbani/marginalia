@@ -418,7 +418,7 @@ export class JobService {
       validateOutput: async (text: string, handle: ProviderHandle) => {
         const current = this.store.jobForAttempt(handle.jobId);
         if (!current || current.cancelRequested || current.latestAttemptId !== handle.jobId) return false;
-        return parseAndValidateReply(text, { sourceText: current.context.sourceText, capabilities: this.store.capabilities(current.id) }).ok;
+        return parseAndValidateReply(text, { sourceText: current.context.sourceText, capabilities: this.store.capabilities(current.id), requireOrigins: true }).ok;
       },
     };
   }
@@ -449,7 +449,7 @@ export class JobService {
       const capabilities = this.store.capabilities(jobId);
       let reply: CandidateReply | undefined;
       if (job.mode === 'structured-final' && handle.output) {
-        const parsed = parseAndValidateReply(handle.output, { sourceText: job.context.sourceText, capabilities });
+        const parsed = parseAndValidateReply(handle.output, { sourceText: job.context.sourceText, capabilities, requireOrigins: true });
         if (parsed.ok && parsed.value.status === 'complete') reply = parsed.value;
       } else if (job.mode === 'workspace-files') {
         const workspace = this.workspaces.get(attemptId);

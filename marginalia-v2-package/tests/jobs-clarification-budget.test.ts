@@ -10,14 +10,15 @@ import { prepareWorkspace } from '../daemon/jobs/workspace.ts';
 import type { FrozenJobContext, StartJobInput } from '../contracts/jobs.ts';
 import type { CandidateReply } from '../contracts/reply.ts';
 import type { AuthorizedRuntimeFactory } from '../daemon/jobs/runtime.ts';
+import { withFixtureOrigins } from './origins-fixture.ts';
 
 const policyKey = 'a'.repeat(64);
 const library = { modelFor: () => ({ model: 'test-model', settingsRevision: 1, compatibilityKey: 'test' }), continuationIdentity: () => 'b'.repeat(64) };
 function reply(prompt?: string): CandidateReply {
-  return { schema: 'marginalia.reply.v1', intent: 'define', status: 'complete', title: 'Explanation', summary: 'An explanation.',
+  return withFixtureOrigins({ schema: 'marginalia.reply.v1', intent: 'define', status: 'complete', title: 'Explanation', summary: 'An explanation.',
     sourceBindings: [], parameters: [], assumptions: [], limitations: [], checks: [], staticFallback: 'An explanation.',
     blocks: prompt ? [{ id: 'clarify', type: 'question', prompt, answers: [], allowFreeText: true }]
-      : [{ id: 'answer', type: 'text', md: 'An explanation.' }] };
+      : [{ id: 'answer', type: 'text', md: 'An explanation.' }] });
 }
 function fixture(database = ':memory:') {
   const reader = new ReaderStore(database);

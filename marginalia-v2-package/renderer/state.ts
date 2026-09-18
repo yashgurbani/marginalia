@@ -78,7 +78,7 @@ export function calculateReply(reply: CandidateReply, parameters: Record<string,
     let reason: string | undefined;
     if (model?.type !== 'model' || model.kind !== 'ode' || model.events?.length) reason = 'This local criterion does not support event-modified models.';
     else if (!models.get(model.id)?.ok) reason = 'The declared model could not be admitted by the local kernel.';
-    else if (request) {
+    else if (request && check.criterion === 'growth-v1') {
       const unit = (role: string) => reply.parameters.find(p => p.name === request.inputs[role])?.unit;
       if (unit('gamma') !== '1/s' || !['1/s²', '1/s^2'].includes(unit('f') ?? '') || unit('y0') !== '1/s') reason = 'This criterion requires damping and start in 1/s, and forcing in 1/s². Other unit interpretations are not verified.';
     }

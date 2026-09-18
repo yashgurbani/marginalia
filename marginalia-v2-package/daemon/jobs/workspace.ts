@@ -63,7 +63,7 @@ export async function readReplyFile(workspace: string, name: 'reply.partial.json
   const identity = await directoryIdentity(workspace);
   const bytes = await readWorkspaceBytes(identity, name, REPLY_LIMITS.bytes, 40);
   if (!bytes) return;
-  const validated = parseAndValidateReply(bytes.toString('utf8'), { sourceText, capabilities });
+  const validated = parseAndValidateReply(bytes.toString('utf8'), { sourceText, capabilities, requireOrigins: true });
   if (!validated.ok) throw new Error(validated.errors.join('\n'));
   if (name === 'reply.partial.json' && validated.value.status !== 'partial') throw new Error('The provisional file must declare partial status.');
   if (name === 'reply.json' && validated.value.status !== 'complete') throw new Error('The final file must declare complete status.');

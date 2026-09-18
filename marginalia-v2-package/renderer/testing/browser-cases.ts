@@ -19,6 +19,7 @@ function input(node: HTMLElement, name: string, value: string) {
 function sampleReply(): CandidateReply {
   return {
     schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title: 'Recorded values', summary: 'An affine example.',
+    illustration: { value: true, statement: 'Synthetic affine illustration for renderer tests.' },
     sourceBindings: [], parameters: [{ name: 'x', label: 'Input', default: 0.5, min: 0, max: 1, unit: '' }], assumptions: [], limitations: [], checks: [], staticFallback: 'Authored example only.', requiredCapabilities: ['samples'],
     blocks: [
       { id: 'model', type: 'model', kind: 'map', state: ['z'], next: { z: 'z+1' }, initial: { z: '0' }, iterations: 2 },

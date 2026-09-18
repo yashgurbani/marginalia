@@ -13,6 +13,7 @@ import type { AuthorizedRuntimeFactory } from '../daemon/jobs/runtime.ts';
 import type { FrozenJobContext, JobSnapshot, StartJobInput } from '../contracts/jobs.ts';
 import { ProviderNotSentError, type ProviderHandle, type ProviderRequest } from '../contracts/job-runner.ts';
 import { capabilitiesForIntent, type ReplyCapability, type CandidateReply } from '../contracts/reply.ts';
+import { withFixtureOrigins } from './origins-fixture.ts';
 
 const policyKey = 'a'.repeat(64);
 function starting(request: ProviderRequest): ProviderHandle {
@@ -338,9 +339,9 @@ test('restart validates and commits the persisted completed workspace without st
     const attempt = store.createAttempt(input.id);
     const schema = await readFile(new URL('../contracts/reply.schema.json', import.meta.url), 'utf8');
     const workspace = await prepareWorkspace(workspaces, input.id, packet, schema);
-    const reply = { schema: 'marginalia.reply.v1', intent: 'explore', status: 'complete', title: 'Explanation',
+    const reply = withFixtureOrigins({ schema: 'marginalia.reply.v1', intent: 'explore', status: 'complete', title: 'Explanation',
       summary: 'A short explanation.', sourceBindings: [], parameters: [], assumptions: [], limitations: [],
-      blocks: [{ id: 'text', type: 'text', md: 'Start with this passage.' }], checks: [], staticFallback: 'A short explanation.' };
+      blocks: [{ id: 'text', type: 'text', md: 'Start with this passage.' }], checks: [], staticFallback: 'A short explanation.' });
     await writeFile(join(workspace, 'reply.json'), JSON.stringify(reply));
     const handoff = (jobId: string, id: string) => {
       store.setDeadline(jobId, id, new Date(Date.now() + 60_000).toISOString());

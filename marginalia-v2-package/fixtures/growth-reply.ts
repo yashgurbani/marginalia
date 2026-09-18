@@ -1,4 +1,5 @@
 import type { CandidateReply } from '../contracts/reply.ts';
+import { illustrationOrigins } from './illustration-origins.ts';
 
 export const growthSourceText = 'The page compares damping and forcing in a toy amplitude model. The initial amplitude starts at zero.';
 
@@ -48,3 +49,4 @@ export const growthReply: CandidateReply = {
 };
 
 export const growthDefaultParameters = { gamma: 0.5, f: 0.07, y0: 0 } as const;
+growthReply.origins = illustrationOrigins(growthReply);

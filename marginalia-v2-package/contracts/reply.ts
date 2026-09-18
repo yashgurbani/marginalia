@@ -1,5 +1,7 @@
 import { compileExpression, validName } from '../kernel/expression.ts';
 import { classifyGrowth, growthSentence, type GrowthConclusion, type GrowthInputs } from '../kernel/growth.ts';
+import { replyOriginParts, type ReplyOrigins } from './reply-origins.ts';
+export type { PartOrigin, ReplyOrigins } from './reply-origins.ts';
 
 export const REPLY_SCHEMA = 'marginalia.reply.v1' as const;
 export const REPLY_LIMITS = Object.freeze({
@@ -17,6 +19,9 @@ export const REPLY_LIMITS = Object.freeze({
 
 export type Intent = 'define' | 'simulate' | 'instantiate' | 'derive' | 'diagram' | 'evidence' | 'explore' | 'unsure';
 export type ReplyStatus = 'partial' | 'complete';
+/** Authored copy is unassessed by default. A result slot displays only the named
+ * classification's independently generated sentence, never the authored prose. */
+export type ResultClaim = { target: 'title' | 'summary' | 'text'; block?: string; classification: string };
 export type SourceRelation = 'quoted' | 'computed' | 'interpreted' | 'analogy' | 'fetched';
 export type ReplyCapability = 'samples' | 'solver' | 'media.audio' | 'media.image' | 'media.video' | 'network.citations' | 'network.shelf';
 
@@ -56,8 +61,10 @@ export type ClassificationBlock = BlockBase & {
 export type TableBlock = BlockBase & { type: 'table'; columns: { key: string; label: string; unit?: string }[]; rows: Record<string, string | number | boolean | null>[] };
 export type DiagramBlock = BlockBase & {
   type: 'diagram';
+  /** Required when per-part origins are supplied. Old replies remain historical. */
+  correspondence?: 'source' | 'illustration';
   nodes: { id: string; label: string; binding?: string }[];
-  edges: { id: string; from: string; to: string; label?: string }[];
+  edges: { id: string; from: string; to: string; label?: string; binding?: string }[];
   groups?: { id: string; label: string; nodes: string[] }[];
 };
 export type StepsBlock = BlockBase & { type: 'steps'; steps: { id: string; text?: string; tex?: string }[] };
@@ -95,6 +102,9 @@ export type CandidateReply = {
   status: ReplyStatus;
   title: string;
   summary: string;
+  resultClaims?: ResultClaim[];
+  /** Absent only in legacy saved v1 data; never infer origins during rendering. */
+  origins?: ReplyOrigins;
   illustration?: { value: boolean; statement: string };
   sourceBindings: SourceBinding[];
   parameters: Parameter[];
@@ -106,7 +116,7 @@ export type CandidateReply = {
   staticFallback: string;
 };
 
-export type ValidationContext = { sourceText: string; capabilities?: readonly ReplyCapability[] };
+export type ValidationContext = { sourceText: string; capabilities?: readonly ReplyCapability[]; requireOrigins?: boolean };
 export type ValidationResult = { ok: true; value: CandidateReply; errors: [] } | { ok: false; errors: string[] };
 export type ReplyParameterState = Readonly<Record<string, number>>;
 export type IndependentCheckResult = {
@@ -117,7 +127,7 @@ export type IndependentCheckResult = {
   /** A numerical pass can retain domain limits while headline admission is withheld. */
   status: 'pass' | 'fail' | 'unsupported';
   reason: string;
-  outcome?: GrowthConclusion;
+  outcome?: GrowthConclusion | { kind: 'cooling'; value: number };
   /** Present only when shared admission permits a sentence; never grants host authority. */
   headline?: string;
 };
@@ -410,11 +420,17 @@ function validateIdArray(value: unknown, path: string, errors: string[], max: nu
 }
 
 function validateDiagram(block: Record<string, unknown>, path: string, sourceNames: Set<string>, errors: string[]) {
-  keys(block, ['id', 'type', 'nodes', 'edges', 'groups'], path, errors, ['id', 'type', 'nodes', 'edges']);
+  keys(block, ['id', 'type', 'nodes', 'edges', 'groups', 'correspondence'], path, errors, ['id', 'type', 'nodes', 'edges']);
+  if (Object.hasOwn(block, 'correspondence') && block.correspondence !== 'source' && block.correspondence !== 'illustration') errors.push(`${path}.correspondence: expected source or illustration.`);
   const nodeIds = new Set<string>();
   if (arrayValue(block.nodes, `${path}.nodes`, errors, 100)) block.nodes.forEach((node, n) => { const p = `${path}.nodes[${n}]`; if (!objectValue(node, p, errors)) return; keys(node, ['id', 'label', 'binding'], p, errors, ['id', 'label']); if (idValue(node.id, `${p}.id`, errors)) { if (nodeIds.has(node.id)) errors.push(`${p}.id: duplicate node id.`); nodeIds.add(node.id); } stringValue(node.label, `${p}.label`, errors, { max: 512, safeText: true }); if (Object.hasOwn(node, 'binding') && idValue(node.binding, `${p}.binding`, errors) && !sourceNames.has(node.binding)) errors.push(`${p}.binding: unknown source binding.`); });
   const edgeIds = new Set<string>();
-  if (arrayValue(block.edges, `${path}.edges`, errors, 200)) block.edges.forEach((edge, n) => { const p = `${path}.edges[${n}]`; if (!objectValue(edge, p, errors)) return; keys(edge, ['id', 'from', 'to', 'label'], p, errors, ['id', 'from', 'to']); if (idValue(edge.id, `${p}.id`, errors)) { if (edgeIds.has(edge.id)) errors.push(`${p}.id: duplicate edge id.`); edgeIds.add(edge.id); } for (const key of ['from', 'to'] as const) if (idValue(edge[key], `${p}.${key}`, errors) && !nodeIds.has(edge[key])) errors.push(`${p}.${key}: unknown diagram node.`); if (Object.hasOwn(edge, 'label')) stringValue(edge.label, `${p}.label`, errors, { max: 512, safeText: true }); });
+  if (arrayValue(block.edges, `${path}.edges`, errors, 200)) block.edges.forEach((edge, n) => { const p = `${path}.edges[${n}]`; if (!objectValue(edge, p, errors)) return; keys(edge, ['id', 'from', 'to', 'label', 'binding'], p, errors, ['id', 'from', 'to']); if (idValue(edge.id, `${p}.id`, errors)) { if (edgeIds.has(edge.id)) errors.push(`${p}.id: duplicate edge id.`); edgeIds.add(edge.id); } for (const key of ['from', 'to'] as const) if (idValue(edge[key], `${p}.${key}`, errors) && !nodeIds.has(edge[key])) errors.push(`${p}.${key}: unknown diagram node.`); if (Object.hasOwn(edge, 'label')) stringValue(edge.label, `${p}.label`, errors, { max: 512, safeText: true }); if (Object.hasOwn(edge, 'binding') && idValue(edge.binding, `${p}.binding`, errors) && !sourceNames.has(edge.binding)) errors.push(`${p}.binding: unknown source binding.`); });
+  if (block.correspondence === 'source') for (const collection of ['nodes', 'edges'] as const) {
+    if (Array.isArray(block[collection])) block[collection].forEach((part, n) => {
+      if (isRecord(part) && !Object.hasOwn(part, 'binding')) errors.push(`${path}.${collection}[${n}].binding: source correspondence requires a source binding.`);
+    });
+  }
   if (Object.hasOwn(block, 'groups') && arrayValue(block.groups, `${path}.groups`, errors, 32)) block.groups.forEach((group, n) => { const p = `${path}.groups[${n}]`; if (!objectValue(group, p, errors)) return; keys(group, ['id', 'label', 'nodes'], p, errors); idValue(group.id, `${p}.id`, errors); stringValue(group.label, `${p}.label`, errors, { max: 512, safeText: true }); if (arrayValue(group.nodes, `${p}.nodes`, errors, 100)) group.nodes.forEach((node, i) => { if (idValue(node, `${p}.nodes[${i}]`, errors) && !nodeIds.has(node)) errors.push(`${p}.nodes[${i}]: unknown diagram node.`); }); });
 }
 
@@ -454,6 +470,54 @@ function requiredCapability(block: ReplyBlock): ReplyCapability | undefined {
   return undefined;
 }
 
+function validateOrigins(reply: CandidateReply, context: ValidationContext, errors: string[]) {
+  if (!Object.hasOwn(reply, 'origins')) {
+    if (context.requireOrigins) errors.push('$.origins: required for a new reply; legacy origins are unavailable.');
+    return;
+  }
+  const origins = reply.origins;
+  if (!objectValue(origins, '$.origins', errors)) return;
+  keys(origins, ['version', 'parts'], '$.origins', errors);
+  if (origins.version !== 1) errors.push('$.origins.version: unsupported origin version.');
+  if (!objectValue(origins.parts, '$.origins.parts', errors)) return;
+  const parts = new Set(replyOriginParts(reply).map(part => part.path));
+  for (const path of parts) if (!Object.hasOwn(origins.parts, path)) errors.push(`$.origins.parts[${path}]: reader-visible part requires an origin.`);
+  for (const [part, origin] of Object.entries(origins.parts)) {
+    const path = `$.origins.parts[${part}]`;
+    if (!parts.has(part)) errors.push(`${path}: unknown reader-visible part.`);
+    if (!objectValue(origin, path, errors)) continue;
+    switch (origin.kind) {
+      case 'source-page': {
+        keys(origin, ['kind', 'binding'], path, errors);
+        const binding = reply.sourceBindings.find(binding => binding.name === origin.binding);
+        if (!idValue(origin.binding, `${path}.binding`, errors) || !binding) errors.push(`${path}.binding: unknown source binding.`);
+        else if (binding.relation !== 'quoted' && binding.relation !== 'interpreted') errors.push(`${path}.binding: page origin requires a quoted or interpreted source span.`);
+        break;
+      }
+      case 'reader-note':
+        keys(origin, ['kind', 'noteId', 'revision'], path, errors);
+        idValue(origin.noteId, `${path}.noteId`, errors);
+        if (!finite(origin.revision, `${path}.revision`, errors, 1, 1e9) || !Number.isInteger(origin.revision)) errors.push(`${path}.revision: expected a positive integer.`);
+        break;
+      case 'computed': case 'analogy': case 'authored':
+        keys(origin, ['kind', 'description'], path, errors);
+        stringValue(origin.description, `${path}.description`, errors, { max: 1024, safeText: true }); break;
+      case 'fetched':
+        keys(origin, ['kind', 'url'], path, errors); validateUrl(origin.url, `${path}.url`, errors); break;
+      default: errors.push(`${path}.kind: unsupported origin.`);
+    }
+  }
+  reply.blocks.forEach((block, i) => {
+    if (block.type !== 'diagram') return;
+    if (!block.correspondence) errors.push(`$.blocks[${i}].correspondence: declare source correspondence or illustration.`);
+    for (const collection of ['nodes', 'edges'] as const) block[collection].forEach((part, n) => {
+      const origin = reply.origins?.parts[`/blocks/${i}/${collection}/${n}`];
+      if (origin?.kind === 'source-page' && part.binding !== origin.binding) errors.push(`$.blocks[${i}].${collection}[${n}].binding: must match this part's page origin.`);
+      if (block.correspondence === 'source' && (origin?.kind !== 'source-page' || origin.binding !== part.binding)) errors.push(`$.blocks[${i}].${collection}[${n}]: source correspondence requires the matching page origin.`);
+    });
+  });
+}
+
 export function validateReply(input: unknown, context: ValidationContext): ValidationResult {
   try { return validateReplyData(input, context); }
   catch { return { ok: false, errors: ['$: candidate could not be read as plain JSON data.'] }; }
@@ -465,7 +529,7 @@ function validateReplyData(input: unknown, context: ValidationContext): Validati
   validateJsonShape(input, errors);
   if (errors.length) return { ok: false, errors: [...new Set(errors)] };
   if (!objectValue(input, '$', errors)) return { ok: false, errors };
-  keys(input, ['schema', 'intent', 'status', 'title', 'summary', 'illustration', 'sourceBindings', 'parameters', 'assumptions', 'limitations', 'requiredCapabilities', 'blocks', 'checks', 'staticFallback'], '$', errors, ['schema', 'intent', 'status', 'title', 'summary', 'sourceBindings', 'parameters', 'assumptions', 'limitations', 'blocks', 'checks', 'staticFallback']);
+  keys(input, ['schema', 'intent', 'status', 'title', 'summary', 'resultClaims', 'origins', 'illustration', 'sourceBindings', 'parameters', 'assumptions', 'limitations', 'requiredCapabilities', 'blocks', 'checks', 'staticFallback'], '$', errors, ['schema', 'intent', 'status', 'title', 'summary', 'sourceBindings', 'parameters', 'assumptions', 'limitations', 'blocks', 'checks', 'staticFallback']);
   if (input.schema !== REPLY_SCHEMA) errors.push('$.schema: unsupported reply schema.');
   if (!intents.has(input.intent as Intent)) errors.push('$.intent: unsupported intent.');
   if (!statuses.has(input.status as ReplyStatus)) errors.push('$.status: expected partial or complete.');
@@ -492,6 +556,27 @@ function validateReplyData(input: unknown, context: ValidationContext): Validati
 
   // Cross-reference traversal requires structurally valid nested collections.
   if (errors.length) return { ok: false, errors: [...new Set(errors)] };
+  // Historical v1 reads predate both metadata additions. New admission and
+  // replies declaring either addition still require the model purpose statement.
+  const historicalRead = !context.requireOrigins && !Object.hasOwn(input, 'origins') && !Object.hasOwn(input, 'resultClaims');
+  if (!historicalRead && blocks.some(block => block.type === 'model') && !input.illustration) errors.push('This model needs an illustration statement explaining what it represents.');
+  if (Object.hasOwn(input, 'resultClaims') && arrayValue(input.resultClaims, '$.resultClaims', errors, 66)) {
+    const targets = new Set<string>();
+    input.resultClaims.forEach((claim, index) => {
+      const path = `$.resultClaims[${index}]`;
+      if (!objectValue(claim, path, errors)) return;
+      keys(claim, ['target', 'block', 'classification'], path, errors, ['target', 'classification']);
+      if (!['title', 'summary', 'text'].includes(claim.target as string)) errors.push(`${path}.target: expected title, summary or text.`);
+      if (claim.target === 'text') {
+        if (!idValue(claim.block, `${path}.block`, errors) || !blocks.some(block => block.id === claim.block && block.type === 'text')) errors.push(`${path}.block: expected a text block reference.`);
+      } else if (Object.hasOwn(claim, 'block')) errors.push(`${path}.block: only text claims name a block.`);
+      const target = `${claim.target}:${claim.block ?? ''}`;
+      if (targets.has(target)) errors.push(`${path}: duplicate result claim target.`);
+      targets.add(target);
+      if (!idValue(claim.classification, `${path}.classification`, errors) || !blocks.some(block => block.id === claim.classification && block.type === 'classification' && block.headline && block.check)) errors.push(`${path}.classification: expected a headline classification with a requested check.`);
+    });
+  }
+  validateOrigins(input as CandidateReply, context, errors);
   for (const [index, block] of blocks.entries()) {
     const path = `$.blocks[${index}]`;
     const cap = requiredCapability(block);
@@ -621,12 +706,36 @@ function computeGrowthCheck(reply: CandidateReply, request: CandidateCheck, valu
   }
 }
 
+function computeCoolingCheck(reply: CandidateReply, request: CandidateCheck, values: ReplyParameterState): IndependentCheckResult {
+  const model = reply.blocks.find(block => block.id === request.model);
+  const classification = reply.blocks.find(block => block.id === request.classification);
+  const fail = (reason: string) => independentFailure(request, reason);
+  if (model?.type !== 'model' || model.kind !== 'ode' || model.state.join(',') !== 'temp' || classification?.type !== 'classification' || classification.model !== model.id || classification.check !== request.id) return fail('cooling-v1 requires the linked scalar temperature model and classification.');
+  if (Object.keys(request.inputs).sort().join(',') !== 'ambient,initial,rate') return fail('cooling-v1 requires exactly rate, ambient and initial input mappings.');
+  const { rate, ambient, initial } = request.inputs;
+  if (new Set([rate, ambient, initial]).size !== 3 || ![rate, ambient, initial].every(name => reply.parameters.some(parameter => parameter.name === name))) return fail('cooling-v1 requires three distinct declared parameters.');
+  if (compactExpression(model.rhs.temp) !== `-${rate}*(temp-${ambient})` || compactExpression(model.initial.temp) !== initial) return fail('The declared equation is not the verified cooling-v1 equation.');
+  const unit = (name: string) => reply.parameters.find(parameter => parameter.name === name)?.unit;
+  if (reply.status !== 'complete' || model.events?.length || unit(rate) !== '1/min' || unit(ambient) !== '°C' || unit(initial) !== '°C') return fail('cooling-v1 requires a complete, event-free model with rate in 1/min and temperatures in °C.');
+  if (values[rate] < 0) return fail('cooling-v1 requires a non-negative rate.');
+  try {
+    const rhs = compileExpression(model.rhs.temp, ['temp', 't', rate, ambient, initial]);
+    const start = compileExpression(model.initial.temp, [rate, ambient, initial]);
+    const probe = { temp: 37, t: 0.4, [rate]: 0.3, [ambient]: 20, [initial]: 80 };
+    if (Math.abs(rhs(probe) - -5.1) > 1e-12 || start(probe) !== 80) return fail('The declared expressions did not reproduce cooling-v1 semantics.');
+    const value = values[ambient] + (values[initial] - values[ambient]) * Math.exp(-values[rate] * model.horizon);
+    if (!Number.isFinite(value)) return fail('The exact cooling result exceeds the supported numeric range.');
+    return { requestId: request.id, criterion: request.criterion, model: model.id, classification: classification.id, status: 'pass', reason: 'The cooling-v1 exact solution and interpreter probe matched the declared model and current inputs.', outcome: { kind: 'cooling', value }, headline: `At ${model.horizon} min, this model gives ${Number(value.toPrecision(6))} °C. No conclusion beyond the shown interval.` };
+  } catch { return fail('The declared cooling model could not be evaluated.'); }
+}
+
 /** Browser-safe independent checks. This computes bounded criteria but grants no host authority. */
 export function computeIndependentChecks(reply: CandidateReply, parameters: ReplyParameterState): IndependentCheckResult[] {
   const errors = parameterStateErrors(reply, parameters);
   return reply.checks.map((request) => {
     if (errors.length) return independentFailure(request, errors.join(' '));
     if (request.criterion === 'growth-v1') return computeGrowthCheck(reply, request, parameters);
+    if (request.criterion === 'cooling-v1') return computeCoolingCheck(reply, request, parameters);
     return { requestId: request.id, criterion: request.criterion, model: request.model, classification: request.classification, status: 'unsupported', reason: `No independent implementation is installed for ${request.criterion}.` };
   });
 }

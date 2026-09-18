@@ -21,7 +21,9 @@ const allCapabilities: ReplyCapability[] = ['samples', 'solver', 'media.audio', 
 const context = { sourceText: growthSourceText, capabilities: allCapabilities } as const;
 
 function cloneReply(): CandidateReply {
-  return structuredClone(growthReply);
+  // These v1 shape regressions deliberately exercise legacy data. Current
+  // origin coverage/admission is exercised independently by reply-origins.
+  const reply = structuredClone(growthReply); delete reply.origins; return reply;
 }
 
 function validate(candidate: unknown, capabilities: readonly ReplyCapability[] = allCapabilities) {

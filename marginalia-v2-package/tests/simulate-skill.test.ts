@@ -16,7 +16,7 @@ const required = [
   'Every parameter carries finite',
   '`min`, `max`, `default`, and `unit`',
   '`headline: true` classification must cite an installed criterion',
-  'only installed criterion is `growth-v1`',
+  'installed criteria are `growth-v1` and `cooling-v1`',
   'A stand-in model requires the illustration statement',
   '`samples` block is allowed only under the granted `samples` capability',
 ];

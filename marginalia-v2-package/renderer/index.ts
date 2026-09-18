@@ -10,6 +10,7 @@ import type { ClassificationView, HostCheckReport } from '../contracts/host-chec
 import { validateSamplesInterpolationReadiness, type SampleGenerationRecord } from '../contracts/sample-provenance.ts';
 import { interpolateSamples } from '../kernel/samples.ts';
 import { sampleReadinessMessage } from './sample-copy.ts';
+import { LEGACY_ORIGIN_NOTICE, originReaderLabel, replyOriginParts, type OriginPart } from '../contracts/reply-origins.ts';
 
 export type { RendererState } from './state.ts';
 export type RecomputeRequest = RendererState & { blockId: string; solverId: string; reason: string; requestId: string; stateKey: string };
@@ -50,8 +51,8 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
     const check = validateReply(validatedReply, { sourceText: options.sourceText });
     if (!check.ok) throw new Error(check.errors.join(' '));
     reply = structuredClone(check.value);
-  } catch {
-    article.append(el(doc, 'p', 'This reply could not be safely displayed. Ask again to create a new version.'));
+  } catch (error) {
+    article.append(el(doc, 'p', error instanceof Error && error.message.includes('This model needs an illustration statement') ? 'This model needs an illustration statement explaining what it represents.' : 'This reply could not be safely displayed. Ask again to create a new version.'));
     root.append(article);
     return { getState: () => ({ parameters: {}, view: {} }), destroy: () => article.remove() };
   }
@@ -216,6 +217,28 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
     }
   };
   const capability = (name: ReplyCapability) => options.capabilities?.includes(name) === true;
+  const originParts = replyOriginParts(reply);
+  const originPanel = (parts: OriginPart[], heading: string) => {
+    const details = el(doc, 'details', undefined, 'mr-origins');
+    details.append(el(doc, 'summary', heading));
+    if (!reply.origins) { details.append(el(doc, 'p', LEGACY_ORIGIN_NOTICE, 'mr-meta')); return details; }
+    details.append(el(doc, 'p', 'Origins below were supplied with this explanation. They do not establish that a claim is supported.', 'mr-meta'));
+    for (const part of parts) {
+      const origin = reply.origins.parts[part.path];
+      const row = el(doc, 'p', `${part.label}: ${originReaderLabel(origin)}.`, 'mr-meta');
+      row.dataset.originPart = part.path; row.dataset.origin = origin.kind;
+      if ('description' in origin) row.append(doc.createTextNode(` ${origin.description}`));
+      if (origin.kind === 'reader-note') row.append(doc.createTextNode(` Recorded note: ${origin.noteId}.`));
+      if (origin.kind === 'fetched') row.append(doc.createTextNode(` Recorded address: ${origin.url}. The retrieval record and support assessment are separate.`));
+      if (origin.kind === 'source-page') {
+        const binding = reply.sourceBindings.find(binding => binding.name === origin.binding)!;
+        row.append(doc.createTextNode(binding.relation === 'quoted' ? ' Quoted from the captured passage.' : ' Interpreted from the captured passage.'));
+        const source = button(doc, 'Source passage', () => {}); bind(source, binding); row.append(source);
+      }
+      details.append(row);
+    }
+    return details;
+  };
   const rememberDetails = (node: HTMLDetailsElement, key: string) => {
     node.open = state.view[key] === true;
     node.addEventListener('toggle', () => { if (!destroyed && node.isConnected && state.view[key] !== node.open) { state.view[key] = node.open; persist(); } });
@@ -234,14 +257,27 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
     if (recompute.disabled) container.append(el(doc, 'p', 'This example cannot run again here yet. Your current inputs are unchanged.', 'mr-meta'));
     const ask = button(doc, 'Ask again with this change', () => onFollowup(`Please revise ${blockId} for my current inputs. ${reason}`)); ask.disabled = !options.onFollowup; container.append(ask);
   };
-  // v1 does not distinguish descriptive titles from unchecked result claims.
-  // Preserve authored copy for inspection, never as a competing current result.
+  // Only a typed slot can request checked authority. Its authored text never
+  // supplies the checked sentence; the matched criterion owns that sentence.
+  const copy = (node: HTMLElement, target: 'title' | 'summary' | 'text', authored: string, block?: string) => {
+    const claim = reply.resultClaims?.find(claim => claim.target === target && claim.block === block);
+    const update = () => {
+      const view = claim && hostViews.find(view => view.blockId === claim.classification && view.state === 'verified');
+      node.dataset.assessment = view ? 'checked' : 'unassessed';
+      if (target === 'text' && !claim) node.replaceChildren(formattedText(doc, authored));
+      else node.textContent = claim ? view ? view.label! : 'The requested result is withheld until a matching check is available.' : authored;
+    };
+    update(); authorityUpdates.push(update);
+  };
   const hasClassification = reply.blocks.some(block => block.type === 'classification');
-  const title = el(doc, 'h3', hasClassification ? 'Interactive explanation' : reply.title); title.id = `${prefix}-title`; article.setAttribute('aria-labelledby', title.id); article.append(title);
+  const title = el(doc, 'h3'); copy(title, 'title', reply.title); title.id = `${prefix}-title`; article.setAttribute('aria-labelledby', title.id); article.append(title);
+  article.append(el(doc, 'p', 'Authored description is unassessed. Checked conclusions are identified separately.', 'mr-meta'));
+  if (!reply.origins) article.append(el(doc, 'p', LEGACY_ORIGIN_NOTICE, 'mr-meta'));
   if (rejectedSavedInputs) article.append(el(doc, 'p', 'Some saved inputs were invalid and were replaced with the authored defaults. Review the inputs below.', 'mr-meta'));
-  if (reply.illustration?.value) article.append(el(doc, 'p', reply.illustration.statement, 'mr-illustration'));
+  if (reply.illustration) article.append(el(doc, 'p', reply.illustration.statement, 'mr-illustration'));
+  else if (reply.blocks.some(block => block.type === 'model')) article.append(el(doc, 'p', 'Illustration purpose is unavailable for this saved model. Its authored explanation remains unassessed.', 'mr-meta'));
   if (reply.status === 'partial') article.append(el(doc, 'p', 'Provisional reply. Checks and content may change.', 'mr-meta'));
-  if (!hasClassification) article.append(el(doc, 'p', reply.summary));
+  const summary = el(doc, 'p'); copy(summary, 'summary', reply.summary); article.append(summary);
   const actions = el(doc, 'div', undefined, 'mr-actions');
   const sources = el(doc, 'details'); sources.id = `${prefix}-sources`; sources.append(el(doc, 'summary', 'Source passage'));
   for (const binding of reply.sourceBindings) {
@@ -250,7 +286,8 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   }
   if (!reply.sourceBindings.length) sources.append(el(doc, 'p', 'No individual source bindings were supplied.'));
   const made = el(doc, 'details'); made.append(el(doc, 'summary', 'How this was made'));
-  if (hasClassification) {
+  made.append(originPanel(originParts.filter(part => !part.path.startsWith('/blocks/')), 'Origins of the description and inputs'));
+  if (hasClassification || reply.resultClaims?.length) {
     const authored = el(doc, 'details'); authored.append(el(doc, 'summary', 'Original authored description (not a checked result)'));
     authored.append(el(doc, 'p', 'This title and summary were supplied with the reply. They are not checked conclusions for the current inputs.', 'mr-meta'), el(doc, 'p', reply.title), el(doc, 'p', reply.summary));
     made.append(authored);
@@ -321,7 +358,14 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       }
     };
     switch (block.type) {
-      case 'text': section.append(formattedText(doc, block.md)); break;
+      case 'text': {
+        const content = el(doc, 'div'); copy(content, 'text', block.md, block.id);
+        section.append(content, el(doc, 'p', reply.resultClaims?.some(claim => claim.target === 'text' && claim.block === block.id) ? 'Only the matched conclusion can be checked for the inputs shown.' : 'Unassessed authored explanation.', 'mr-meta'));
+        if (reply.resultClaims?.some(claim => claim.target === 'text' && claim.block === block.id)) {
+          const original = el(doc, 'details'); original.append(el(doc, 'summary', 'Original authored text (unassessed)'), formattedText(doc, block.md)); section.append(original);
+        }
+        break;
+      }
       case 'equation': section.append(equation(doc, block.tex)); break;
       case 'model': dynamic(() => {
         const model = calculation.models.get(block.id); const tr = model?.ok ? model.value : undefined;
@@ -419,7 +463,7 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       case 'citations':
         for (const citation of block.entries) {
           const entry = el(doc, 'div', undefined, 'mr-citation');
-          entry.append(el(doc, 'p', citation.claim), el(doc, 'blockquote', citation.support), el(doc, 'p', `${citation.source} · ${citation.date}. ${citation.fetched ? 'Author reports this was fetched; the retrieval record is separate.' : 'Not reported as fetched.'}`, 'mr-meta'));
+          entry.append(el(doc, 'p', citation.claim), el(doc, 'p', 'Author-supplied support assessment; fetching alone does not establish support.', 'mr-meta'), el(doc, 'blockquote', citation.support), el(doc, 'p', `${citation.source} · ${citation.date}. ${citation.fetched ? 'Author reports this was fetched; the retrieval record is separate.' : 'Not reported as fetched.'}`, 'mr-meta'));
           if (citation.url && capability('network.citations')) entry.append(link(doc, 'Open cited source', citation.url));
           section.append(entry);
         }
@@ -463,7 +507,10 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
         break;
       }
     }
-    return section;
+    const wrapper = el(doc, 'div');
+    const path = `/blocks/${reply.blocks.indexOf(block)}`;
+    wrapper.append(section, originPanel(originParts.filter(part => part.path === path || part.path.startsWith(path + '/')), 'Where this part came from'));
+    return wrapper;
   };
   const blocks = el(doc, 'div', undefined, 'mr-blocks');
   for (const block of reply.blocks) {

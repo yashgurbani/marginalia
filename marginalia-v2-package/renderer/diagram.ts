@@ -25,8 +25,12 @@ export function renderDiagram(doc: Document, block: DiagramBlock, id: string, bi
   }
   for (const edge of graph.edges()) {
     const info = graph.edge(edge); const points: { x: number; y: number }[] = info.points ?? [];
-    svg.append(svgNode(doc, 'path', { d: points.map((p, i) => `${i ? 'L' : 'M'}${p.x},${p.y}`).join(' '), class: 'mr-edge', 'marker-end': `url(#${id}-arrow)` }));
-    if (info.label) { const label = svgNode(doc, 'text', { x: String(info.x), y: String(info.y), 'text-anchor': 'middle' }); for (const [i, line] of lines(String(info.label)).entries()) label.append(svgNode(doc, 'tspan', { x: String(info.x), dy: i ? '16' : '0' }, line)); svg.append(label); }
+    const group = svgNode(doc, 'g', { id: `${id}-edge-${edge.name}` });
+    group.append(svgNode(doc, 'path', { d: points.map((p, i) => `${i ? 'L' : 'M'}${p.x},${p.y}`).join(' '), class: 'mr-edge', 'marker-end': `url(#${id}-arrow)` }));
+    if (info.label) { const label = svgNode(doc, 'text', { x: String(info.x), y: String(info.y), 'text-anchor': 'middle' }); for (const [i, line] of lines(String(info.label)).entries()) label.append(svgNode(doc, 'tspan', { x: String(info.x), dy: i ? '16' : '0' }, line)); group.append(label); }
+    const source = bindings.find(b => b.name === block.edges.find(e => e.id === edge.name)?.binding);
+    if (source) bind(group, source);
+    svg.append(group);
   }
   for (const node of block.nodes) {
     const info = graph.node(node.id); const g = svgNode(doc, 'g', { id: `${id}-node-${node.id}` });
@@ -46,6 +50,11 @@ export function renderDiagram(doc: Document, block: DiagramBlock, id: string, bi
     if (source) { const control = button(doc, `Source for ${node.label}`, () => {}); bind(control, source); li.append(control); }
     list.append(li);
   }
-  for (const edge of block.edges) list.append(el(doc, 'li', `${block.nodes.find(n => n.id === edge.from)?.label} → ${block.nodes.find(n => n.id === edge.to)?.label}${edge.label ? `: ${edge.label}` : ''}`));
+  for (const edge of block.edges) {
+    const li = el(doc, 'li', `${block.nodes.find(n => n.id === edge.from)?.label} → ${block.nodes.find(n => n.id === edge.to)?.label}${edge.label ? `: ${edge.label}` : ''}`);
+    const source = bindings.find(b => b.name === edge.binding);
+    if (source) { const control = button(doc, `Source for connection ${edge.label ?? edge.id}`, () => {}); bind(control, source); li.append(control); }
+    list.append(li);
+  }
   description.append(list); wrapper.append(description); return wrapper;
 }

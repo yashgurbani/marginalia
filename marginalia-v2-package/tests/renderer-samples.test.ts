@@ -127,6 +127,8 @@ function classificationFixture(): CandidateReply {
   return {
     schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete',
     title: 'This model settles at zero.', summary: 'The current result is settling, not divergence.',
+    illustration: { value: true, statement: 'Synthetic scalar illustration for renderer authority tests.' },
+    resultClaims: [{ target: 'title', classification: 'classification' }, { target: 'summary', classification: 'classification' }],
     sourceBindings: [], assumptions: [], limitations: [], staticFallback: 'Original description.',
     parameters: [
       { name: 'gamma', label: 'Damping', default: 0.5, min: 0, max: 2, unit: '1/s' },

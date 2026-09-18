@@ -313,7 +313,7 @@ export class ReaderStore {
     return this.db.transaction(() => {
       const thread = this.get(input.threadId);
       if (!thread) throw new Error('This thread is unavailable.');
-      const validated = validateReply(input.reply, { sourceText: this.sourceVersion(thread.sourceVersionId)!.text, capabilities });
+      const validated = validateReply(input.reply, { sourceText: this.sourceVersion(thread.sourceVersionId)!.text, capabilities, requireOrigins: true });
       if (!validated.ok) throw new Error(validated.errors.join('\n'));
       const reply = validated.value;
       let answeredNote: NoteVersion | null = null;

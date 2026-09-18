@@ -9,6 +9,7 @@ import { journey, keepMutation, pollJob } from './journey-harness.ts';
 import { storage, asHost } from './t05-harness.ts';
 import { dom, button, until, replaceGlobals } from './t05-dom.ts';
 import { createSolverRecompute } from '../ui/solver-recompute.ts';
+import { withFixtureOrigins } from './origins-fixture.ts';
 const { mountMargin } = await import('../ui/margin.ts');
 const { mountReply } = await import('../renderer/index.ts');
 
@@ -41,6 +42,7 @@ test('Stage 0 selection, Move it, reviewed explicit send, saved grid, local slid
     assert.equal((await trip.calls()).length, 0);
     assert.equal((await daemon.request('POST', '/api/change', mutation)).status, 200);
     const reply = gridReply(); reply.blocks.push(solver); reply.requiredCapabilities!.push('solver');
+    withFixtureOrigins(reply);
     await trip.script({ 'stage0-job': { behaviour: 'reply', reply, savedSolver: true } });
     const prepared = await daemon.request('POST', '/api/jobs/prepare', { id: 'stage0-job', idempotencyKey: 'stage0-key',
       threadId: mutation.threadId, intent: draft.intent, question: draft.question });
@@ -91,6 +93,7 @@ test('an already saved solver sends one recompute preparation only on the explic
   const { document, root } = dom(t);
   Object.assign(document, { createElementNS(_namespace: string, tag: string) { return document.createElement(tag); } });
   const reply = gridReply(); reply.blocks.push(solver); reply.requiredCapabilities!.push('solver');
+  withFixtureOrigins(reply);
   const calls: unknown[] = [];
   const recompute = createSolverRecompute({ replyVersionId: 'saved-reply', transport: {
     async prepare(request) { calls.push(request); return { status: 'unavailable', code: 'not-configured', reason: 'Fixture has no execution runtime.' }; },

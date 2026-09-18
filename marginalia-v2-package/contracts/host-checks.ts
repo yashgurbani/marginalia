@@ -62,13 +62,17 @@ export function hostReportMatches(reply: CandidateReply, parameters: ParameterSt
  */
 export function classificationViews(reply: CandidateReply, parameters: ParameterState, report?: HostCheckReport): ClassificationView[] {
   const bound = report !== undefined && hostReportMatches(reply, parameters, report);
+  const local = computeIndependentChecks(reply, parameters);
   return reply.blocks.filter((block): block is ClassificationBlock => block.type === 'classification').map((block) => {
     if (!block.headline) return { blockId: block.id, state: 'withheld', reason: 'This classification is not declared as a headline.' };
+    if (reply.status !== 'complete') return { blockId: block.id, state: 'withheld', reason: 'This reply is still provisional.' };
     if (!block.check) return { blockId: block.id, state: 'withheld', reason: 'No independent check was requested for this headline.' };
     if (!bound) return { blockId: block.id, state: 'withheld', reason: 'No current host report is bound to this reply and parameter state.' };
     const result = report.results.find((candidate) => candidate.requestId === block.check && candidate.classification === block.id && candidate.model === block.model);
     if (!result) return { blockId: block.id, state: 'withheld', reason: 'The host report has no matching result for this headline.' };
     if (result.status !== 'pass' || !result.headline) return { blockId: block.id, state: 'withheld', reason: result.reason };
+    const expected = local.find(check => check.requestId === result.requestId && check.model === block.model && check.classification === block.id);
+    if (!expected || expected.status !== 'pass' || !expected.headline || result.criterion !== expected.criterion || result.headline !== expected.headline || !result.outcome || canonicalReplyData(result.outcome) !== canonicalReplyData(expected.outcome)) return { blockId: block.id, state: 'withheld', reason: 'The host result does not match the installed criterion for the shown inputs.' };
     return { blockId: block.id, state: 'verified', label: result.headline };
   });
 }
