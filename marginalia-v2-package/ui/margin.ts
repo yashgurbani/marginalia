@@ -5,7 +5,7 @@ import { el, button } from './dom.ts';
 import { localPersistence, documentJournal, documentDraft, documentQuestion, unsavedDrafts, unsavedQuestions, sourceBoundJournal, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle, type MarginDraft, type CachedReply } from './persistence.ts';
 import { anchorAt, readingAnchorAt, orderedThreads, outgoingPreview, sourceLocation, pageDefinition, displayPosition, egressRecord } from './margin-model.ts';
 import type { JobSnapshot } from '../contracts/jobs.ts';
-import { HelperClient, documentHelper, forgetPairingIfCurrent } from './helper.ts';
+import { HelperClient, attachmentTextHash, documentHelper, forgetPairingIfCurrent } from './helper.ts';
 import { mountHelperManagement } from './helper-management.ts';
 import { mountNoteEditor } from './note-editor.ts';
 import { retainedCopiesSection } from './retained-copies.ts';
@@ -52,6 +52,7 @@ export type MarginOptions = {
 };
 type Draft = MarginDraft;
 type RetainedRequest = { jobId: string; selection: AskingSelection };
+type StoredAttachmentObservation = { threadId: string; sourceUrl: string; textHash: string; sourceGeneration: string; state: 'exact' | 'moved' | 'unsure' | 'lost'; candidates: { start: number; end: number }[] };
 
 /** Facts available from the durable job record. A provider handoff is not an
  * observation of physical transmission, and reviewed bytes are not wire bytes. */
@@ -179,6 +180,12 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const expandAdditionally = (threadId: string) => { expanded.add(threadId); rememberExpanded(threadId); };
   const attachmentMessages = new Map<string, string>();
   const attachmentPending = new Set<string>();
+  const attachmentObservations = new Set<string>();
+  const attachmentObservedThisMount = new Set<string>();
+  let captureTextHash = '';
+  let attachmentGeneration = 0;
+  const attachmentObservationKey = (threadId: string, textHash: string) => 'attachment-observation:' + JSON.stringify([threadId, capture.url, textHash]);
+  const hasAttachmentObservation = (threadId: string) => attachmentObservedThisMount.has(threadId) || attachmentObservations.has(attachmentObservationKey(threadId, captureTextHash));
   const threadNodes = new Map<string, { signature: string; node: HTMLElement }>();
   const railThreadNodes = new Map<string, HTMLButtonElement>();
   const replyMounts = new Map<string, { threadId: string; node: HTMLElement; mounted: MountedReply; flush(): Promise<void>; close(): void }>();
@@ -766,15 +773,22 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     sourceButton.addEventListener('mouseenter', () => highlight(thread.anchor)); sourceButton.addEventListener('mouseleave', () => highlight(null));
     sourceButton.addEventListener('focus', () => highlight(thread.anchor)); sourceButton.addEventListener('blur', () => highlight(null));
     body.append(sourceButton);
-    if (location.state === 'lost' || location.state === 'unsure') {
+    if (location.state === 'moved' || location.state === 'lost' || location.state === 'unsure') {
       const marker = el('div', undefined, 'm-reader-note');
       marker.append(el('p', 'You were here', 'm-meta'));
-      const message = el('p', attachmentMessages.get(thread.id) ?? 'We can’t find this passage on the current page. Your note is still here.', 'm-meta m-attachment-status');
+      const attachmentCopy = location.state === 'moved'
+        ? hasAttachmentObservation(thread.id) ? 'This passage moved. This attachment is saved; the original quotation is still here.' : 'This passage moved. The original quotation is still here.'
+        : location.state === 'unsure'
+          ? 'More than one passage could match. The original quotation is still here.'
+          : 'This passage could not be found. The original quotation is still here.';
+      const message = el('p', attachmentMessages.get(thread.id) ?? attachmentCopy, 'm-meta m-attachment-status');
       message.setAttribute('role', 'status');
-      const look = button('Look again', () => {
-        if (attachmentPending.has(thread.id)) return;
+      const observed = hasAttachmentObservation(thread.id);
+      const look = button(location.state === 'moved' ? 'Remember this attachment' : 'Look again', () => {
+        if (!alive() || attachmentPending.has(thread.id) || hasAttachmentObservation(thread.id)) return;
         attachmentPending.add(thread.id); look.disabled = true;
         const show = (text: string) => {
+          if (!alive()) return;
           attachmentMessages.set(thread.id, text);
           const current = threadNodes.get(thread.id)?.node.querySelector('.m-attachment-status');
           if (alive() && current) current.textContent = text;
@@ -784,13 +798,29 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
           try {
             if (!options.captureCurrentPage) throw new Error('Reopen this page in the browser margin to look again.');
             const client = await replyClient(thread.id), epoch = client.connectionVersion;
-            const page = await options.captureCurrentPage();
+            const page = structuredClone(await options.captureCurrentPage());
             if (page.capture.url !== capture.url || !page.tabCapture) throw new Error('The page changed. Reopen its margin to look again.');
             if (await replyClient(thread.id) !== client || client.connectionVersion !== epoch) throw new Error('The helper connection changed.');
-            const result = await client.request('/api/reattach', { threadId: thread.id, text: page.capture.text, tabCapture: page.tabCapture, capture: page.capture }, signal);
+            const operation = attachmentGeneration;
+            const assertCurrent = () => {
+              if (!alive() || signal.aborted || operation !== attachmentGeneration || helper !== client || client.connectionVersion !== epoch) throw new Error('The attachment response belongs to an earlier source or helper connection. Try looking again.');
+            };
+            assertCurrent();
+            const result = await client.reattach({ threadId: thread.id, text: page.capture.text, tabCapture: page.tabCapture, capture: page.capture }, signal);
+            if (!alive() || operation !== attachmentGeneration || result.threadId !== thread.id || result.sourceGeneration !== page.tabCapture || result.sourceUrl !== page.capture.url) throw new Error('The attachment response belongs to an earlier source. Try looking again.');
+            const textHash = await attachmentTextHash(page.capture.text);
+            const observation: StoredAttachmentObservation = { threadId: thread.id, sourceUrl: page.capture.url, textHash, sourceGeneration: page.tabCapture, state: result.state, candidates: result.candidates };
+            assertCurrent();
+            await persistence.write(attachmentObservationKey(thread.id, textHash), observation);
+            assertCurrent();
+            attachmentObservations.add(attachmentObservationKey(thread.id, textHash));
+            attachmentObservedThisMount.add(thread.id);
             if (result.state === 'exact' || result.state === 'moved') show('Found again. Your note is still here.');
             else if (result.state === 'lost' || result.state === 'unsure') show('Still not here. Your note is still here.');
             else throw new Error('The result could not be confirmed. Try looking again.');
+            const current = threadNodes.get(thread.id)?.node.querySelector<HTMLButtonElement>('.m-reattach-action');
+            if (current === document.activeElement) threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus();
+            current?.remove();
           } catch (error) { show(error instanceof Error ? error.message : 'Could not look again. Your note is still here.'); }
           finally {
             attachmentPending.delete(thread.id);
@@ -800,7 +830,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         })());
       });
       look.className = 'm-reattach-action'; look.disabled = attachmentPending.has(thread.id);
-      marker.append(message, look); body.append(marker);
+      marker.append(message); if (!observed) marker.append(look); body.append(marker);
     }
     for (const note of thread.notes.filter(note => !note.deletedAt)) {
       const edit = button('Edit note', () => beginDraft(thread.anchor, thread, note.id)); edit.dataset.focusKey = thread.id + ':note:' + note.id;
@@ -1222,6 +1252,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function destroy() {
     if (destroyed) return;
+    ++attachmentGeneration;
     void track(flushReadingPosition());
     askingMount?.destroy(); management?.destroy(); closeReplies(); highlight(null); destroyed = true; abort.abort(); channel?.close();
     workspace.remove(); skip.remove();
@@ -1252,11 +1283,13 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (options.allowHelper !== false) helper = documentHelper(namespace, options.helperOrigin ?? location.origin);
     const connectionEpoch = helper?.connectionVersion;
     await locked(() => journal.load()); storageReady = true;
-    const [savedDraft, pairing, block, theme, savedQuestion, savedRequests, savedExpanded] = await Promise.all([draftBuffer.load(), options.allowHelper === false ? undefined : persistence.read<{ origin: string; token: string }>('pairing'), persistence.read<boolean>('denied:' + new URL(capture.url).origin), persistence.read<string>('theme'), questionBuffer.load(), persistence.values<RetainedRequest>('asking:' + draftKey + ':request:').catch(() => []), persistence.read<string>(expandedKey)]);
+    const [savedDraft, pairing, block, theme, savedQuestion, savedRequests, savedExpanded, textHash, savedAttachments] = await Promise.all([draftBuffer.load(), options.allowHelper === false ? undefined : persistence.read<{ origin: string; token: string }>('pairing'), persistence.read<boolean>('denied:' + new URL(capture.url).origin), persistence.read<string>('theme'), questionBuffer.load(), persistence.values<RetainedRequest>('asking:' + draftKey + ':request:').catch(() => []), persistence.read<string>(expandedKey), attachmentTextHash(capture.text), persistence.values<StoredAttachmentObservation>('attachment-observation:').catch(() => [])]);
     if (!alive()) return api;
     if (startupGeneration === editorGeneration) { draft = savedDraft; pendingNoteMutation = draft?.mutation; }
     questionDraft = savedQuestion;
     retainedRequests = savedRequests;
+    captureTextHash = textHash;
+    for (const observation of savedAttachments) if (observation && observation.sourceUrl === capture.url && observation.textHash === captureTextHash && typeof observation.threadId === 'string') attachmentObservations.add(attachmentObservationKey(observation.threadId, observation.textHash));
     if (typeof savedExpanded === 'string' && threadsNow().some(thread => thread.id === savedExpanded && !thread.deletedAt && thread.sourceUrl === capture.url)) expanded.add(savedExpanded);
     if (draft) { held = true; readingPosition = composerOffset(draft, 0); sectionIndex = sectionFor(readingPosition); }
     denied = !!block; if (theme && theme !== 'system') document.documentElement.dataset.theme = theme;

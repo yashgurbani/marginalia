@@ -1,4 +1,4 @@
-import type { ReaderMutation, Thread, ReplyVersion, ReplyViewState, SourceVersion } from '../contracts/reader.ts';
+import { validateSourceCapture, type ReaderMutation, type ReattachRequest, type ReattachResponse, type Thread, type ReplyVersion, type ReplyViewState, type SourceVersion } from '../contracts/reader.ts';
 import type { HostCheckReport } from '../contracts/host-checks.ts';
 import type { ConsentGrant, SiteExclusion } from '../contracts/consent.ts';
 import type { ModelSettings, VocabularyEntry } from '../contracts/library.ts';
@@ -38,6 +38,44 @@ export function pairingCode(text: string): string {
 
 class HelperConnectionChangedError extends Error {
   constructor() { super('The helper connection changed. The earlier request outcome is unconfirmed.'); this.name = 'HelperConnectionChanged'; }
+}
+
+const attachmentStates = new Set(['exact', 'moved', 'unsure', 'lost']);
+const readerId = (value: unknown): value is string => typeof value === 'string' && /^[\w-]{1,100}$/.test(value);
+function invalidAttachmentResponse(): never { throw new HelperTransportError('response-unknown'); }
+
+/** Hash only the captured text for local observation-cache keys. The source
+ * URL and source-document generation are kept as separate identity fields. */
+export async function attachmentTextHash(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export function validateReattachResponse(value: unknown, request: ReattachRequest): ReattachResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return invalidAttachmentResponse();
+  const result = value as Record<string, unknown>;
+  // Newer helpers may echo these fields. A legacy response is still tied to
+  // this request by the authenticated request/response lifetime, but any
+  // supplied identity must agree before it can reach the reader.
+  if (result.threadId !== undefined && result.threadId !== request.threadId) return invalidAttachmentResponse();
+  if (result.sourceGeneration !== undefined && result.sourceGeneration !== request.tabCapture) return invalidAttachmentResponse();
+  if (result.sourceUrl !== undefined && result.sourceUrl !== request.capture.url) return invalidAttachmentResponse();
+  if (typeof result.state !== 'string' || !attachmentStates.has(result.state)) return invalidAttachmentResponse();
+  if (!Array.isArray(result.candidates) || result.candidates.length > 100) return invalidAttachmentResponse();
+  const candidates = result.candidates.map(candidate => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return invalidAttachmentResponse();
+    const range = candidate as Record<string, unknown>;
+    const start = range.start, end = range.end;
+    if (typeof start !== 'number' || typeof end !== 'number' || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > request.text.length) return invalidAttachmentResponse();
+    return { start, end };
+  });
+  return { state: result.state as ReattachResponse['state'], candidates, threadId: request.threadId, sourceGeneration: request.tabCapture, sourceUrl: request.capture.url };
+}
+
+function validateReattachRequest(request: ReattachRequest): void {
+  if (!request || typeof request !== 'object' || Array.isArray(request) || !readerId(request.threadId) || typeof request.text !== 'string' || request.text.length > 1_000_000 || typeof request.tabCapture !== 'string' || !request.tabCapture.length || request.tabCapture.length > 100) throw new Error('Invalid attachment request.');
+  validateSourceCapture(request.capture);
+  if (request.capture.text !== request.text) throw new Error('The target capture does not match this source.');
 }
 
 export class HelperClient {
@@ -124,6 +162,12 @@ export class HelperClient {
     } catch { return this.token ? 'replaced' : 'unconfirmed'; }
   }
   async change(change: ReaderMutation): Promise<void> { await this.request('/api/change', change); }
+  async reattach(request: ReattachRequest, signal?: AbortSignal): Promise<ReattachResponse> {
+    const snapshot = structuredClone(request);
+    validateReattachRequest(snapshot);
+    const result = await this.request('/api/reattach', snapshot, signal);
+    return validateReattachResponse(result, snapshot);
+  }
   async list(): Promise<Thread[]> { return (await this.read('/api/threads?removed=true')).threads; }
   async exportThread(id: string): Promise<{ thread: Thread; source: SourceVersion; replies: ReplyVersion[]; replyViews: ReplyViewState[]; [key: string]: unknown }> {
     return this.request('/api/export?thread=' + encodeURIComponent(id));

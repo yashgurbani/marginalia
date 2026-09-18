@@ -24,6 +24,14 @@ export type Note = { id: string; threadId: string; text: string; revision: numbe
 export type Thread = { id: string; anchorId: string; state: ThreadState; revision: number; createdAt: string; updatedAt: string; deletedAt: string | null; sourceVersionId: string; sourceUrl: string; sourceTitle: string; anchor: QuoteAnchor; notes: Note[]; highlighted: boolean };
 export type Attachment = { state: 'exact' | 'moved' | 'unsure' | 'lost'; candidates: { start: number; end: number }[] };
 export type AttachmentRecord = Attachment & { id: string; anchorId: string; targetVersionId: string; tabCapture: string; recordedAt: string | null; targetAvailable: boolean };
+/** The explicit, local-only observation request made when a reader chooses to
+ * remember where a saved passage appears in the current source document. */
+export type ReattachRequest = { threadId: string; text: string; tabCapture: string; capture: SourceCapture };
+/** A validated observation carries the request identity back to the reader.
+ * The helper route predates this envelope, so the client fills these identity
+ * fields from the request only after validating any fields a newer helper may
+ * return. */
+export type ReattachResponse = Attachment & { threadId: string; sourceGeneration: string; sourceUrl: string };
 
 /** Exact quote matching only. Similar text is never silently promoted to a match. */
 export function attachQuote(anchor: QuoteAnchor, text: string): Attachment {

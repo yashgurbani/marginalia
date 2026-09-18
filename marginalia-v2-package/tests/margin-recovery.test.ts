@@ -139,6 +139,36 @@ test('pairing leading zeros and authenticated POST reads remain exact; transport
   assert.equal(calls[0].url,client.origin+'/api/read/threads?removed=true');assert.equal(calls[0].init.method,'POST');assert.equal(calls[0].init.body,'{}');assert.equal(new Headers(calls[0].init.headers).has('origin'),false);
   await assert.rejects(client.read('/api/jobs'),/no supported/);assert.equal(calls.length,1);assert.notEqual(await pairingIdentity(client.origin,'a'),await pairingIdentity(client.origin,'b'));
 });
+test('typed reattach rejects invalid states, oversized ranges, and mismatched response identities', async t => {
+  const request = { threadId: 'reattach-thread', text: capture.text, tabCapture: 'document-1', capture };
+  const responses: unknown[] = [
+    { state: 'unknown', candidates: [] },
+    { state: 'moved' },
+    { state: 'moved', candidates: [{ start: -1, end: 2 }] },
+    { state: 'moved', candidates: [{ start: 0, end: capture.text.length + 1 }] },
+    { state: 'moved', candidates: Array.from({ length: 101 }, () => ({ start: 0, end: 1 })) },
+    { state: 'moved', candidates: [], threadId: 'another-thread' },
+    { state: 'moved', candidates: [], sourceGeneration: 'document-2' },
+  ];
+  const client = new HelperClient('http://localhost:43120'); client.token = 'x'.repeat(43);
+  let response: unknown;
+  t.mock.method(globalThis, 'fetch', async () => Response.json(response));
+  for (const next of responses) { response = next; await assert.rejects(client.reattach(request), error => error instanceof HelperTransportError && error.kind === 'response-unknown'); }
+  response = { state: 'moved', candidates: [{ start: 1, end: 6 }] };
+  assert.deepEqual(await client.reattach(request), { state: 'moved', candidates: [{ start: 1, end: 6 }], threadId: request.threadId, sourceGeneration: request.tabCapture, sourceUrl: request.capture.url });
+});
+test('reattach binds a pending response to its private request snapshot', async t => {
+  const request = { threadId: 'original', text: capture.text, tabCapture: 'original-generation', capture: structuredClone(capture) };
+  const original = structuredClone(request), pending = deferred<Response>();
+  let sent: unknown;
+  t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => { sent = JSON.parse(String(init.body)); return pending.promise; });
+  const client = new HelperClient('http://localhost:43120');
+  const result = client.reattach(request);
+  request.threadId = 'changed'; request.tabCapture = 'changed-generation'; request.capture.url = 'https://example.test/changed'; request.text = '';
+  pending.resolve(Response.json({ state: 'moved', candidates: [{ start: 0, end: 5 }] }));
+  assert.deepEqual(sent, original);
+  assert.deepEqual(await result, { state: 'moved', candidates: [{ start: 0, end: 5 }], threadId: original.threadId, sourceGeneration: original.tabCapture, sourceUrl: original.capture.url });
+});
 test('network, timeout and unreadable success never become definitive application success',async t=>{
   let mode=0;t.mock.method(globalThis,'fetch',async()=>{if(mode===0)throw new Error('secret');if(mode===1)throw new DOMException('raw','TimeoutError');return new Response('bad json');});const client=new HelperClient('http://localhost:43120');
   for(const kind of ['network','timeout','response-unknown']) {await assert.rejects(client.request('/api/change',{}),e=>e instanceof HelperTransportError&&e.kind===kind&&!e.message.includes('secret')&&e.message.includes('unconfirmed'));mode++;}
@@ -197,11 +227,120 @@ for (const outcome of ['exact', 'moved', 'lost', 'unsure', 'error'] as const) te
   mounted.destroy(); await mounted.drain();
 });
 
-for (const text of [capture.text, 'New introduction. ' + capture.text]) test(`resolvable quote has no missing-passage marker: ${text}`, async t => {
+test('reopen renders moved reader language and preserves the original quotation without dispatch or capture', async t => {
+  const e = { ...dom(t), ...storage(t), namespace: crypto.randomUUID() };
+  await documentJournal(e.namespace, localPersistence(e.namespace).journal).change(keep('moved'));
+  e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+  const requests: Array<{ url: string; body: unknown }> = []; let captures = 0;
+  replaceGlobals(t, { fetch: async (url: string, init: RequestInit = {}) => {
+    requests.push({ url, body: JSON.parse(String(init.body ?? '{}')) });
+    return Response.json(url.endsWith('/api/reattach') ? { state: 'moved', candidates: [{ start: 18, end: 23 }] } : { anchor: null });
+  } });
+  const mounted = await mountMargin(asHost(e.root), { capture: { ...capture, text: 'New introduction. ' + capture.text }, storageName: e.namespace,
+    captureCurrentPage: async () => { captures++; return { capture, tabCapture: 'moved-tab' }; },
+  });
+  assert.match(e.root.textContent, /This passage moved/);
+  assert.match(e.root.textContent, /The original quotation is still here/);
+  assert.equal(e.root.querySelector('[aria-label="Source passage: “alpha”"]')?.textContent, '“alpha”');
+  assert.equal(captures, 0);
+  assert.deepEqual(requests, [{ url: e.document.location.origin + '/api/position', body: { url: capture.url } }]);
+  assert.equal(requests.some(request => /prepare|start|retry|follow-up|retriev|solver|reattach/.test(request.url)), false);
+  button(e.root, 'Remember this attachment').click(); await mounted.drain();
+  assert.equal(captures, 1);
+  assert.deepEqual(requests.slice(1), [{ url: e.document.location.origin + '/api/reattach', body: {
+    threadId: 'moved-thread', text: capture.text, tabCapture: 'moved-tab', capture,
+  } }]);
+  assert.equal(requests.filter(request => request.url.endsWith('/api/reattach')).length, 1);
+  assert.equal(requests.some(request => /prepare|start|retry|follow-up|retriev|solver/.test(request.url)), false);
+  mounted.destroy(); await mounted.drain();
+});
+
+test('reopen renders not-found reader language and preserves the original quotation without dispatch or capture', async t => {
+  const e = { ...dom(t), ...storage(t), namespace: crypto.randomUUID() };
+  await documentJournal(e.namespace, localPersistence(e.namespace).journal).change(keep('lost'));
+  e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+  const requests: Array<{ url: string; body: unknown }> = []; let captures = 0;
+  replaceGlobals(t, { fetch: async (url: string, init: RequestInit = {}) => {
+    requests.push({ url, body: JSON.parse(String(init.body ?? '{}')) }); return Response.json({ anchor: null });
+  } });
+  const mounted = await mountMargin(asHost(e.root), { capture: { ...capture, text: 'A replacement page.' }, storageName: e.namespace,
+    captureCurrentPage: async () => { captures++; return { capture, tabCapture: 'lost-tab' }; },
+  });
+  assert.match(e.root.textContent, /This passage could not be found/);
+  assert.match(e.root.textContent, /The original quotation is still here/);
+  assert.equal(e.root.querySelector('[aria-label="Source passage: “alpha”"]')?.textContent, '“alpha”');
+  assert.equal(captures, 0);
+  assert.deepEqual(requests, [{ url: e.document.location.origin + '/api/position', body: { url: capture.url } }]);
+  assert.equal(requests.some(request => /prepare|start|retry|follow-up|retriev|solver|reattach/.test(request.url)), false);
+  mounted.destroy(); await mounted.drain();
+});
+
+test('a stale reattach response after the margin is replaced is rejected and not cached', async t => {
+  const e = { ...dom(t), ...storage(t), namespace: crypto.randomUUID() };
+  const moved = { ...capture, text: 'New introduction. ' + capture.text };
+  await documentJournal(e.namespace, localPersistence(e.namespace).journal).change(keep('stale'));
+  e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+  const pending = deferred<Response>();
+  replaceGlobals(t, { fetch: async (url: string) => url.endsWith('/api/reattach') ? pending.promise : Response.json({ anchor: null }) });
+  const mounted = await mountMargin(asHost(e.root), { capture: moved, storageName: e.namespace,
+    captureCurrentPage: async () => ({ capture: moved, tabCapture: 'stale-document' }),
+  });
+  button(e.root, 'Remember this attachment').click();
+  await tick();
+  mounted.destroy();
+  pending.resolve(Response.json({ state: 'moved', candidates: [{ start: 18, end: 23 }] }));
+  await mounted.drain();
+  assert.deepEqual(await localPersistence(e.namespace).values('attachment-observation:'), []);
+});
+
+for (const invalidate of ['destroy', 'helper'] as const) test(`reattach cannot persist when ${invalidate} changes during digest`, async t => {
+  const e = { ...dom(t), ...storage(t), namespace: crypto.randomUUID() };
+  const moved = { ...capture, text: 'New introduction. ' + capture.text };
+  await documentJournal(e.namespace, localPersistence(e.namespace).journal).change(keep('digest'));
+  e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+  replaceGlobals(t, { fetch: async (url: string) => Response.json(url.endsWith('/api/reattach') ? { state: 'moved', candidates: [{ start: 18, end: 23 }] } : { anchor: null }) });
+  const mounted = await mountMargin(asHost(e.root), { capture: moved, storageName: e.namespace, captureCurrentPage: async () => ({ capture: moved, tabCapture: 'digest-document' }) });
+  const pending = deferred<ArrayBuffer>(), entered = deferred();
+  t.mock.method(crypto.subtle, 'digest', async () => { entered.resolve(); return pending.promise; });
+  button(e.root, 'Remember this attachment').click();
+  await entered.promise;
+  if (invalidate === 'destroy') mounted.destroy(); else mounted.connection().token = 'y'.repeat(43);
+  pending.resolve(new ArrayBuffer(32));
+  await mounted.drain();
+  assert.deepEqual(await localPersistence(e.namespace).values('attachment-observation:'), []);
+  mounted.destroy(); await mounted.drain();
+});
+
+test('an identical moved observation is read from local persistence and does not offer Remember after remount', async t => {
+  const e = { ...dom(t), ...storage(t), namespace: crypto.randomUUID() };
+  const moved = { ...capture, text: 'New introduction. ' + capture.text };
+  await documentJournal(e.namespace, localPersistence(e.namespace).journal).change(keep('persisted'));
+  e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+  const requests: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => {
+    requests.push(url);
+    return Response.json(url.endsWith('/api/reattach') ? { state: 'moved', candidates: [{ start: 18, end: 23 }] } : { anchor: null });
+  } });
+  const options = { capture: moved, storageName: e.namespace, captureCurrentPage: async () => ({ capture: moved, tabCapture: 'same-document' }) };
+  const first = await mountMargin(asHost(e.root), options);
+  const remember = button(e.root, 'Remember this attachment');
+  remember.click(); await first.drain();
+  assert.doesNotMatch(e.root.textContent, /Remember this attachment/);
+  remember.click(); await first.drain();
+  assert.equal(requests.filter(url => url.endsWith('/api/reattach')).length, 1);
+  first.destroy(); await first.drain();
+  const second = await mountMargin(asHost(e.root), options);
+  assert.match(e.root.textContent, /This passage moved/);
+  assert.doesNotMatch(e.root.textContent, /Remember this attachment/);
+  assert.equal(requests.filter(url => url.endsWith('/api/reattach')).length, 1);
+  second.destroy(); await second.drain();
+});
+
+test('exact quote has no attachment-state marker', async t => {
   const e = { ...dom(t), ...storage(t), namespace: crypto.randomUUID() };
   await documentJournal(e.namespace, localPersistence(e.namespace).journal).change(keep('found'));
-  const mounted = await mountMargin(asHost(e.root), { capture: { ...capture, text }, storageName: e.namespace });
-  assert.doesNotMatch(e.root.textContent, /You were here|Look again/);
+  const mounted = await mountMargin(asHost(e.root), { capture, storageName: e.namespace });
+  assert.doesNotMatch(e.root.textContent, /You were here|Look again|Remember this attachment/);
   assert.match(e.root.textContent, /Reader words/);
   mounted.destroy(); await mounted.drain();
 });
