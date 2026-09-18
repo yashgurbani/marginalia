@@ -1,6 +1,6 @@
 # Third-party notices
 
-[Research whitepaper](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/Marginalia-Research-Whitepaper.pdf) ([source](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md)) · [Credits](CREDITS.md) · [Build scope](marginalia-v2-package/docs/SCOPE-COVERAGE.md)
+[Research whitepaper](https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/Marginalia-Research-Whitepaper.pdf) ([source](https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md)) · [Credits](CREDITS.md) · [Build scope](marginalia-v2-package/docs/SCOPE-COVERAGE.md)
 
 ## Production dependencies
 

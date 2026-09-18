@@ -115,7 +115,7 @@ ul.plain li { margin-bottom: 0.5rem; }
 <section class="band hero" aria-labelledby="t-hero">
 <h1 id="t-hero">A personalized, agentic margin for the web.</h1>
 <p class="lede">Privacy and data handling. Last updated 18 September 2026.</p>
-<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
 </p>
 <aside class="note">
 <p>A Chrome MV3 extension and a local helper on <code>127.0.0.1</code>. Reading data lives in local SQLite, with browser copies for recovery. MIT licensed.</p>
@@ -132,14 +132,14 @@ ul.plain li { margin-bottom: 0.5rem; }
 </section>
 <section class="band" id="knowledge" aria-labelledby="t-knowledge">
 <h2 id="t-knowledge">Your knowledge base</h2>
-<p>The library stores source attribution with your passages, notes and replies. Exports create plain files in a location you choose. You manage those downloaded copies. <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/RETAINED-LOCAL-COPIES.md">Read the retained-copy inventory</a>.</p>
+<p>The library stores source attribution with your passages, notes and replies. Exports create plain files in a location you choose. You manage those downloaded copies. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/RETAINED-LOCAL-COPIES.md">Read the retained-copy inventory</a>.</p>
 <p>The helper listens on <code>127.0.0.1:43120</code>. Pairing connects the extension to it; pairing does not approve a model request. Provider credentials stay out of the browser.</p>
 </section>
 <section class="band" id="ask" aria-labelledby="t-ask">
 <h2 id="t-ask">How Ask works and what leaves</h2>
 <p>Ask is optional and requires a reader-authorized Codex runtime. Before dispatch, review the exact outgoing text, actual recipient and permission scope. The request can include the selected passage, your chosen note, page facts and bounded surrounding context. A changed request needs a new review.</p>
 <p>You can grant this send, allow the site, or refuse the site. A site grant does not itself start a request. Model inference happens on the provider’s service. The helper records dispatch and outcome; an unknown outcome stays labelled unknown.</p>
-<p>Requested tool and network restrictions are not observed confinement. The runtime’s evidence gaps mean this policy cannot promise that every action of the external runtime is confined to the preview. <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions before enabling real asks</a>.</p>
+<p>Requested tool and network restrictions are not observed confinement. The runtime’s evidence gaps mean this policy cannot promise that every action of the external runtime is confined to the preview. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions before enabling real asks</a>.</p>
 <p>Library search and “Related saved passages” are available in the local library page. Code and automated tests support this claim; native browser acceptance has not been recorded.</p>
 </section>
 <section class="band" id="next" aria-labelledby="t-next">
@@ -148,7 +148,7 @@ ul.plain li { margin-bottom: 0.5rem; }
 </section>
 <section class="band" id="limits" aria-labelledby="t-limits">
 <h2 id="t-limits">Honest limits</h2>
-<p>Real asks use a reader-authorized mode where solver confinement is requested but not observed. The mode is off by default. No recorded real run is in the evidence folder yet. <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
+<p>Real asks use a reader-authorized mode where solver confinement is requested but not observed. The mode is off by default. No recorded real run is in the evidence folder yet. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
 <p>Windows install is proven. macOS and Linux have command-level CI evidence. PDF is not supported yet.</p>
 </section>
 <section class="band" id="built" aria-labelledby="t-built">
@@ -161,7 +161,7 @@ ul.plain li { margin-bottom: 0.5rem; }
 <p>ScholarPhi (Head et al., CHI 2021) showed definitions beside the text. Marginalia uses no ScholarPhi code; the debt is that idea. The Semantic Reader project (Lo et al., 2023 preprint, published in 2024) is part of the same research lineage.</p>
 <p><a href="https://scholarphi.org/">ScholarPhi</a> · <a href="https://scholarphi.org/assets/pdf/scholarphi-chi-2021.pdf">Head et al. paper</a> · <a href="https://arxiv.org/abs/2303.14334">Semantic Reader paper</a>
 </p>
-<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
 </p>
 </section>
 <section class="band" id="site" aria-labelledby="t-site">
@@ -177,12 +177,12 @@ ul.plain li { margin-bottom: 0.5rem; }
 </li>
 <li><a href="privacy.html">Privacy</a>
 </li>
-<li><a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/LICENSE">MIT license</a>
+<li><a href="https://github.com/yashgurbani/marginalia/blob/main/LICENSE">MIT license</a>
 </li>
 <li><a href="https://github.com/yashgurbani/marginalia">Source on GitHub</a>
 </li>
 </ul>
-<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
 </p>
 </footer>
 

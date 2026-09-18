@@ -1,6 +1,6 @@
 # Credits
 
-[Research whitepaper](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/Marginalia-Research-Whitepaper.pdf) ([source](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md)) · [Third-party notices](THIRD-PARTY-NOTICES.md) · [Build scope](marginalia-v2-package/docs/SCOPE-COVERAGE.md)
+[Research whitepaper](https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/Marginalia-Research-Whitepaper.pdf) ([source](https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md)) · [Third-party notices](THIRD-PARTY-NOTICES.md) · [Build scope](marginalia-v2-package/docs/SCOPE-COVERAGE.md)
 
 ## Research lineage
 
@@ -8,7 +8,7 @@
 
 Lo et al.’s [Semantic Reader Project](https://arxiv.org/abs/2303.14334) appeared as a 2023 preprint and was published in CACM 67(10) in 2024. It provides research context for assistance within a reading surface.
 
-The whitepaper’s prior-art section also cites August et al., Paper Plain, TOCHI 2023. That entry provides no direct paper link; its citation is retained in the [whitepaper reference section](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/Marginalia-Research-Whitepaper.pdf) ([source](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md#appendix-d-references)). Other prior art and platform references from that section follow. These are intellectual and design references, not a list of code bundled with Marginalia.
+The whitepaper’s prior-art section also cites August et al., Paper Plain, TOCHI 2023. That entry provides no direct paper link; its citation is retained in the [whitepaper reference section](https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/Marginalia-Research-Whitepaper.pdf) ([source](https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md#appendix-d-references)). Other prior art and platform references from that section follow. These are intellectual and design references, not a list of code bundled with Marginalia.
 
 - [Semantic Reader Open Research Platform](https://openreader.semanticscholar.org/)
 - [Semantic Reader product](https://www.semanticscholar.org/product/semantic-reader)
