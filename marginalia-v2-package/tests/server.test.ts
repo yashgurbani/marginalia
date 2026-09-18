@@ -4,7 +4,7 @@ import { startServer } from '../daemon/server.ts';
 import { request } from 'node:http';
 import { WebSocket } from 'ws';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { ReaderMutation } from '../contracts/reader.ts';
@@ -26,6 +26,17 @@ async function connect(helper: { origin: string }, origin = extensionOrigin) {
 function receive(ws: WebSocket) {
   return once(ws, 'message', { signal: AbortSignal.timeout(3000) }).then(([bytes]) => JSON.parse(bytes.toString()) as { type: string; events: { seq: number; kind: string }[] });
 }
+
+test('static assets send a locked-down content security policy', async () => {
+  const webRoot = mkdtempSync(join(tmpdir(), 'marginalia-web-'));
+  writeFileSync(join(webRoot, 'index.html'), '<!doctype html><title>Marginalia</title>');
+  const helper = await startServer({ database: ':memory:', port: 0, diagnostics, webRoot });
+  try {
+    const response = await fetch(helper.origin + '/');
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-security-policy'), "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+  } finally { await helper.close(); rmSync(webRoot, { recursive: true, force: true }); }
+});
 
 test('helper rejects hostile origins, pairs once, binds tokens to origin and supports revocation', async () => {
   const helper = await startServer({ database: ':memory:', port: 0, diagnostics });
