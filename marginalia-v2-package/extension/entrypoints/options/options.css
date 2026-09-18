@@ -1,0 +1,111 @@
+/* Marginalia settings page. Reads tokens from ui/tokens.css; defines no colours of its own. */
+body {
+  margin: 0 auto;
+  max-width: 64ch;
+  padding: 24px;
+  background: var(--m-page);
+  color: var(--m-ink);
+  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+h1 {
+  margin: 0 0 8px;
+  font-size: 1.375rem;
+  font-weight: 600;
+}
+h2 {
+  margin: 32px 0 8px;
+  padding-top: 24px;
+  border-top: 1px solid var(--m-rule);
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+h3 {
+  margin: 16px 0 8px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+p {
+  margin: 0 0 12px;
+}
+#sites {
+  margin: 0 0 16px;
+  padding-left: 0;
+  list-style: none;
+}
+#sites li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--m-rule);
+}
+label {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--m-ink-2);
+}
+input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 40ch;
+  margin-top: 4px;
+  padding: 6px;
+  border: 1px solid var(--m-rule-strong);
+  border-radius: 6px;
+  background: var(--m-surface);
+  color: var(--m-ink);
+  font: inherit;
+}
+button {
+  padding: 6px 10px;
+  border: 1px solid var(--m-rule-strong);
+  border-radius: 6px;
+  background: var(--m-surface);
+  color: var(--m-ink);
+  font: inherit;
+}
+button:hover {
+  background: var(--m-sunken);
+}
+:focus-visible {
+  outline: 2px solid var(--m-accent);
+  outline-offset: 2px;
+}
+#status,
+#helper-origin-status,
+#diagnostics-status {
+  min-height: 1.5em;
+  color: var(--m-ink-2);
+}
+.m-diagnostics dl {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+@media (min-width: 40em) {
+  .m-diagnostics dl {
+    grid-template-columns: minmax(12ch, max-content) 1fr;
+  }
+}
+.m-diagnostics dt {
+  font-weight: 600;
+}
+.m-diagnostics dd {
+  margin: 0;
+  color: var(--m-ink-2);
+}
+.m-meta {
+  font-size: 0.875rem;
+  color: var(--m-ink-3);
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

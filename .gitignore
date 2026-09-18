@@ -4,3 +4,8 @@ node_modules/
 .claude/settings.local.json
 
 *.log
+
+.scratch/
+.local/
+.impeccable/
+*.zip
