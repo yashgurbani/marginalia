@@ -161,7 +161,7 @@ test('a retained unknown request reappears after remount and opens by reads only
  let opened:AskingSelection|undefined;
  const second=await mountMargin(asHost(e.root),{capture,storageName:e.namespace,asking:(_root,_context)=>({async open(selection){opened=structuredClone(selection);await fetch('/api/jobs/'+selection.resumeJobId,{method:'GET'})},setVisible(){},destroy(){}})});
  button(e.root,'Check saved request').click();await second.drain();
- assert.equal(opened?.resumeJobId,jobId);assert.deepEqual(requests,[{url:'/api/jobs/'+jobId,method:'GET'}]);assert.equal(requests.some(request=>request.method==='POST'&&request.url==='/api/jobs'),false);
+ assert.equal(opened?.resumeJobId,jobId);assert.deepEqual(requests,[{url:e.document.location.origin+'/api/position',method:'POST'},{url:'/api/jobs/'+jobId,method:'GET'}]);assert.equal(requests.some(request=>request.method==='POST'&&request.url==='/api/jobs'),false);
  second.destroy();await second.drain();
 });
 
@@ -184,12 +184,12 @@ for (const outcome of ['exact', 'moved', 'lost', 'unsure', 'error'] as const) te
   });
   assert.match(e.root.textContent, /You were here/);
   assert.match(e.root.textContent, /Reader words/);
-  assert.deepEqual(requests, [], 'missing quote on load causes no helper requests or writes');
+  assert.deepEqual(requests, [{ url: e.document.location.origin + '/api/position', body: { url: missing.url } }], 'load performs only the position read');
   assert.equal(captures, 0);
   button(e.root, 'Look again').click();
   await mounted.drain();
   assert.equal(captures, 1);
-  assert.deepEqual(requests, [{ url: e.document.location.origin + '/api/reattach', body: {
+  assert.deepEqual(requests, [{ url: e.document.location.origin + '/api/position', body: { url: missing.url } }, { url: e.document.location.origin + '/api/reattach', body: {
     threadId: 'missing-thread', text: fresh.text, tabCapture: 'current-tab-capture', capture: fresh,
   } }]);
   assert.match(e.root.textContent, outcome === 'error' ? /unconfirmed/ : outcome === 'exact' || outcome === 'moved' ? /Found again/ : /Still not here/);

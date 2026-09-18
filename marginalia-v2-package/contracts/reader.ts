@@ -58,9 +58,7 @@ export function validateReaderMutation(value: unknown): asserts value is ReaderM
   if (m.kind === 'keep') {
     const { capture: c, anchor: a } = m;
     validateSourceCapture(c);
-    if (!a || (a.kind !== undefined && !['quote', 'section', 'whole-page'].includes(a.kind)) || typeof a.exact !== 'string' || a.exact.length > 16000 || typeof a.prefix !== 'string' || typeof a.suffix !== 'string' || a.prefix.length > 256 || a.suffix.length > 256 || !Number.isSafeInteger(a.start) || !Number.isSafeInteger(a.end) || a.start < 0 || a.end < a.start || a.end > c.text.length) invalidReaderMutation('Invalid passage attachment.');
-    if (a.kind === 'whole-page' ? (a.exact !== '' || a.prefix !== '' || a.suffix !== '' || a.start !== 0 || a.end !== 0) : (!a.exact.length || a.end - a.start !== a.exact.length)) invalidReaderMutation('Invalid passage attachment.');
-    if (c.text.slice(a.start, a.end) !== a.exact) invalidReaderMutation('The selected passage does not match the captured page.');
+    validateQuoteAnchor(a, c.text);
     if (m.note !== undefined && (typeof m.note !== 'string' || m.note.length > 20000)) invalidReaderMutation('Note is too large.');
   } else {
     if (!Number.isSafeInteger(m.expectedRevision) || m.expectedRevision < 0) invalidReaderMutation('Invalid revision.');
@@ -72,6 +70,13 @@ export function validateReaderMutation(value: unknown): asserts value is ReaderM
       if (typeof m.removed !== 'boolean') invalidReaderMutation('Invalid removal.');
     } else invalidReaderMutation('Unknown reader change.');
   }
+}
+
+export function validateQuoteAnchor(a: unknown, text: string): asserts a is QuoteAnchor {
+  const anchor = a as QuoteAnchor;
+  if (!anchor || (anchor.kind !== undefined && !['quote', 'section', 'whole-page'].includes(anchor.kind)) || typeof anchor.exact !== 'string' || anchor.exact.length > 16000 || typeof anchor.prefix !== 'string' || typeof anchor.suffix !== 'string' || anchor.prefix.length > 256 || anchor.suffix.length > 256 || !Number.isSafeInteger(anchor.start) || !Number.isSafeInteger(anchor.end) || anchor.start < 0 || anchor.end < anchor.start || anchor.end > text.length) invalidReaderMutation('Invalid passage attachment.');
+  if (anchor.kind === 'whole-page' ? (anchor.exact !== '' || anchor.prefix !== '' || anchor.suffix !== '' || anchor.start !== 0 || anchor.end !== 0) : (!anchor.exact.length || anchor.end - anchor.start !== anchor.exact.length)) invalidReaderMutation('Invalid passage attachment.');
+  if (text.slice(anchor.start, anchor.end) !== anchor.exact) invalidReaderMutation('The selected passage does not match the captured page.');
 }
 
 export function validateSourceCapture(value: unknown): asserts value is SourceCapture {

@@ -19,6 +19,7 @@ let mounted: Awaited<ReturnType<typeof mountMargin>> | undefined, current: Snaps
 const send = async (action: string, extra: Record<string, unknown> = {}) => readReply(await browser.runtime.sendMessage({ type: 'surface', version: 1, action, capability, workspace, ...extra }));
 async function refresh() {
   if (pending || stopped) return; pending = true;
+  let restoredOnMount = false;
   try {
     const next: unknown = await send('read');
     if (!validSnapshot(next)) throw new Error('Select a passage on this page to open your margin.');
@@ -40,9 +41,10 @@ async function refresh() {
         onSource: anchor => { void send('scroll', { document: next.document, anchor }).catch(error => { status.textContent = String(error); }); },
         onHighlight: anchor => { void send('highlight', { document: next.document, anchor }).catch(() => {}); },
       });
+      restoredOnMount = mounted.restoredPosition;
       if (next.anchor) mounted.select(next.anchor);
     } else if (next.revision !== current.revision && next.anchor) mounted?.select(next.anchor);
-    current = next; mounted?.setReadingPosition(next.position); status.textContent = ''; controls.hidden = false;
+    current = next; if (!restoredOnMount) mounted?.setReadingPosition(next.position); status.textContent = ''; controls.hidden = false;
     const helper = await send('helper-status');
     if (typeof (helper as { status?: unknown })?.status === 'string' && (helper as { status: string }).status.length < 300) helperStatus.textContent = (helper as { status: string }).status;
   } catch (error) {
@@ -60,6 +62,6 @@ document.getElementById('trusted-open')!.addEventListener('click', () => { void 
 // Each request wakes a disposable worker and reconstructs its source binding.
 // It never starts inference or automatically replays unknown provider outcomes.
 const timer = setInterval(() => { void refresh(); }, 1500);
-window.addEventListener('pagehide', () => { stopped = true; clearInterval(timer); mounted?.destroy(); });
+window.addEventListener('pagehide', () => { stopped = true; clearInterval(timer); void mounted?.flushReadingPosition(); mounted?.destroy(); });
 void refresh();
 

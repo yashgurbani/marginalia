@@ -30,6 +30,11 @@ export function egressRecord(job: JobSnapshot) {
 export function anchorAt(text: string, start: number, end: number): QuoteAnchor {
   return { exact: text.slice(start, end), start, end, prefix: text.slice(Math.max(0, start - 40), start), suffix: text.slice(end, end + 40) };
 }
+export function readingAnchorAt(text: string, position: number): QuoteAnchor | undefined {
+  if (!text.length) return;
+  const start = Math.max(0, Math.min(text.length - 1, position));
+  return anchorAt(text, start, Math.min(text.length, start + 120));
+}
 export function orderedThreads(threads: Thread[], capture: SourceCapture): Thread[] {
   return threads.filter(thread => thread.sourceUrl === capture.url && !thread.deletedAt)
     .sort((a, b) => (displayPosition(a.anchor, capture) ?? Infinity) - (displayPosition(b.anchor, capture) ?? Infinity) || a.anchor.start - b.anchor.start || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));

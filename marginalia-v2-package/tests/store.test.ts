@@ -81,6 +81,21 @@ test('target captures and per-tab attachment records survive SQLite reopen witho
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('per-page reading position round-trips as a quote anchor across SQLite reopen', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'marginalia-position-'));
+  const file = join(dir, 'reader.sqlite');
+  const position = { exact: 'source passage.', prefix: 'Before. A ', suffix: ' After.', start: 10, end: 25 };
+  try {
+    const first = new ReaderStore(file);
+    first.saveReaderPosition(keep.capture, position);
+    assert.deepEqual(first.readerPosition(keep.capture.url), position);
+    first.close();
+    const reopened = new ReaderStore(file);
+    assert.deepEqual(reopened.readerPosition(keep.capture.url), position);
+    reopened.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('whole-page notes are explicit, unhighlighted and reject malformed empty quote anchors', () => {
   const store = new ReaderStore(':memory:');
   try {
@@ -178,7 +193,7 @@ test('v1 database migration preserves original captures and labels unrecoverable
     assert.deepEqual(store.exportThread('t').targetVersions, []);
     store.close(); store = new ReaderStore(filename);
     assert.equal(store.list().length, 1);
-    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 4, 7001]);
+    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 4, 7001, 7002]);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -257,7 +272,7 @@ test('T07 F2 v4 upgrade preserves old IDs, legacy/unavailable metadata and forei
     assert.throws(() => store.db.prepare("UPDATE source_versions SET title='changed' WHERE id='legacy-id'").run(), /immutable/);
     store.close(); store = new ReaderStore(filename);
     assert.deepEqual(store.db.pragma('foreign_key_check'), []);
-    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 3, 4, 13, 7001]);
+    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 3, 4, 13, 7001, 7002]);
     assert.equal(store.sourceVersion('unavailable-id')!.capturedAt, null);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

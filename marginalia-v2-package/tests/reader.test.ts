@@ -230,7 +230,7 @@ const sha256File = (path: string) => createHash('sha256').update(readFileSync(pa
 
 test('T07 continuation SQLite rejects unknown markers before writes or backups', async () => {
   await migrationFixture(({ ReaderStore, Database, filename, root }) => {
-    for (const marker of ['INSERT INTO migrations VALUES(5)', 'INSERT INTO migrations VALUES(7002)', 'PRAGMA user_version=1', 'PRAGMA application_id=42', 'ALTER TABLE migrations ADD COLUMN future TEXT', 'DROP TABLE migrations']) {
+    for (const marker of ['INSERT INTO migrations VALUES(5)', 'INSERT INTO migrations VALUES(7003)', 'PRAGMA user_version=1', 'PRAGMA application_id=42', 'ALTER TABLE migrations ADD COLUMN future TEXT', 'DROP TABLE migrations']) {
       if (existsSync(filename)) rmSync(filename);
       new ReaderStore(filename).close();
       const setup = new Database(filename);

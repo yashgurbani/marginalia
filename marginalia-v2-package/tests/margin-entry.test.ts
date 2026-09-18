@@ -82,6 +82,40 @@ test('reading-position editor is connected, anchored and single-map across save 
   e.onWrite(async () => {}); button(e.root, 'Settings').click(); button(e.root, 'Retry saving').click(); await api.drain(); assert.equal((e.data(e.namespace).get('journal') as JournalState).threads[0].notes[0].text, 'Frozen text?');
   api.destroy(); await api.drain();
 });
+
+test('stored reading anchor restores quietly and an unresolved anchor keeps the current section fallback', async t => {
+  const e = env(t), restored = anchor(21, 30), navigated: unknown[] = [], writes: unknown[] = [];
+  let api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false,
+    positionDebounceMs: 10, readPosition: async () => restored, writePosition: async value => { writes.push(value); }, onSource: value => { navigated.push(value); } });
+  assert.equal(e.root.querySelector('.m-reading')!.textContent.includes('Second'), true);
+  assert.deepEqual(navigated, [restored]);
+  assert.deepEqual(writes, [], 'restoring never writes the value back');
+  api.setReadingPosition(15); await new Promise(resolve => setTimeout(resolve, 20)); await api.drain();
+  assert.deepEqual(writes, [], 'the host section fallback cannot overwrite a precise restored anchor');
+  api.destroy(); await api.drain();
+
+  const missing = { exact: 'not on this page', prefix: '', suffix: '', start: 0, end: 16 };
+  api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false,
+    readPosition: async () => missing, onSource: value => { navigated.push(value); } });
+  assert.equal(e.root.querySelector('.m-reading')!.textContent.includes('First'), true);
+  assert.deepEqual(navigated, [restored]);
+  api.destroy(); await api.drain();
+});
+
+test('reading-position writes are trailing-edge debounced, coalesced, and absent on load', async t => {
+  const e = env(t), writes: any[] = [];
+  const api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false,
+    positionDebounceMs: 10, readPosition: async () => undefined, writePosition: async value => { writes.push(value); } });
+  assert.deepEqual(writes, []);
+  api.setReadingPosition(17); api.setReadingPosition(21); api.setReadingPosition(25);
+  assert.deepEqual(writes, []);
+  await new Promise(resolve => setTimeout(resolve, 25)); await api.drain();
+  assert.equal(writes.length, 1);
+  const written = writes.at(0) as any;
+  assert.equal(written.start, 25);
+  assert.equal(written.exact, capture.text.slice(25, written.end));
+  api.destroy(); await api.drain();
+});
 test('startup restoration cannot overwrite an interim recovery editor and failed draft survives remount', async t => {
   const e = env(t); let blocked = false; const gate = deferred();
   e.onRead(async key => { if (key === 'journal' && !blocked) { blocked = true; await gate.promise; } });
@@ -193,7 +227,7 @@ test('failed new-pairing storage does not mask the old local credential from a l
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace });
   e.onWrite(async key => { if (key === 'pairing') throw new Error('quota'); }); const input = e.root.querySelector('[aria-label="Pairing code"]')!; input.value = '001234'; input.fire('input'); button(e.root, 'Pair').click(); await api.drain();
   assert.equal(api.connection().token, old); assert.equal((e.data(e.namespace).get('pairing') as any).token, old); assert.match(e.root.textContent, /new pairing was not saved/);
-  e.onWrite(async () => {}); button(e.root, 'Disconnect').click(); await api.drain(); assert.equal(e.data(e.namespace).get('pairing'), undefined); assert.match(e.root.textContent, /Remote revocation is unconfirmed/); assert.deepEqual(paths, ['/pair', '/api/revoke']);
+  e.onWrite(async () => {}); button(e.root, 'Disconnect').click(); await api.drain(); assert.equal(e.data(e.namespace).get('pairing'), undefined); assert.match(e.root.textContent, /Remote revocation is unconfirmed/); assert.deepEqual(paths, ['/api/position', '/pair', '/api/revoke']);
   api.destroy(); await api.drain();
 });
 
