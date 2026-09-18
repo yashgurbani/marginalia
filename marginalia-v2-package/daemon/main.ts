@@ -18,6 +18,7 @@ import { launchProvider } from './providers/runtime.ts';
 import { inspectAppServer } from './providers/preflight.ts';
 import { createLazySolverTransport } from './solver/index.ts';
 import { ensurePrivateDataDirectory, runShutdown, shutdownSignals } from './shutdown.ts';
+import { ReaderMigrationError } from './store.ts';
 
 const userDataRoot = process.platform === 'win32' ? process.env.LOCALAPPDATA
   : process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support')
@@ -92,6 +93,12 @@ const server = await startServer({ database: join(canonicalDataDir, 'marginalia.
   jobWorkspaceRoot: join(canonicalDataDir, 'jobs'), runtimeFactoryBuilder, jobDefaults,
   solverTransport, solverRpc: solverTransport, solverProbeRoot }).catch((error: unknown) => {
   solverTransport?.close();
+  if (error instanceof ReaderMigrationError) {
+    console.error(error.message);
+    if (error.backupPath) console.error(`Backup: ${error.backupPath}`);
+    console.error('Recovery: after resolving the saved database, acknowledge the retained backup with ReaderStore.resolveRecoveryBackup().');
+    process.exit(1);
+  }
   if (error && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE') {
     console.error(`Another program is using port ${port}. Close it, or start Marginalia on another port. Set MARGINALIA_PORT and use the same port in the browser's helper address.`);
     process.exit(1);

@@ -213,6 +213,30 @@ test('map encodes distinct lengths, density, marks/current position and line/tic
   assert.deepEqual([0, 1, 2, -1].map(section => marginItemSize(section, 0, false, false)), ['full', 'line', 'tick', 'full']); assert.equal(marginItemSize(2, 0, false, true), 'full');
 });
 
+test('opening a thread collapses the previous one and restores only on the same page', async t => {
+  const e = env(t), persistence = localPersistence(e.namespace), journal = documentJournal(e.namespace, persistence.journal);
+  await journal.change({ id: 'keep-a', kind: 'keep', threadId: 'thread-a', capture, anchor: anchor(15, 30), note: 'Thread A' });
+  await journal.change({ id: 'keep-b', kind: 'keep', threadId: 'thread-b', capture, anchor: anchor(31, 44), note: 'Thread B' });
+  const size = (id: string) => e.root.querySelector(`[data-thread="${id}"]`)!.dataset.size;
+  let api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false });
+  const first = button(e.root, 'Thread A'); first.focus(); first.click(); await settle(); assert.equal(size('thread-a'), 'full');
+  const second = button(e.root, 'Thread B'); second.focus(); second.click();
+  assert.equal(size('thread-a'), 'line'); assert.equal(size('thread-b'), 'full');
+  await api.drain(); api.destroy(); await api.drain();
+
+  api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false });
+  assert.equal(size('thread-a'), 'line'); assert.equal(size('thread-b'), 'full');
+  api.destroy(); await api.drain();
+
+  const otherPage = { ...capture, url: 'https://example.org/b' };
+  const otherState = structuredClone(e.data(e.namespace).get('journal')) as JournalState;
+  for (const thread of otherState.threads) thread.sourceUrl = otherPage.url;
+  e.data(e.namespace).set('journal', otherState);
+  api = await mountMargin(asHost(e.root), { capture: otherPage, sections: otherPage.sections, storageName: e.namespace, allowHelper: false });
+  assert.equal(size('thread-b'), 'tick');
+  api.destroy(); await api.drain();
+});
+
 test('end-of-page actions prepare explicit drafts and cannot replace an existing question or send', async t => {
   const e = env(t); let opened = 0;
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: () => ({ open() { opened++; }, setVisible() {}, destroy() {} }) });
