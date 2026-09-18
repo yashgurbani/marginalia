@@ -10,11 +10,7 @@
 <meta property="og:title" content="Marginalia: privacy and what leaves your machine">
 <meta property="og:description" content="What Marginalia keeps on your disk, what leaves your machine, and the controls you hold over both.">
 <meta property="og:url" content="https://yashgurbani.github.io/marginalia/site/privacy.html">
-<meta property="og:image" content="https://yashgurbani.github.io/marginalia/site/media/og-navier-stokes.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="The Navier-Stokes post with the Marginalia margin open, showing a slider and a curve beside the highlighted passage.">
-<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:card" content="summary">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='none'/%3E%3Cpath d='M11.5 1.5v13' stroke='%23566' stroke-width='1'/%3E%3Cpath d='M2 4h7M2 6.5h7M2 9h7M2 11.5h5' stroke='%23334' stroke-width='1.2'/%3E%3C/svg%3E">
 <style>
@@ -133,7 +129,7 @@ ul.plain li { margin-bottom: 0.5rem; }
 </section>
 <section class="band" id="read-now" aria-labelledby="t-read-now">
 <h2 id="t-read-now">Read now</h2>
-<p>Keeping a highlight, writing a note and selecting text are local. Nothing about them leaves your machine. Your note remains separate from the source page, and the page is never rewritten.</p>
+<p>Highlights and notes are stored locally, separate from the source page. With Instant help on, opening an allowed page sends readable page text to Codex, and selecting a passage can send a request for an explanation. The source page stays as the author wrote it.</p>
 </section>
 <section class="band" id="read-later" aria-labelledby="t-read-later">
 <h2 id="t-read-later">Read it later</h2>
@@ -160,7 +156,7 @@ ul.plain li { margin-bottom: 0.5rem; }
 <section class="band" id="limits" aria-labelledby="t-limits">
 <h2 id="t-limits">Honest limits</h2>
 <p>This is an alpha built by one developer. It works in Chrome and needs Codex installed and signed in.</p>
-<p>Nothing goes out for a full Ask until you approve the exact text, the first time on each site. You choose this time, always here, or never here, and you can change that in Settings. Instant help is on by default and can be turned off during onboarding or in Settings. Proof of runtime confinement is still pending. Windows installation has been tested. macOS and Linux have command-level CI evidence. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
+<p>Each full Ask shows the outgoing text for review before dispatch. The first request on a site also asks for your site choice. You choose this time, always here, or never here, and you can change that in Settings. Instant help is on by default and can be turned off during onboarding or in Settings. Proof of runtime confinement is still pending. Windows installation has been tested. macOS and Linux have command-level CI evidence. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
 </section>
 <section class="band" id="built" aria-labelledby="t-built">
 <h2 id="t-built">The Astra build</h2>
@@ -176,7 +172,7 @@ ul.plain li { margin-bottom: 0.5rem; }
 </section>
 <section class="band" id="site" aria-labelledby="t-site">
 <h2 id="t-site">This website</h2>
-<p>This site is static HTML with inline styles. It sets no cookies and contains no analytics or advertising. Images use local paths; it loads no external fonts, scripts or stylesheets. Following an outward link opens another site.</p>
+<p>This site uses static HTML, local styles and local scripts for the interactive demo. Demo notes, highlights and saved pages are kept in this browser using localStorage. Forget this page in the demo clears its local demo library. The demo replays recorded replies and sends zero model requests. The site sets no cookies and contains no analytics or advertising. Images, scripts and styles use local paths. Following an outward link opens another site.</p>
 <p>When served by GitHub Pages, GitHub receives ordinary web request information such as your IP address. This policy changes with the code, and its history is in the repository.</p>
 </section>
 </main>

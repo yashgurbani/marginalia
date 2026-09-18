@@ -10,11 +10,7 @@
 <meta property="og:title" content="Marginalia: the web, annotated for the agentic era">
 <meta property="og:description" content="Your agentic research assistant, in the margin of any page. Ask hard passages, simulate them, and save highlights, notes and reading journeys on your own disk.">
 <meta property="og:url" content="https://yashgurbani.github.io/marginalia/">
-<meta property="og:image" content="https://yashgurbani.github.io/marginalia/media/og-navier-stokes.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="The Navier-Stokes post with the Marginalia margin open, showing a slider and a curve beside the highlighted passage.">
-<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:card" content="summary">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='none'/%3E%3Cpath d='M11.5 1.5v13' stroke='%23566' stroke-width='1'/%3E%3Cpath d='M2 4h7M2 6.5h7M2 9h7M2 11.5h5' stroke='%23334' stroke-width='1.2'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="demo/margin.css">
@@ -364,7 +360,8 @@ p:last-child { margin-bottom: 0; }
 <p class="hint">Start with Simulate it. The sliders in the reply run for real in your browser, and the model says plainly that it does not solve the Navier-Stokes equations.</p>
 <aside class="note">
 <p>Every reply on this page was recorded live on 18 September 2026 and is replayed here. The demo margin never calls a model.</p>
-<p>A definition arrived in under four seconds. A working model took about three minutes.</p>
+<p>A definition arrived in under four seconds. A working model took about three minutes. These are recorded timings; later requests can take longer.</p>
+<p>The demo retains the labels used in its recording. In the extension, Define is Define it here, Step by step is Show the steps, Diagram is See it, Explore is Connect it, and Not sure is Say it plainly. The extension also includes Journeys, Activity and Daily recap.</p>
 </aside>
 </section>
 
@@ -416,7 +413,7 @@ p:last-child { margin-bottom: 0; }
 <ol class="story">
   <li>
     <h3>You meet a page you cannot follow.</h3>
-    <p>The margin opens beside the text. It does not rewrite the page, and it stays quiet until you ask.</p>
+    <p>The margin opens beside the text and preserves the source page. Instant help starts on and prepares allowed page text through your Codex subscription; onboarding and Settings let you turn it off.</p>
     <div class="row" data-margin-skip><button type="button" class="act" data-margin-open>Open the margin</button></div>
   </li>
   <li>
@@ -464,7 +461,7 @@ p:last-child { margin-bottom: 0; }
   </li>
   <li>
     <h3>Forget a page whenever you want</h3>
-    <p>One control clears everything this page holds. Use it on the demo below.</p>
+    <p>In the extension, Forget this page clears prepared help while keeping your notes, highlights and saved threads. The website demo has a broader reset: it clears this demo page and its local demo library.</p>
     <div class="row" data-margin-skip><button type="button" class="act" data-margin-action="forget">Forget this page</button></div>
   </li>
   <li>
@@ -501,7 +498,7 @@ p:last-child { margin-bottom: 0; }
 <section class="band reveal" id="limits" aria-labelledby="t-limits">
 <h2 id="t-limits">Honest limits</h2>
 <p>This is an alpha built by one developer. It works in Chrome and needs Codex installed and signed in. There is no phone app and no sync.</p>
-<p>Nothing goes out for a full Ask until you approve the exact text, the first time on each site. You choose this time, always here, or never here, and you can change that in Settings. Install has been tested on Windows. On macOS and Linux the install scripts pass automated checks, but nobody has run them by hand yet. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
+<p>Each full Ask shows the outgoing text for review before dispatch. The first request on a site also asks for your site choice. You choose this time, always here, or never here, and you can change that in Settings. Install has been tested on Windows. On macOS and Linux the install scripts pass automated checks, but nobody has run them by hand yet. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
 </section>
 
 <section class="band reveal" id="built" aria-labelledby="t-built">
@@ -526,11 +523,11 @@ p:last-child { margin-bottom: 0; }
     <li>Open <code>chrome://extensions</code> in Chrome.</li>
     <li>Turn on Developer mode.</li>
     <li>Choose Load unpacked and select the extension folder.</li>
-    <li>In the package folder, run <code>.\scripts\install-helper.ps1</code> in PowerShell on Windows, or <code>bash scripts/install-helper.sh</code> on macOS or Linux.</li>
-    <li>Read the six-digit pairing code from the helper output and enter it in the extension options.</li>
+    <li>Download the source package as well, or clone the repository. Open <code>marginalia-v2-package</code> and run <code>.\scripts\install-helper.ps1</code> in PowerShell on Windows, or <code>bash scripts/install-helper.sh</code> on macOS or Linux. Node 24 is required.</li>
+    <li>Open <code>http://127.0.0.1:43120/</code>. In the local reader Settings, choose Show pairing code. On a readable page in Chrome, open Marginalia and select a passage. In the browser margin Settings, enter the code and choose Pair. For an embedded margin, choose Open browser margin first.</li>
   </ol>
   <aside class="note">
-    <p>If no release is listed yet, clone the repository and run the installer from <code>marginalia-v2-package</code>.</p>
+    <p>For a source install, clone the repository, open <code>marginalia-v2-package</code>, run <code>npm ci</code> and <code>npm run extension:build</code>, then load <code>extension/.output/chrome-mv3</code> in Chrome. Run the helper installer from the same package folder. Use Chrome 116 or newer and Codex installed and signed in.</p>
     <p>Both installers take <code>-DryRun</code> or <code>--dry-run</code>. To remove the login task or service, use <code>-Uninstall</code> or <code>--uninstall</code>. Uninstalling keeps your reading data.</p>
   </aside>
 </section>

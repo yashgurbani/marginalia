@@ -11,16 +11,21 @@ describes.
 
 ## The short version
 
-Your reading, your notes and your threads stay on your computer. Selecting text
-sends nothing anywhere. Asking for help sends the passage, your note and a
-bounded slice of the surrounding page to the Codex runtime you
-configured, and the margin shows you the exact outgoing text before the first
-send for each site. There is no analytics, no tracking and no remote code.
+Saved reading, notes and threads are stored on your computer. Instant help is
+on by default: it sends readable text from allowed pages to Codex ahead of time,
+and selecting a passage can send a request for a short explanation through your
+Codex subscription. Onboarding and Settings let you turn it off. Settings also
+provides site exclusions and today's approximate usage.
+
+A full Ask sends the selected passage, your chosen note and bounded surrounding
+context after you review the outgoing content and recipient. The first Ask on
+a site also asks for a site choice. Marginalia has no analytics or tracking and
+loads packaged application code.
 
 ## What is collected, and when
 
-**Website content.** Only when you select text on a page and the margin captures
-it. The capture strips scripts, styles, `noscript`, `template`, form elements,
+**Website content.** Marginalia captures readable text on allowed pages for
+Instant help when it is enabled, and captures passages for local reading and Ask. The capture strips scripts, styles, `noscript`, `template`, form elements,
 `contenteditable` regions, `[role="textbox"]`, `[role="combobox"]`, `[hidden]`,
 `[inert]` and `aria-hidden` content before projecting anything
 (`extension/lib/capture.ts:8`), and it skips nodes that compute to
@@ -62,11 +67,13 @@ data directory yourself.
 
 ## What leaves your computer, and when
 
-Only when you explicitly ask for help. Only to the provider you configured.
+Instant help sends allowed page text and selection requests to Codex while it
+is enabled. It starts on and has separate controls in onboarding and Settings.
+Auto assist starts off; turning it on can prepare definitions as you read.
 
-Before text from a new site leaves for the first time, the margin shows you the
-exact outgoing text, the recipient and the scope, and records your answer: this
-time, always on this site, or never on this site.
+For a full Ask, the margin shows the exact outgoing text, recipient and scope
+for review before dispatch. On a new site it also records your site choice:
+this time, always on this site, or never on this site.
 
 The bytes you reviewed are the bytes that are sent. The daemon compares the
 digest of the prepared payload against the digest you approved and refuses with
@@ -82,17 +89,21 @@ but it does not observe physical transmission. `ui/margin.ts:70-71` reports
 `observedSentBytes: null` and `transmissionObserved: false`, and the "What was
 sent" sheet says so in those words (`ui/margin.ts:381`).
 
-## What does not leave
+## Recovery and runtime limits
 
-Selecting text. Reopening a page. Reconnecting to the helper. Recovering after a
-crash: reconnection throws rather than replaying a send
+Reconnection and crash recovery preserve uncertain Ask outcomes instead of
+replaying those asks. Opening a page or selecting text can send an Instant help
+request while that feature is enabled. Ask reconnection throws rather than
+replaying a send
 (`extension/lib/helper-reconnect.ts:54-56`), and recovery only marks an attempt
 failed or of unknown outcome (`daemon/jobs/service.ts:92-104`).
 
-Web checks do not leave either, because this build cannot make them. Every
-sandbox it defines sets `networkAccess: false` (`daemon/codex-policy.ts:18-20`,
-`:175-176`), and the solver transport refuses any policy that does not
-(`daemon/solver/transport.ts:135`).
+Check this claim is limited and its reply remains a suggestion to investigate.
+Review any cited sources yourself. Marginalia's live web-fetch evidence path
+remains gated. Full Ask uses your ordinary Codex setup, including its settings
+and tools. Requested runtime restrictions remain distinct from observed
+confinement; complete confinement evidence is pending. See
+[the runtime conditions](READER-AUTHORIZED-RUNTIME.md).
 
 ## Who else can see it
 
@@ -119,8 +130,10 @@ the site origin you decided about (`daemon/consent/service.ts:130`, `:160`).
 
 ## Analytics and third parties
 
-There are none. No analytics, no telemetry, no advertising, no data sale, and no
-data sharing with anyone other than the provider you configured for an ask.
+Marginalia has no analytics, telemetry, advertising or data sale. Instant help
+and full Ask use Codex as described above. Full Ask uses your ordinary Codex
+settings and tools; their configured services and external runtime actions are
+subject to the runtime conditions linked above.
 
 There is no remote code. The extension loads no external script, stylesheet or
 font. Its page policy is `default-src 'none'` with `script-src 'self'`
@@ -131,8 +144,17 @@ font. Its page policy is `default-src 'none'` with `script-src 'self'`
 
 Marginalia's use of information received from Google APIs will adhere to the Chrome Web Store User Data Policy, including the Limited Use requirements.
 
+## Forget this page
+
+In the extension, Forget this page drops the prepared help for that page while
+retaining your notes, highlights and saved threads. The result separately reports
+whether provider history was deleted, retained, absent or unverified. Saved Ask
+workspaces and downloaded exports have their own retention rules above.
+
 ## Your controls
 
+- Turn Instant help off during onboarding or in Settings.
+- Inspect today's approximate Codex usage in Settings.
 - Exclude any site and its subdomains in the extension options.
 - Answer "never on this site" at the consent prompt. The refusal persists.
 - Export your threads to plain files.
@@ -143,8 +165,8 @@ Marginalia's use of information received from Google APIs will adhere to the Chr
 
 ## What is not finished
 
-- No run against a real model provider has been recorded. Reply behaviour is
-  proven on deterministic fixtures only.
+- Accepted live replies were recorded on 18 September 2026 for seven request
+  kinds. Check this claim remains limited, with accepted live evidence pending.
 - Real asks run in a reader-authorized mode where solver confinement is requested
   but not observed.
 - Native install is proven on Windows only. macOS and Linux have command-level CI

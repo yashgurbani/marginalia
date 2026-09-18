@@ -33,6 +33,8 @@ type QuestionDraft = AskingSelection & { suggestionExposureId?: string };
 
 export type MarginSection = { title: string; start: number; end: number };
 export type MarginOptions = {
+  /** Host source invalidation cancels hydration and helper work. */
+  signal?: AbortSignal;
   capture?: SourceCapture;
   /** Verified runnable intents from the host, absent means unknown. */
   suggestionEligibility?: readonly Intent[];
@@ -132,13 +134,14 @@ const mountedMargins = new WeakMap<HTMLElement, { destroy(): void; drain(): Prom
 
 /** Mount in a trusted local or extension document. No remote page receives private note markup. */
 export async function mountMargin(root: HTMLElement, options: MarginOptions = {}) {
+  options.signal?.throwIfAborted();
   const exposureRecoveryTime = new Date().toISOString();
   const previous = mountedMargins.get(root); previous?.destroy();
   const predecessorDrain = previous?.drain() ?? Promise.resolve();
   let destroyed = false;
   const pendingOperations = new Set<Promise<unknown>>();
   function track<T>(work: Promise<T>): Promise<T> { pendingOperations.add(work); void work.finally(() => pendingOperations.delete(work)).catch(() => {}); return work; }
-  const alive = () => !destroyed;
+  const alive = () => !destroyed && !options.signal?.aborted;
   const instance = 'm-' + id();
   const namespace = options.storageName ?? 'marginalia-reader';
   const persistence = localPersistence(namespace);
@@ -361,9 +364,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   function safely(operation: () => Promise<void>) { if (!alive()) return Promise.resolve(); return track((async () => { try { await operation(); } catch (error) { fail(error); } })()); }
   async function flushReadingPosition() {
     if (positionTimer) { clearTimeout(positionTimer); positionTimer = undefined; }
+    if (options.signal?.aborted) return;
     if (!positionDirty) return;
     const anchor = readingAnchorAt(capture.text, readingPosition);
-    const write = options.writePosition ?? (helper?.token ? async (value: QuoteAnchor) => { await helper!.request('/api/position', { capture, anchor: value }); } : undefined);
+    const write = options.writePosition ?? (helper?.token ? async (value: QuoteAnchor) => { await helper!.request('/api/position', { capture, anchor: value }, options.signal); } : undefined);
     if (!anchor || !write) return;
     positionDirty = false;
     try { await write(anchor); lastPositionWrite = Date.now(); } catch { positionDirty = true; }
@@ -1807,6 +1811,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function destroy() {
     if (destroyed) return;
+    options.signal?.removeEventListener('abort', destroy);
     ++attachmentGeneration; clearTimeout(noticeTimer);
     options.onSavedMarks?.([]);
     void track(flushReadingPosition());
@@ -1817,6 +1822,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   const lifecycle = { destroy, async drain() { await predecessorDrain; while (pendingOperations.size) await Promise.allSettled([...pendingOperations]); } };
   mountedMargins.set(root, lifecycle);
+  options.signal?.addEventListener('abort', destroy, { once: true });
   function trustedHelper() {
     if (!alive() || options.allowHelper === false || !helper?.token) throw new Error('Pair in the browser-owned margin or localhost Settings to use this action.');
     return helper;
@@ -1858,10 +1864,11 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (helper && connectionEpoch === 0 && helper.connectionVersion === connectionEpoch && pairing?.origin === helper.origin) helper.token = pairing.token;
     if (!draft) {
       try {
-        const read = options.readPosition ?? (helper?.token ? async (sourceUrl: string) => (await helper!.request('/api/position', { url: sourceUrl })).anchor as QuoteAnchor | null : undefined);
+        const read = options.readPosition ?? (helper?.token ? async (sourceUrl: string) => (await helper!.request('/api/position', { url: sourceUrl }, options.signal)).anchor as QuoteAnchor | null : undefined);
         const checkpoint = await persistence.read<{ threadId: string; anchor?: QuoteAnchor }>(parkedPositionKey);
         const parked = checkpoint && threadsNow().some(thread => thread.id === checkpoint.threadId && thread.anchor.kind === 'whole-page' && thread.state === 'parked' && !thread.deletedAt);
         const local = parked && checkpoint?.anchor && displayPosition(checkpoint.anchor, capture) !== undefined ? checkpoint.anchor : undefined;
+        if (!alive()) return api;
         const saved = local ?? await read?.(capture.url), at = saved ? displayPosition(saved, capture) : undefined;
         if (!alive()) return api;
         if (saved && at !== undefined) { readingPosition = at; sectionIndex = sectionFor(at); restoredPosition = true; if (local || at > 0) showResumeLine(saved, at); options.onSource?.(saved); }

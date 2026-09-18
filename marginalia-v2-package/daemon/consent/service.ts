@@ -397,11 +397,27 @@ export class ConsentSessionService implements JobConsentAuthority {
     if (this.excluded(preview.site)) return 'excluded';
     return this.activeDenial(preview.site, preview.scope, preview.recipient) ? 'denied' : 'ready';
   }
+  private hostExclusions(site: string) {
+    const host = new URL(site).hostname.toLowerCase().replace(/\.$/, '');
+    return (this.db.prepare('SELECT site,revision,excluded FROM consent_exclusions').all() as Array<{ site: string; revision: number; excluded: number }>).filter(row => {
+      const other = new URL(row.site).hostname.toLowerCase().replace(/\.$/, '');
+      return host === other || host.endsWith('.' + other);
+    });
+  }
   private excluded(site: string) {
-    return !!(this.db.prepare('SELECT excluded FROM consent_exclusions WHERE site=?').get(site) as { excluded: number } | undefined)?.excluded;
+    return this.hostExclusions(site).some(row => !!row.excluded);
   }
   private sitePermissionEpoch(site: string): number {
-    return (this.db.prepare('SELECT revision FROM consent_exclusions WHERE site=?').get(site) as { revision: number } | undefined)?.revision ?? 0;
+    // Rows are retained when unexcluded. Their monotonically increasing revisions
+    // fence an old checkpoint even after a parent host is excluded then restored.
+    // Grant and deny-site decisions remain scoped to their exact origin.
+    return this.hostExclusions(site).reduce((epoch, row) => {
+      const next = epoch + row.revision;
+      if (!Number.isSafeInteger(row.revision) || row.revision < 1 || !Number.isSafeInteger(next)) {
+        throw new ConsentDeniedError('The site permission revision is unavailable.');
+      }
+      return next;
+    }, 0);
   }
   private activeDenial(site: string, scope: ConsentScope, recipient: string) {
     return this.db.prepare(`SELECT id FROM grants

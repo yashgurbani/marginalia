@@ -15,8 +15,9 @@ sets out the full vision; [build scope](docs/SCOPE-COVERAGE.md) records remainin
 ## Read now
 
 In v1.1.0, select a passage to Keep, Highlight, write a note or draft an Ask.
-Save page and Read page later work from the reader margin. Keeping a highlight,
-writing a note and selecting text stay local.
+Save page and Read page later work from the reader margin. Keeping a highlight and
+writing a note store your work locally. With Instant help on, opening an allowed
+page and selecting text can also send page content and a selection to Codex.
 With a paired local helper, save a page or choose Read page later, then return
 through Activity, Journeys or Library search. Settings lets you inspect and
 delete saved entries, and Forget this page is available for instant reading.
@@ -29,10 +30,12 @@ never send anything.
 
 ## Ask
 
-The request contract covers eight kinds: definition, simulation, worked example,
-derivation, diagram, “Check this claim,” exploration and an open question. Seven
-have returned accepted live replies. “Check this claim” is early and has not yet
-returned one. Codex authors structured replies; packaged code renders their
+The Ask menu offers Define it here, Simulate it, Give an example, Show the steps,
+See it, Check this claim, Connect it and Say it plainly. The first three offers
+vary with the passage; More opens the remaining choices. Seven request kinds
+have returned accepted live replies. Check this claim is limited: treat its reply
+as a suggestion to investigate and review the sources yourself. An accepted live
+reply for that request remains pending. Codex authors structured replies; packaged code renders their
 text, equations, diagrams and models. Help runs through the reader's ordinary Codex setup on their machine,
 including its settings and tool servers. There are no API keys or
 required Marginalia environment variables. Settings holds the reader's help
@@ -44,8 +47,8 @@ controls: you can turn it off, exclude sites and see today's usage. Excluded
 sites never send anything. No Codex credential is stored in the browser. Provider
 availability, permissions and runtime checks still govern dispatch. Local tests
 cover these flows. On 18 September 2026, live runs on public pages
-returned accepted replies for Define, Simulate it, Step by step, Diagram, Explore and
-Not sure on OpenAI's Navier-Stokes post, and Define and Give an example on a NASA
+returned accepted replies for Define it here, Simulate it, Show the steps, See it, Connect it and
+Say it plainly on OpenAI's Navier-Stokes post, and Define it here and Give an example on a NASA
 page.
 
 Four execution paths stay distinct: browser calculation, exploration within
@@ -62,8 +65,8 @@ local copies preserve captured source versions with your work. Library search
 opens saved passages. Related saved passages starts closed in the margin and
 searches the local library when you open it.
 
-The v1.1.0 build exports JSON, Markdown and Web Annotation JSON-LD. BibTeX
-export, Activity and Daily recap are built and tested in the working tree.
+The v1.1.0 build includes JSON, Markdown, Web Annotation JSON-LD and BibTeX
+export, along with Activity and Daily recap. These have local automated coverage.
 Journeys is the name for groups of related reading. Save page and Read page later
 keep reading available in the local library, and Forget this page clears the
 current instant reading state.
@@ -135,9 +138,14 @@ The alpha uses an unpacked extension. Its manifest requires Chrome 116 or newer.
 
 ## Pair
 
-Start the helper, then open the extension options and enter the pairing code
-shown by the helper. The code expires after five minutes and permits five
-attempts. Pairing gives the extension a revocable connection to its local helper.
+Open `http://127.0.0.1:43120/` after the installer starts the helper. In the
+local reader Settings, choose Show pairing code. On a readable page in Chrome,
+open Marginalia, select a passage, and open the margin Settings. If the margin
+is embedded in the page, choose Open browser margin first. Enter the six-digit
+code in Pairing code and choose Pair.
+
+The code expires after five minutes, allows five attempts, and is single use.
+Pairing gives the extension a revocable connection to its local helper.
 
 ## Where your reading is kept
 

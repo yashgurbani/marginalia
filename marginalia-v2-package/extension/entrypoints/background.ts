@@ -29,10 +29,18 @@ export default defineBackground(() => {
   let excludedCache: string[] | null = null;
   const cachePolicy = (value: unknown) => { excludedCache = Array.isArray(value) && value.every(h => typeof h === 'string') ? value : null; };
   void storageReady.then(async () => { const value = (await browser.storage.local.get('excludedHosts')).excludedHosts ?? []; cachePolicy(value); }).catch(() => { excludedCache = null; });
-  browser.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.excludedHosts) { cachePolicy(changes.excludedHosts.newValue ?? []); void browser.tabs.query({}).then(tabs => Promise.all(tabs.filter(tab => tab.id !== undefined && tab.url && (excludedCache === null || !allowedPage(tab.url, excludedCache))).map(async tab => { await instant.release(tab.id!); await browser.tabs.sendMessage(tab.id!, { type: 'excluded', version: 1 }, { frameId: 0 }).catch(() => {}); }))).catch(() => {}); } });
+  browser.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.excludedHosts) { invalidatePanel(); cachePolicy(changes.excludedHosts.newValue ?? []); void browser.tabs.query({}).then(tabs => Promise.all(tabs.filter(tab => tab.id !== undefined && tab.url && (excludedCache === null || !allowedPage(tab.url, excludedCache))).map(async tab => { await instant.release(tab.id!); await browser.tabs.sendMessage(tab.id!, { type: 'excluded', version: 1 }, { frameId: 0 }).catch(() => {}); }))).catch(() => {}); } });
+  function invalidatePanel() {
+    void browser.runtime.sendMessage({ type: 'panel-source-pending', version: 1 }).catch(() => {});
+  }
   function openNative(tabId: number, url: string, incognito?: boolean): Promise<boolean> {
-    if (excludedCache === null || incognito || !allowedPage(url, excludedCache) || typeof browser.sidePanel?.open !== 'function') return Promise.resolve(false);
-    try { return browser.sidePanel.open({ tabId }).then(() => true).catch(() => false); }
+    if (incognito || !allowedPage(url, excludedCache ?? []) || typeof browser.sidePanel?.open !== 'function') return Promise.resolve(false);
+    // Only the neutral shell opens before policy loads; source actions still use permitted().
+    try {
+      const opening = browser.sidePanel.open({ tabId });
+      invalidatePanel();
+      return opening.then(() => true).catch(() => false);
+    }
     catch { return Promise.resolve(false); }
   }
   async function permitted(url: string, incognito?: boolean) {

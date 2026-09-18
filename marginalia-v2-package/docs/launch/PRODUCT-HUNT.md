@@ -19,7 +19,7 @@ Marginalia is an agentic companion in the margin of whatever you read. Select a 
 
 ## Long description
 
-Marginalia is an agentic companion as you browse the web. It opens a margin beside whatever you read, and it reads along with you. On OpenAI's Navier-Stokes post you can select the word viscosity and get a definition written for that passage in about two seconds, or select the passage about smoothing and choose Simulate it, which returns a small model with sliders you can move, the equation beside it, and a plain note on what it does not claim. Step by step, Diagram, Explore and Not sure answer the same way. Save interactive journeys, annotations, highlights and bookmarks. Pick up any page where you left it.
+Marginalia is an agentic companion as you browse the web. It opens a margin beside whatever you read, and it reads along with you. On OpenAI's Navier-Stokes post you can select the word viscosity and get a definition written for that passage in about two seconds, or select the passage about smoothing and choose Simulate it, which returns a small model with sliders you can move, the equation beside it, and a plain note on what it does not claim. Show the steps, See it, Connect it and Say it plainly offer other ways to work through a passage. Save interactive journeys, annotations, highlights and bookmarks. Pick up any page where you left it.
 
 Help runs through your ordinary Codex setup, including its settings and tools. There are no API keys or required Marginalia environment variables. In v1.1.0, a full Ask shows the exact outgoing content and recipient before it goes. Instant help is on by default for allowed pages and provides quick definitions and simple explanations, using your own Codex subscription. It shows today's usage, can be turned off during onboarding or in Settings, and lets you exclude sites. Excluded sites never send anything. No Codex credential is stored in the browser. The current build also includes Simulate it, Journeys, Activity with Daily recap, Save page, Read page later and Forget this page. The Navier-Stokes runs above were recorded live on 18 September 2026.
 
@@ -75,7 +75,7 @@ installed and signed in. I entered it in the Product Hunt Astra 6 Challenge.
 Tell me what breaks.
 
 Fresh-install acceptance and proof of runtime confinement remain pending.
-“Check this claim” has not yet produced an accepted live reply, so it is early.
+Check this claim is limited. Treat its reply as a suggestion to investigate and review the sources yourself. An accepted live reply remains pending.
 
 The [research whitepaper](https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/Marginalia-Research-Whitepaper.pdf)
 ([source](https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md)) explains the design and research

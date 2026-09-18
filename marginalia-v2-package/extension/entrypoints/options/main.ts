@@ -14,7 +14,7 @@ async function render() {
   const current = await hosts();
   if (!current.length) {
     const empty = document.createElement('li');
-    empty.textContent = 'No sites are excluded. With Instant help on, readable page text is sent ahead when you open a page.';
+    empty.textContent = 'Your exclusion list is empty. With Instant help on, readable page text is sent to Codex ahead of time when you open an allowed page.';
     list.append(empty); return;
   }
   for (const host of current) {
@@ -51,10 +51,10 @@ const diagnosticsRoot = document.querySelector<HTMLElement>('#diagnostics')!;
 const diagnosticsStatus = document.querySelector<HTMLElement>('#diagnostics-status');
 // One sentence per state. The full list stays off the live region so it is not re-read on every check.
 function diagnosticsSentence(value: ReaderDiagnostics): string {
-  if (value.reachability === 'invalid') return 'That helper address is not a valid loopback address.';
+  if (value.reachability === 'invalid') return 'Enter a local helper address such as http://127.0.0.1:43120.';
   if (value.reachability === 'checking') return 'Checking the local helper.';
-  if (value.reachability === 'unreachable') return 'Local helper not reachable.';
-  return value.pairing === 'paired' ? 'Local helper reachable. Pairing confirmed.' : 'Local helper reachable. Not paired yet.';
+  if (value.reachability === 'unreachable') return 'The local helper is unreachable. Start it and check the address.';
+  return value.pairing === 'paired' ? 'Local helper reachable. Pairing confirmed.' : 'Local helper reachable. Pair in the browser margin Settings.';
 }
 function showDiagnostics(value: ReaderDiagnostics) {
   diagnosticsRoot.replaceChildren(diagnosticsSection(value));

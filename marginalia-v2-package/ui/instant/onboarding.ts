@@ -11,20 +11,20 @@ export function mountInstantOnboarding(host: HTMLElement, transport: InstantTran
   void Promise.all([receipt.dismissed(), transport.getSettings()]).then(([dismissed, settings]) => {
     if (!current() || dismissed || !settings.enabled) return;
     root = doc.createElement('div'); root.className = 'm-instant-onboarding';
-    const line = doc.createElement('p'); line.textContent = 'Instant help is on. It uses your Codex subscription and sends each allowed page to Codex for ready definitions.';
+    const line = doc.createElement('p'); line.textContent = 'Instant help is on. It uses your Codex subscription to send readable text from allowed pages to Codex ahead of time, then sends selections for short explanations. Settings shows usage and site exclusions.';
     const turnOff = action('Turn off', async () => {
       if (working) return; working = true; disable(true);
       try {
         const latest = await transport.getSettings();
         if (latest.enabled) await transport.saveSettings(disabledChange(latest));
         await receipt.dismiss(); if (current()) root?.remove();
-      } catch { if (current()) { line.textContent = 'Instant help setup is unavailable.'; disable(false); } }
+      } catch { if (current()) { line.textContent = 'Updating Instant help failed. Check its current state in Settings before continuing.'; disable(false); } }
       finally { working = false; }
     });
     const keep = action('Keep on', async () => {
       if (working) return; working = true; disable(true);
       try { await receipt.dismiss(); if (current()) root?.remove(); }
-      catch { if (current()) { line.textContent = 'Saving this choice is unavailable.'; disable(false); } }
+      catch { if (current()) { line.textContent = 'Saving this choice failed. Check Instant help in Settings.'; disable(false); } }
       finally { working = false; }
     });
     const disable = (value: boolean) => { turnOff.disabled = value; keep.disabled = value; };
