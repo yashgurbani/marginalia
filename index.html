@@ -3,13 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>A personalized, agentic margin for the web.</title>
+<title>Marginalia: the web, annotated for the agentic era</title>
+<meta name="description" content="Your agentic research assistant, in the margin of any page. Ask hard passages, simulate them, and save highlights, notes and reading journeys on your own disk.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Marginalia">
+<meta property="og:title" content="Marginalia: the web, annotated for the agentic era">
+<meta property="og:description" content="Your agentic research assistant, in the margin of any page. Ask hard passages, simulate them, and save highlights, notes and reading journeys on your own disk.">
+<meta property="og:url" content="https://yashgurbani.github.io/marginalia/">
 <link rel="canonical" href="https://yashgurbani.github.io/marginalia/">
-<meta name="description" content="A personalized, agentic margin for the web.">
+<meta name="twitter:card" content="summary">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='none'/%3E%3Cpath d='M11.5 1.5v13' stroke='%23566' stroke-width='1'/%3E%3Cpath d='M2 4h7M2 6.5h7M2 9h7M2 11.5h5' stroke='%23334' stroke-width='1.2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="site/demo/margin.css">
 <style>
-/* Tokens ported from marginalia-v2-package/ui/tokens.css (ink blue, hue 255). */
+/* Tokens ported from marginalia-v2-package/ui/tokens.css (ink blue, hue 255).
+   The four section colours match the launch hero. */
 :root {
   --m-page: oklch(0.990 0.004 255);
   --m-margin: oklch(0.968 0.007 255);
@@ -25,9 +33,11 @@
   --m-accent-soft: oklch(0.925 0.030 255);
   --m-on-accent: oklch(0.990 0.004 255);
   --m-highlight: oklch(0.935 0.065 95);
-  --m-sec-1: oklch(0.800 0.060 255);
-  --m-sec-2: oklch(0.800 0.060 195);
-  --m-sec-3: oklch(0.800 0.060 145);
+  --m-sec-1: oklch(0.630 0.060 255);
+  --m-sec-2: oklch(0.570 0.060 195);
+  --m-sec-3: oklch(0.510 0.060 145);
+  --m-sec-4: oklch(0.630 0.060 85);
+  --m-scrim: oklch(0.245 0.016 255);
   --m-serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
   --m-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --m-mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
@@ -50,8 +60,10 @@
     --m-on-accent: oklch(0.180 0.020 255);
     --m-highlight: oklch(0.380 0.055 95);
     --m-sec-1: oklch(0.560 0.060 255);
-    --m-sec-2: oklch(0.560 0.060 195);
-    --m-sec-3: oklch(0.560 0.060 145);
+    --m-sec-2: oklch(0.620 0.060 195);
+    --m-sec-3: oklch(0.680 0.060 145);
+    --m-sec-4: oklch(0.560 0.060 85);
+    --m-scrim: oklch(0.050 0.010 255);
     color-scheme: dark;
   }
 }
@@ -72,8 +84,10 @@
   --m-on-accent: oklch(0.180 0.020 255);
   --m-highlight: oklch(0.380 0.055 95);
   --m-sec-1: oklch(0.560 0.060 255);
-  --m-sec-2: oklch(0.560 0.060 195);
-  --m-sec-3: oklch(0.560 0.060 145);
+  --m-sec-2: oklch(0.620 0.060 195);
+  --m-sec-3: oklch(0.680 0.060 145);
+  --m-sec-4: oklch(0.560 0.060 85);
+  --m-scrim: oklch(0.050 0.010 255);
   color-scheme: dark;
 }
 
@@ -85,6 +99,9 @@ body {
   color: var(--m-ink);
   font: 1.0625rem/1.65 var(--m-serif);
   text-rendering: optimizeLegibility;
+  /* The demo margin reserves its own space here. */
+  padding-inline-end: var(--mgd-gutter, 0px);
+  overflow-x: hidden;
 }
 :focus-visible { outline: 2px solid var(--m-accent); outline-offset: 3px; border-radius: 2px; }
 a { color: var(--m-accent); text-underline-offset: 3px; text-decoration-thickness: 1px; }
@@ -100,24 +117,17 @@ code { font: 0.875em/1.5 var(--m-mono); background: var(--m-sunken); padding: 0.
 }
 .skip:focus { left: 12px; top: 12px; }
 
-.sheet { max-width: 70rem; margin: 0 auto; padding: 0 1rem 4rem; position: relative; }
-
-/* One hairline running the height of the page: the margin. */
-@media (min-width: 60rem) {
-  .sheet { padding: 0 2.5rem 6rem; }
-  .sheet::after {
-    content: ""; position: absolute; top: 0; bottom: 0;
-    right: calc(2.5rem + 15rem + 1.25rem); width: 1px;
-    background: var(--m-rule); pointer-events: none;
-  }
-}
+.sheet { max-width: 66rem; margin: 0 auto; padding: 0 1rem 4rem; position: relative; }
+@media (min-width: 48rem) { .sheet { padding: 0 2.5rem 6rem; } }
 
 .band { padding: 2.5rem 0; border-top: 1px solid var(--m-rule); }
 .band:first-of-type { border-top: 0; }
-@media (min-width: 60rem) {
-  .band { display: grid; grid-template-columns: minmax(0, 1fr) 15rem; column-gap: 2.5rem; align-items: start; padding: 3.5rem 0; }
+@media (min-width: 80rem) {
+  .band { display: grid; grid-template-columns: minmax(0, 1fr) 14rem; column-gap: 2.5rem; align-items: start; padding: 3.5rem 0; }
   .band > * { grid-column: 1; }
-  .band > .note { grid-column: 2; grid-row: 2; margin: 0; padding: 0; border: 0; }
+  /* The note keeps to the outer column and spans the whole band, so a short
+     line beside it never has to grow to the note's height. */
+  .band > .note { grid-column: 2; grid-row: 1 / span 99; align-self: start; margin: 0; padding: 0; border: 0; }
 }
 
 h1, h2, h3 { font-weight: 400; margin: 0; text-wrap: balance; letter-spacing: -0.015em; }
@@ -145,54 +155,101 @@ p:last-child { margin-bottom: 0; }
 
 /* Masthead */
 .masthead { padding: 2.25rem 0 0; }
-@media (min-width: 60rem) { .masthead { display: grid; grid-template-columns: minmax(0, 1fr) 15rem; column-gap: 2.5rem; padding-top: 3rem; } }
+@media (min-width: 80rem) { .masthead { display: grid; grid-template-columns: minmax(0, 1fr) 14rem; column-gap: 2.5rem; padding-top: 3rem; } }
 .wordmark { font: 600 1.0625rem/1.4 var(--m-sans); letter-spacing: -0.02em; }
 .masthead nav { font: 0.8125rem/1.6 var(--m-sans); margin-top: 0.4rem; }
 .masthead nav a { margin-inline-end: 1rem; display: inline-block; }
-@media (min-width: 60rem) { .masthead nav { grid-column: 2; margin-top: 0.15rem; font-size: 0.78125rem; } .masthead nav a { margin-inline-end: 0.7rem; } .masthead nav a:last-child { margin-inline-end: 0; } }
+@media (min-width: 80rem) { .masthead nav { grid-column: 2; margin-top: 0.15rem; font-size: 0.78125rem; } .masthead nav a { margin-inline-end: 0.7rem; } .masthead nav a:last-child { margin-inline-end: 0; } }
 
 /* Hero */
 .hero { padding-top: 2rem; }
 .hero h1 { font-size: 2.25rem; line-height: 1.15; margin-bottom: 1.25rem; }
-@media (min-width: 60rem) { .hero h1 { font-size: 3rem; } }
+@media (min-width: 80rem) { .hero h1 { font-size: 3rem; } }
 .hero .lede { font-size: 1.1875rem; color: var(--m-ink-2); max-width: 36rem; }
+.hero .second { font-size: 1.0625rem; color: var(--m-ink); max-width: 36rem; }
+
+/* Buttons that drive the demo margin */
+.row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 1rem; }
+.act {
+  font: 0.875rem/1.2 var(--m-sans);
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--m-edge); border-radius: 6px;
+  background: var(--m-surface); color: var(--m-ink);
+  cursor: pointer; text-align: start;
+  transition: background 150ms cubic-bezier(0.16, 1, 0.3, 1), border-color 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.act:hover { background: var(--m-sunken); border-color: var(--m-rule-strong); }
+.act.primary { border-color: var(--m-accent); color: var(--m-accent); }
+
+.hint {
+  font: 0.8125rem/1.6 var(--m-sans);
+  color: var(--m-ink-3);
+  margin: 0 0 0.9rem;
+  max-width: 34rem;
+}
+
+/* The quoted example passage */
+.quote {
+  margin: 0 0 0.6rem;
+  border-inline-start: 2px solid var(--m-rule-strong);
+  padding-inline-start: 1rem;
+  max-width: 40rem;
+}
+.quote p { font-size: 1.125rem; margin: 0; }
+.source { font: 0.8125rem/1.6 var(--m-sans); color: var(--m-ink-3); margin: 0 0 1.25rem; max-width: 40rem; }
+.term {
+  border: 0; background: none; padding: 0; margin: 0;
+  font: inherit; color: var(--m-accent);
+  text-decoration: underline; text-decoration-style: dotted;
+  text-underline-offset: 3px; cursor: pointer;
+}
+.term:hover { text-decoration-style: solid; }
+
+/* The four sections of work */
+.four { display: grid; gap: 1.5rem; margin: 0; padding: 0; list-style: none; }
+@media (min-width: 45rem) { .four { grid-template-columns: 1fr 1fr; gap: 1.75rem 2rem; } }
+.four > li { border-top: 2px solid var(--bar, var(--m-rule)); padding-top: 0.9rem; max-width: 34rem; }
+.four-1 { --bar: var(--m-sec-1); }
+.four-2 { --bar: var(--m-sec-2); }
+.four-3 { --bar: var(--m-sec-3); }
+.four-4 { --bar: var(--m-sec-4); }
+.four p { font-size: 1rem; color: var(--m-ink-2); margin-bottom: 0.75rem; }
+
+/* The scroll story */
+.story { margin: 0; padding: 0; list-style: none; counter-reset: beat; }
+.story > li {
+  border-top: 1px solid var(--m-rule);
+  padding: 1.5rem 0 1.5rem 2.5rem;
+  position: relative; max-width: 40rem;
+}
+.story > li:first-child { border-top: 0; }
+.story > li::before {
+  counter-increment: beat; content: counter(beat);
+  position: absolute; inset-inline-start: 0; top: 1.55rem;
+  font: 600 0.75rem/1 var(--m-sans); color: var(--m-ink-3);
+  border: 1px solid var(--m-rule-strong); border-radius: 50%;
+  width: 1.6rem; height: 1.6rem; display: grid; place-items: center;
+}
+.story > li:first-child::before { top: 0.1rem; }
+.story p { color: var(--m-ink-2); margin-bottom: 0.75rem; }
 
 /* Promises and steps */
-.stack { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+.stack { margin: 0; padding: 0; list-style: none; }
 .stack > li { border-top: 1px solid var(--m-rule); padding: 1.25rem 0; max-width: 40rem; }
 .stack > li:first-child { border-top: 0; padding-top: 0; }
 .stack > li:last-child { padding-bottom: 0; }
 .stack p { color: var(--m-ink-2); }
-.steps > li { padding-inline-start: 2.25rem; position: relative; }
-.steps > li::before {
-  counter-increment: step; content: counter(step);
-  position: absolute; inset-inline-start: 0; top: 1.3rem;
-  font: 600 0.75rem/1 var(--m-sans); color: var(--m-ink-3);
-  border: 1px solid var(--m-rule-strong); border-radius: 50%;
-  width: 1.5rem; height: 1.5rem; display: grid; place-items: center;
-}
-.steps > li:first-child::before { top: 0.15rem; }
 
 /* Screenshot slots. The frame stands in when the file is absent. */
 .shots { margin: 0; padding: 0; display: grid; gap: 1.75rem; }
-.shot { margin: 0; }
+.shot { margin: 1.25rem 0 0; }
 .shot .frame {
   border: 1px solid var(--m-rule-strong);
   border-radius: 6px;
   background: var(--m-margin);
-  background-image: linear-gradient(to right, transparent calc(100% - 4.5rem), var(--m-sunken) calc(100% - 4.5rem));
-  min-height: 12rem;
-  display: grid; align-items: center;
   overflow: hidden;
 }
 .shot .frame img { width: 100%; border-radius: 5px; }
-.shot .frame .pending {
-  font: 0.75rem/1.5 var(--m-sans); color: var(--m-ink-3);
-  padding: 1rem 1.25rem; text-align: start; margin: 0;
-}
-/* When the screenshot loads, the standing text steps aside. When the file is
-   missing the img element removes itself and the text stays. */
-.shot .frame img + .pending { display: none; }
 .shot figcaption { font: 0.8125rem/1.6 var(--m-sans); color: var(--m-ink-2); margin-top: 0.6rem; max-width: 34rem; }
 
 /* Download */
@@ -205,10 +262,13 @@ p:last-child { margin-bottom: 0; }
   border: 1px solid transparent;
   transition: background 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
+.cta.quiet { background: var(--m-surface); color: var(--m-ink); border-color: var(--m-edge); }
 .cta:hover { background: oklch(from var(--m-accent) calc(l - 0.05) c h); text-decoration: none; }
+.cta.quiet:hover { background: var(--m-sunken); }
 .install { margin: 1.25rem 0 0; padding: 0 0 0 1.35rem; max-width: 40rem; }
 .install li { margin-bottom: 0.6rem; }
 .install li:last-child { margin-bottom: 0; }
+.dated { font: 0.8125rem/1.6 var(--m-sans); color: var(--m-ink-2); max-width: 40rem; }
 
 /* Limits */
 .limits { margin: 0; max-width: 40rem; }
@@ -221,7 +281,26 @@ p:last-child { margin-bottom: 0; }
 .foot ul { list-style: none; margin: 0 0 0.9rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem; }
 .foot p { max-width: 36rem; }
 
+/* Reveal on scroll. Only applied once the script has run, so the page is
+   complete without JavaScript. */
+.js .reveal { opacity: 0; transform: translateY(10px); transition: opacity 420ms cubic-bezier(0.16, 1, 0.3, 1), transform 420ms cubic-bezier(0.16, 1, 0.3, 1); }
+.js .reveal.is-in { opacity: 1; transform: none; }
+
+/* The floating "Open margin" button is fixed above the page on narrow
+   screens, so no action row and no footer line runs underneath it. */
+@media (max-width: 62.4375rem) {
+  .sheet { padding-bottom: 5rem; }
+  .row { padding-inline-end: 8rem; }
+}
+
+@media print {
+  .js .reveal { opacity: 1 !important; transform: none !important; }
+  #marginalia-demo, .mgd, .mgd-scrim, .mgd-open-fab, .mgd-card { display: none !important; }
+  body { padding-inline-end: 0 !important; }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .js .reveal { opacity: 1; transform: none; transition: none; }
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
@@ -239,6 +318,7 @@ p:last-child { margin-bottom: 0; }
   <header class="masthead">
     <p class="wordmark">Marginalia</p>
     <nav aria-label="Page sections">
+      <a href="#try">Demo</a>
       <a href="#download">Download</a>
       <a href="#limits">Limits</a>
       <a href="site/privacy.html">Privacy</a>
@@ -247,101 +327,266 @@ p:last-child { margin-bottom: 0; }
   </header>
 
   <main id="main">
+
 <section class="band hero" aria-labelledby="t-hero">
-<h1 id="t-hero">A personalized, agentic margin for the web.</h1>
-<p class="lede">Read a passage, keep your own note beside it, and ask for help when you need it. Your notes are senior to model replies. The page is never rewritten.</p>
-<p><a href="site/Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
-</p>
+<h1 id="t-hero">The web, annotated for the agentic era.</h1>
+<p class="lede">A personalized, agentic and dynamic margin, right in your browser. Your research assistant for the web.</p>
+<p class="second">Ask the hardest pages on the web. Keep what you learn.</p>
+<p data-margin-skip><a class="cta" href="https://github.com/yashgurbani/marginalia/releases/latest">Download for Chrome</a> <a class="cta quiet" href="https://github.com/yashgurbani/marginalia">Source on GitHub</a></p>
+<p class="hint">Select any sentence on this page. The margin beside you is a demo. The real one opens in Chrome's side panel.</p>
+<div class="row" data-margin-skip>
+  <button type="button" class="act" data-margin-open>Open the demo margin</button>
+  <button type="button" class="act" data-margin-action="walkthrough">Play the walk-through again</button>
+</div>
 <aside class="note">
-<p>A Chrome MV3 extension and a local helper on <code>127.0.0.1</code>. Reading data lives in local SQLite, with browser copies for recovery. MIT licensed.</p>
+<p>An alpha built by one developer. It works in Chrome and needs Codex installed and signed in.</p>
+<p>Help runs through your ordinary Codex setup, including its settings and tools. No API keys and no Marginalia environment variables.</p>
 </aside>
 </section>
-<section class="band" id="read-now" aria-labelledby="t-read-now">
-<h2 id="t-read-now">Read now</h2>
-<p>Select a passage. Keep a highlight, write a note in your own words, or choose Ask. Notes stay attached to their source, with replies beneath them. The app does not infer what you know.</p>
-<figure class="shot">
-<div class="frame"><img src="site/media/01-note-beside-passage.png" alt="A reading page with the margin open. Two reader notes sit beside the passage they quote." onerror="this.closest('figure').remove()">
+
+<section class="band reveal" id="try" aria-labelledby="t-try">
+<p class="label">The demo, on this page</p>
+<h2 id="t-try">One hard sentence, six ways to read it.</h2>
+<p>This sentence comes from OpenAI's post on the Navier-Stokes equations. Click a word in it to replay the definition the margin gave on 18 September 2026, or choose one of the six kinds below.</p>
+<blockquote class="quote" data-margin-quote><p>The development of a <button type="button" class="term" data-margin-term="singularity">singularity</button> would have to happen despite the presence of <button type="button" class="term" data-margin-term="viscosity">viscosity</button>, which tends to smooth out motion.</p></blockquote>
+<p class="source" data-margin-skip>OpenAI, <a href="https://openai.com/index/navier-stokes-solution/">Navier-Stokes solution</a>. Quoted here under fair use.</p>
+<div class="row" data-margin-skip>
+  <button type="button" class="act primary" data-margin-ask="simulate">Simulate it</button>
+  <button type="button" class="act" data-margin-ask="define">Define</button>
+  <button type="button" class="act" data-margin-ask="derive">Step by step</button>
+  <button type="button" class="act" data-margin-ask="diagram">Diagram</button>
+  <button type="button" class="act" data-margin-ask="explore">Explore</button>
+  <button type="button" class="act" data-margin-ask="unsure">Not sure</button>
 </div>
-<figcaption>Your note stays beside the passage that prompted it.</figcaption>
-</figure>
+<p class="hint">Start with Simulate it. The sliders in the reply run for real in your browser, and the model says plainly that it does not solve the Navier-Stokes equations.</p>
+<aside class="note">
+<p>Every reply on this page was recorded live on 18 September 2026 and is replayed here. The demo margin never calls a model.</p>
+<p>A definition arrived in under four seconds. A working model took about three minutes. These are recorded timings; later requests can take longer.</p>
+<p>The demo retains the labels used in its recording. In the extension, Define is Define it here, Step by step is Show the steps, Diagram is See it, Explore is Connect it, and Not sure is Say it plainly. The extension also includes Journeys, Activity and Daily recap.</p>
+</aside>
 </section>
-<section class="band" id="read-later" aria-labelledby="t-read-later">
-<h2 id="t-read-later">Read it later</h2>
-<p>Park a passage or thread and return to a “You were here” resume line. Saved marks repaint when the page can be matched again. If the source has moved or the anchor is uncertain, the margin shows that state.</p>
-<p>Retained local copies preserve source versions, notes and replies. Removing a thread does not erase every retained copy.</p>
+
+<section class="band reveal" id="four" aria-labelledby="t-four">
+<p class="label">What it does</p>
+<h2 id="t-four">Four kinds of reading.</h2>
+<p class="hint">The replies on this page are recorded.</p>
+<ul class="four">
+  <li class="four-1">
+    <h3>Learn</h3>
+    <p>Click a hard word. A definition written for this passage arrives in under four seconds.</p>
+    <div class="row" data-margin-skip>
+      <button type="button" class="act" data-margin-term="viscosity">Define viscosity</button>
+      <button type="button" class="act" data-margin-term="singularity">Define singularity</button>
+    </div>
+  </li>
+  <li class="four-2">
+    <h3>Understand</h3>
+    <p>Turn a passage into a live simulation, a diagram, a worked example, or the steps.</p>
+    <div class="row" data-margin-skip>
+      <button type="button" class="act" data-margin-ask="simulate">Simulate it</button>
+      <button type="button" class="act" data-margin-ask="diagram">Diagram</button>
+      <button type="button" class="act" data-margin-ask="derive">Steps</button>
+    </div>
+  </li>
+  <li class="four-3">
+    <h3>Research</h3>
+    <p>Get a shelf of what to read next, with every source linked.</p>
+    <div class="row" data-margin-skip>
+      <button type="button" class="act" data-margin-ask="explore">What to read next</button>
+      <button type="button" class="act" data-margin-ask="unsure">Not sure</button>
+    </div>
+  </li>
+  <li class="four-4">
+    <h3>Reading journeys</h3>
+    <p>Save interactive journeys, annotations, highlights and bookmarks. Pick up any page where you left it.</p>
+    <div class="row" data-margin-skip>
+      <button type="button" class="act" data-margin-action="save">Save page</button>
+      <button type="button" class="act" data-margin-action="park">Read page later</button>
+      <button type="button" class="act" data-margin-action="library">Open the Library</button>
+    </div>
+  </li>
+</ul>
 </section>
-<section class="band" id="knowledge" aria-labelledby="t-knowledge">
-<h2 id="t-knowledge">Your knowledge base</h2>
-<p>Kept passages, notes and replies collect in your local library with source attribution. Filter threads by state and export your work as plain files. Each page adds to a record you own.</p>
+
+<section class="band reveal" id="story" aria-labelledby="t-story">
+<p class="label">A reading, end to end</p>
+<h2 id="t-story">How an hour with a hard page goes.</h2>
+<ol class="story">
+  <li>
+    <h3>You meet a page you cannot follow.</h3>
+    <p>The margin opens beside the text and preserves the source page. Instant help starts on and prepares allowed page text through your Codex subscription; onboarding and Settings let you turn it off.</p>
+    <div class="row" data-margin-skip><button type="button" class="act" data-margin-open>Open the margin</button></div>
+  </li>
+  <li>
+    <h3>You click the word that blocked you.</h3>
+    <p>A short definition written for this passage arrives in the margin.</p>
+    <div class="row" data-margin-skip><button type="button" class="act" data-margin-term="singularity">Click singularity</button></div>
+  </li>
+  <li>
+    <h3>You ask the passage for a model you can move.</h3>
+    <p>The reply carries sliders, a curve and the plain statement of what it does not prove.</p>
+    <div class="row" data-margin-skip><button type="button" class="act" data-margin-ask="simulate">Simulate it</button></div>
+  </li>
+  <li>
+    <h3>You write down what you think.</h3>
+    <p>Select any sentence on this page, choose Note, and your words save beside the sentence that prompted them. Your note sits above the reply.</p>
+  </li>
+  <li>
+    <h3>You run out of time and keep the page for later.</h3>
+    <p>Reading it later keeps your place along with your highlights, notes and replies.</p>
+    <div class="row" data-margin-skip><button type="button" class="act" data-margin-action="park">Read page later</button></div>
+  </li>
+  <li>
+    <h3>You come back and pick it up.</h3>
+    <p>The Library holds what you kept, with search and the source beside every passage.</p>
+    <div class="row" data-margin-skip><button type="button" class="act" data-margin-action="library">Open the Library</button></div>
+  </li>
+</ol>
 </section>
-<section class="band" id="ask" aria-labelledby="t-ask">
+
+<section class="band reveal" id="yours" aria-labelledby="t-yours">
+<p class="label">Yours</p>
+<h2 id="t-yours">Your sign-in, your disk, your work.</h2>
+<ul class="stack">
+  <li>
+    <h3>Your own Codex sign-in</h3>
+    <p>Help runs through the Codex you already have. There are no API keys to paste and no account to make here.</p>
+  </li>
+  <li>
+    <h3>Notes and highlights stay on your disk</h3>
+    <p>Kept passages, notes and replies collect in a local library with the source beside them. Search it, group it into journeys, and export your work as plain files.</p>
+  </li>
+  <li>
+    <h3>Sites you exclude never send anything</h3>
+    <p>You can exclude a site in Settings. An excluded site sends nothing. On an excluded site the margin shows no Ask controls at all.</p>
+  </li>
+  <li>
+    <h3>Forget a page whenever you want</h3>
+    <p>In the extension, Forget this page clears prepared help while keeping your notes, highlights and saved threads. The website demo has a broader reset: it clears this demo page and its local demo library.</p>
+    <div class="row" data-margin-skip><button type="button" class="act" data-margin-action="forget">Forget this page</button></div>
+  </li>
+  <li>
+    <h3>Open source</h3>
+    <p>The code is MIT licensed and public. <a href="site/privacy.html">Read the privacy page</a> for what leaves your machine and when.</p>
+  </li>
+</ul>
+</section>
+
+<section class="band reveal" id="ask" aria-labelledby="t-ask">
 <h2 id="t-ask">How Ask works</h2>
-<p>Ask sends an approved passage and your chosen note to a Codex agent, with GPT-6 Astra available for deeper work. It can define a term, work an example or explain a passage step by step. Supported saved solvers can run again without another model turn.</p>
-<p>Review the exact outgoing text, recipient and permission scope before dispatch. Choose this time, always on this site, or never on this site. Selecting, keeping and writing a note do not send a model request. Ask is a deliberate action; nothing sends on its own.</p>
-<p>The Codex process starts locally; model inference runs on the provider’s service. The reader-authorized runtime has the limits below.</p>
+<p>A full Ask sends an approved passage and your note through your own Codex sign-in. There are no API keys. A reply can be a definition from the page, an example, a derivation, a diagram, connections to other reading, or a small working model with a slider.</p>
+<p>For a full Ask you review the exact outgoing text and recipient before it goes. Excluded sites never send anything. No Codex credential is stored in the browser.</p>
+<p>Instant help is on by default. It sends each allowed open page to Codex so quick definitions and simple explanations are ready when you select text, using your own Codex subscription. You can turn it off during onboarding or in Settings, and you can exclude sites. Excluded sites never send anything.</p>
 <figure class="shot">
 <div class="frame"><img src="site/media/02-ask-draft.png" alt="A selected passage with a question drafted in the margin and a Review with local helper control." onerror="this.closest('figure').remove()">
 </div>
 <figcaption>Draft a question beside the selected passage. It stays on this device until you review and approve it.</figcaption>
 </figure>
-<p>Library search and “Related saved passages” are available in the local library page. Code and automated tests support this claim; native browser acceptance has not been recorded.</p>
+<p>The Library holds what you kept, and you can search it. Search has passed automated tests. It has not yet been checked by hand in Chrome.</p>
 </section>
-<section class="band" id="next" aria-labelledby="t-next">
-<h2 id="t-next">Next</h2>
-<p>PDF reading and listening (“Hear it”) are next. Topics and reading paths across papers, sharing, connectors and Firefox are also planned.</p>
+
+<section class="band reveal" id="read-now" aria-labelledby="t-read-now">
+<h2 id="t-read-now">Your note stays with its source</h2>
+<p>Select a passage. Keep a highlight, write a note in your own words, or choose Ask. Notes stay attached to their source, with replies beneath them. The page is never rewritten.</p>
+<figure class="shot">
+<div class="frame"><img src="site/media/01-note-beside-passage.png" alt="A reading page with the margin open. Two reader notes sit beside the passage they quote." onerror="this.closest('figure').remove()">
+</div>
+<figcaption>Your note stays beside the passage that prompted it.</figcaption>
+</figure>
+<p>Mark a passage or thread to read later and return to a resume line that says where you were. Your highlights come back when the page still matches what you marked. If the page has changed, the margin says the highlight no longer fits. Removing a passage can be undone, and the removed item stays listed under that passage.</p>
 </section>
-<section class="band" id="limits" aria-labelledby="t-limits">
+
+<section class="band reveal" id="limits" aria-labelledby="t-limits">
 <h2 id="t-limits">Honest limits</h2>
-<p>Real asks use a reader-authorized mode where solver confinement is requested but not observed. The mode is off by default. No recorded real run is in the evidence folder yet. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
-<p>Windows install is proven. macOS and Linux have command-level CI evidence. PDF is not supported yet.</p>
+<p>This is an alpha built by one developer. It works in Chrome and needs Codex installed and signed in. There is no phone app and no sync.</p>
+<p>Each full Ask shows the outgoing text for review before dispatch. The first request on a site also asks for your site choice. You choose this time, always here, or never here, and you can change that in Settings. Install has been tested on Windows. On macOS and Linux the install scripts pass automated checks, but nobody has run them by hand yet. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
 </section>
-<section class="band" id="built" aria-labelledby="t-built">
+
+<section class="band reveal" id="built" aria-labelledby="t-built">
 <h2 id="t-built">The Astra build</h2>
-<p>Marginalia is built by Yash Gurbani, a team of one, with GPT-6 Astra via Codex and ChatGPT Pro. Claude Code supports integration and review. The Astra Challenge build used bounded tasks and review against the code; passing tests do not close the real-run or confinement gates.</p>
-<p>The suite result is 961 tests: 955 pass, 0 fail, 6 skipped.</p>
+<p>Yash Gurbani builds Marginalia as a team of one for the Product Hunt Astra 6 Challenge.</p>
 </section>
-<section class="band" id="research" aria-labelledby="t-research">
+
+<section class="band reveal" id="research" aria-labelledby="t-research">
 <h2 id="t-research">Research and credits</h2>
-<p>ScholarPhi (Head et al., CHI 2021) showed definitions beside the text. Marginalia uses no ScholarPhi code; the debt is that idea. The Semantic Reader project (Lo et al., 2023 preprint, published in 2024) is part of the same research lineage.</p>
-<p><a href="https://scholarphi.org/">ScholarPhi</a> · <a href="https://scholarphi.org/assets/pdf/scholarphi-chi-2021.pdf">Head et al. paper</a> · <a href="https://arxiv.org/abs/2303.14334">Semantic Reader paper</a>
-</p>
-<p><a href="site/Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
-</p>
-</section>    <section class="band" id="download" aria-labelledby="t-download">
-      <p class="label">Download</p>
-      <h2 id="t-download">Install it.</h2>
-      <p><a class="cta" href="https://github.com/yashgurbani/marginalia/releases/latest">Get the latest release</a>
-</p>
-      <ol class="install">
-        <li>Unzip the download.</li>
-        <li>Open <code>chrome://extensions</code> in Chrome.</li>
-        <li>Turn on Developer mode.</li>
-        <li>Choose Load unpacked and select the extension folder.</li>
-        <li>In the package folder, run <code>.\scripts\install-helper.ps1</code> in PowerShell on Windows, or <code>bash scripts/install-helper.sh</code> on macOS or Linux.</li>
-        <li>Read the six-digit pairing code from the helper output and enter it in the extension options.</li>
-      </ol>
-      <aside class="note">
-        <p>If no release is listed yet, clone the repository and run the installer from <code>marginalia-v2-package</code>.</p>
-        <p>Both installers take <code>-DryRun</code> or <code>--dry-run</code>. To remove the login task or service, use <code>-Uninstall</code> or <code>--uninstall</code>. Uninstalling keeps your reading data.</p>
-      </aside>
-    </section>
+<p>ScholarPhi (Head et al., CHI 2021) showed definitions beside the text. Marginalia uses no ScholarPhi code. It borrows the idea of putting a definition next to the sentence that needs it. The Semantic Reader project (Lo et al., 2023 preprint, published in 2024) is part of the same research lineage.</p>
+<p><a href="https://scholarphi.org/">ScholarPhi</a> · <a href="https://scholarphi.org/assets/pdf/scholarphi-chi-2021.pdf">Head et al. paper</a> · <a href="https://arxiv.org/abs/2303.14334">Semantic Reader paper</a></p>
+<p><a href="site/Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a></p>
+</section>
+
+<section class="band reveal" id="download" aria-labelledby="t-download">
+  <p class="label">Download</p>
+  <h2 id="t-download">Install it.</h2>
+  <p data-margin-skip><a class="cta" href="https://github.com/yashgurbani/marginalia/releases/latest">Download for Chrome</a> <a class="cta quiet" href="https://github.com/yashgurbani/marginalia">Source on GitHub</a></p>
+  <p class="dated">18 September 2026: the current build is v1.1. It includes instant definitions and the live model.</p>
+  <ol class="install">
+    <li>Unzip the download.</li>
+    <li>Open <code>chrome://extensions</code> in Chrome.</li>
+    <li>Turn on Developer mode.</li>
+    <li>Choose Load unpacked and select the extension folder.</li>
+    <li>Download the source package as well, or clone the repository. Open <code>marginalia-v2-package</code> and run <code>.\scripts\install-helper.ps1</code> in PowerShell on Windows, or <code>bash scripts/install-helper.sh</code> on macOS or Linux. Node 24 is required.</li>
+    <li>Open <code>http://127.0.0.1:43120/</code>. In the local reader Settings, choose Show pairing code. On a readable page in Chrome, open Marginalia and select a passage. In the browser margin Settings, enter the code and choose Pair. For an embedded margin, choose Open browser margin first.</li>
+  </ol>
+  <aside class="note">
+    <p>For a source install, clone the repository, open <code>marginalia-v2-package</code>, run <code>npm ci</code> and <code>npm run extension:build</code>, then load <code>extension/.output/chrome-mv3</code> in Chrome. Run the helper installer from the same package folder. Use Chrome 116 or newer and Codex installed and signed in.</p>
+    <p>Both installers take <code>-DryRun</code> or <code>--dry-run</code>. To remove the login task or service, use <code>-Uninstall</code> or <code>--uninstall</code>. Uninstalling keeps your reading data.</p>
+  </aside>
+</section>
+
 </main>
 
   <footer class="foot">
 <ul>
-<li><a href="./">Home</a>
-</li>
-<li><a href="site/privacy.html">Privacy</a>
-</li>
-<li><a href="https://github.com/yashgurbani/marginalia/blob/main/LICENSE">MIT license</a>
-</li>
-<li><a href="https://github.com/yashgurbani/marginalia">Source on GitHub</a>
-</li>
+<li><a href="https://yashgurbani.github.io/marginalia/">Home</a></li>
+<li><a href="site/privacy.html">Privacy</a></li>
+<li><a href="https://github.com/yashgurbani/marginalia/blob/main/LICENSE">MIT license</a></li>
+<li><a href="https://github.com/yashgurbani/marginalia">Source on GitHub</a></li>
+<li><a href="https://www.producthunt.com/products/marginalia-2">Product Hunt</a></li>
 </ul>
-<p><a href="site/Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
-</p>
+<p><a href="site/Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a></p>
 </footer>
 
 </div>
+
+<script src="site/demo/replies.js"></script>
+<script src="site/demo/margin.js"></script>
+<script>
+(function () {
+  document.documentElement.classList.add('js');
+
+  /* The walk-through plays only where the margin sits beside the text. On a
+     narrow screen the margin is a bottom sheet, and opening it by itself
+     would cover the page before the reader has read a line. */
+  var wide = !window.matchMedia || window.matchMedia('(min-width: 1000px)').matches;
+
+  if (window.MarginDemo) {
+    try {
+      MarginDemo.mount({
+        content: 'main',
+        quote: '[data-margin-quote]',
+        pageTitle: 'Marginalia',
+        pageLabel: 'marginalia, the site',
+        storageKey: 'marginalia-site-demo',
+        walkthrough: wide
+      });
+    } catch (e) { /* the page stands without the demo margin */ }
+  }
+
+  var reveals = document.querySelectorAll('.reveal');
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!('IntersectionObserver' in window) || reduced) {
+    for (var i = 0; i < reveals.length; i++) reveals[i].classList.add('is-in');
+    return;
+  }
+  var seen = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      entry.target.classList.add('is-in');
+      seen.unobserve(entry.target);
+    });
+  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.06 });
+  reveals.forEach(function (node) { seen.observe(node); });
+}());
+</script>
 </body>
 </html>
