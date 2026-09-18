@@ -9,7 +9,11 @@ export default defineConfig({
     minimum_chrome_version: '116',
     permissions: ['storage', 'activeTab', 'tabs', 'webNavigation', 'sidePanel', 'alarms'],
     host_permissions: ['http://127.0.0.1/*'],
-    action: { default_title: 'Open Marginalia' },
+    icons: { 16: 'icon/16.png', 32: 'icon/32.png', 48: 'icon/48.png', 128: 'icon/128.png' },
+    action: {
+      default_title: 'Open Marginalia',
+      default_icon: { 16: 'icon/16.png', 32: 'icon/32.png', 48: 'icon/48.png', 128: 'icon/128.png' },
+    },
     side_panel: { default_path: 'panel.html' },
     incognito: 'not_allowed',
     web_accessible_resources: [{ resources: ['panel.html'], matches: ['http://*/*', 'https://*/*'] }],
