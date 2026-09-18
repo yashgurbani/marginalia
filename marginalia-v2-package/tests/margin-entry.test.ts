@@ -672,6 +672,7 @@ for (const [label, intent, question] of [
   ['What supports this', 'evidence', 'What supports this passage?'],
   ['Show me an example', 'instantiate', 'Show a worked example of this passage.'],
   ['Explain step by step', 'derive', 'Explain this passage step by step.'],
+  ['diagram', 'diagram', 'Diagram this passage, tying its parts to the source.'],
 ] as const) {
   test(`${label} saves a selection draft without opening asking or sending`, async t => {
     const e = env(t), requests: string[] = []; let opened = 0;

@@ -13,6 +13,7 @@ const bundles = Object.freeze({
   explore: Object.freeze({ root: new URL('../../skills/explore/', import.meta.url), files: Object.freeze(['SKILL.md', 'IO.md']) }),
   instantiate: Object.freeze({ root: new URL('../../skills/instantiate/', import.meta.url), files: Object.freeze(['SKILL.md', 'IO.md']) }),
   derive: Object.freeze({ root: new URL('../../skills/derive/', import.meta.url), files: Object.freeze(['SKILL.md', 'IO.md']) }),
+  diagram: Object.freeze({ root: new URL('../../skills/diagram/', import.meta.url), files: Object.freeze(['SKILL.md', 'IO.md']) }),
 } satisfies Record<SupportedInstructionIntent, Readonly<{ root: URL; files: readonly string[] }>>);
 const hash = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
 /** Git may materialize text with CRLF or LF. Review and pin one portable byte contract. */

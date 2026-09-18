@@ -18,6 +18,7 @@ const installed = {
   explore: ['../skills/explore/SKILL.md', '../skills/explore/IO.md'],
   instantiate: ['../skills/instantiate/SKILL.md', '../skills/instantiate/IO.md'],
   derive: ['../skills/derive/SKILL.md', '../skills/derive/IO.md'],
+  diagram: ['../skills/diagram/SKILL.md', '../skills/diagram/IO.md'],
 } as const;
 
 test('every supported instruction bundle includes its canonical installed content with matching digests', async () => {
