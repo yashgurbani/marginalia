@@ -2,6 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer } from '../daemon/server.ts';
 import type { CandidateReply } from '../contracts/reply.ts';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { packetDigest } from '../daemon/jobs/store.ts';
+import { commitSucceededReplyWithSolverBindings } from '../daemon/jobs/solver-bindings.ts';
+import type { FrozenJobContext, JobConsentAuthority, StartJobInput } from '../contracts/jobs.ts';
+import type { ProviderHandle } from '../contracts/job-runner.ts';
+import { PROBE_SENTINEL_PREFIX, type SolverCommandTransport } from '../daemon/solver/index.ts';
 
 const ORIGIN = 'chrome-extension://' + 'a'.repeat(32);
 const OTHER_ORIGIN = 'chrome-extension://' + 'b'.repeat(32);
@@ -13,8 +22,9 @@ function reply(title: string): CandidateReply {
     checks: [], staticFallback: title };
 }
 
-async function fixture() {
-  const helper = await startServer({ database: ':memory:', port: 0, diagnostics: () => ({ status: 'unavailable' }) });
+async function fixture(solver?: { transport: SolverCommandTransport; probeRoot: string }) {
+  const helper = await startServer({ database: ':memory:', port: 0, diagnostics: () => ({ status: 'unavailable' }),
+    ...(solver ? { solverTransport: solver.transport, solverProbeRoot: solver.probeRoot } : {}) });
   for (const suffix of ['one', 'two']) {
     helper.store.apply({ id: `keep-${suffix}`, kind: 'keep', threadId: `thread-${suffix}`,
       capture: { url: `https://${suffix}.example/article`, title: suffix, pageType: 'article', text: `Passage ${suffix}.`,
@@ -40,7 +50,7 @@ test('mounted solver routes require pairing and expose truthful status only to a
     const response = await fetch(helper.origin + '/api/solver/status', { headers: headers() });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { available: false,
-      reason: 'Saved-solver execution has no mounted command transport or confinement evidence collector.',
+      reason: 'No saved-solver command transport is available.',
       modelTurns: 0, durableAtMostOnce: true });
   } finally { await helper.close(); }
 });
@@ -83,7 +93,7 @@ test('unmounted execution dependencies fail closed without egress or grant consu
     const payload = await response.json() as { outcome: { status: string; code: string; reason: string } };
     assert.equal(payload.outcome.status, 'unavailable');
     assert.equal(payload.outcome.code, 'not-configured');
-    assert.match(payload.outcome.reason, /no mounted command transport or confinement evidence collector/i);
+    assert.equal(payload.outcome.reason, 'No saved-solver command transport is available.');
     const recompute = await fetch(helper.origin + '/api/solver/recompute', { method: 'POST', headers: headers(),
       body: JSON.stringify({ schema: 'marginalia.solver-execute.v1', requestId: 'request-1', planId: 'plan-1',
         planToken: 'f'.repeat(64), replyVersionId: 'reply-one', blockId: 'text', solverId: 'solver-1', inputs: {},
@@ -94,4 +104,85 @@ test('unmounted execution dependencies fail closed without egress or grant consu
     assert.equal((helper.store.db.prepare('SELECT count(*) AS n FROM egress_events').get() as { n: number }).n, beforeEgress);
     assert.equal((helper.store.db.prepare('SELECT count(*) AS n FROM consent_grant_state WHERE consumedAttemptId IS NOT NULL').get() as { n: number }).n, beforeConsumed);
   } finally { await helper.close(); }
+});
+
+test('the mounted collector surfaces a loopback confinement falsification and no transport keeps the placeholder', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-solver-mount-'));
+  const workspace = join(root, 'workspace'), probeRoot = join(root, 'probes');
+  await mkdir(join(workspace, 'solver'), { recursive: true });
+  await mkdir(probeRoot);
+  const source = 'process.stdout.write(JSON.stringify({schema:"marginalia.solver-output.v1",values:{answer:2}}));\n';
+  await writeFile(join(workspace, 'solver', 'main.js'), source, 'utf8');
+  const stream = (text: string) => ({ text, bytes: Buffer.byteLength(text), capReached: false, hostBoundReached: false });
+  const transport: SolverCommandTransport = {
+    enforces: { timeout: true, outputBytes: true, memoryBytes: false, maxTimeoutMs: 10_000 },
+    async exec(request) {
+      const probe = request.command.join(' ').includes('loopback-network') ? 'loopback-network' : 'filesystem-write';
+      const outcome = probe === 'loopback-network' ? 'not-denied' : 'denied';
+      return { status: 'exited', exitCode: 0, stdout: stream(`${PROBE_SENTINEL_PREFIX}${probe}=${outcome}\n`),
+        stderr: stream(''), streamed: true };
+    },
+  };
+  const mounted = await fixture({ transport, probeRoot });
+  try {
+    const localToken = mounted.pair(mounted.helper.origin);
+    const localHeaders = mounted.headers(localToken, mounted.helper.origin);
+    const thread = mounted.helper.store.get('thread-one')!;
+    const sourceVersion = mounted.helper.store.sourceVersion(thread.sourceVersionId)!;
+    const policyKey = 'a'.repeat(64), bindingDigest = 'b'.repeat(64);
+    const preview = mounted.helper.consent.prepare({ requestId: 'job-solver', bindingDigest, sourceUrl: mounted.helper.origin,
+      scope: 'cloud-inference', recipient: 'openai-codex', recipientLabel: 'OpenAI Codex', provider: 'app-server', policyKey,
+      outgoing: [{ label: 'Reviewed packet', text: sourceVersion.text,
+        sha256: createHash('sha256').update(sourceVersion.text).digest('hex') }] });
+    const grant = mounted.helper.consent.decide({ previewId: preview.id, expectedRevision: preview.revision, choice: 'always-site' },
+      { surface: 'localhost-settings', pairingId: 'pair', origin: mounted.helper.origin });
+    const input: StartJobInput = { id: 'job-solver', idempotencyKey: 'solver-key', threadId: thread.id, intent: 'simulate',
+      question: 'Compute.', provider: 'app-server', model: 'test-model', mode: 'workspace-files', policyKey,
+      grantId: grant.id, preparedPayloadDigest: bindingDigest, capabilities: ['solver'] };
+    const context: FrozenJobContext = { threadId: thread.id, sourceVersionId: sourceVersion.id, sourceUrl: thread.sourceUrl,
+      sourceTitle: thread.sourceTitle, sourcePageType: sourceVersion.pageType, sourceCapturedAt: sourceVersion.capturedAt,
+      sourceHash: sourceVersion.hash, sourceText: sourceVersion.text, passage: thread.anchor, question: input.question,
+      intent: input.intent, preparedPayloadDigest: bindingDigest, modelSettingsRevision: 1, modelCompatibilityKey: 'test',
+      outgoing: {} as FrozenJobContext['outgoing'] };
+    const jobs = mounted.helper.jobs.store;
+    jobs.create(input, context, packetDigest({ input, context }), packetDigest(input));
+    const attempt = jobs.createAttempt(input.id);
+    const handle: ProviderHandle = { jobId: attempt.id, workspace, policyKey, model: input.model, mode: input.mode,
+      provider: input.provider, providerInstanceId: 'provider-1', state: 'completed', tombstone: false, revision: 1, output: '{}' };
+    mounted.helper.store.db.prepare(`UPDATE job_attempts SET state='validating',revision=1,dispatchClaimed=1,handoffMarked=1,
+      workspacePrepared=1,providerHandle=? WHERE id=?`).run(JSON.stringify(handle), attempt.id);
+    mounted.helper.store.db.prepare("UPDATE jobs SET state='validating' WHERE id=?").run(input.id);
+    const solverReply: CandidateReply = { schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete',
+      title: 'Solver', summary: 'Solver', sourceBindings: [],
+      parameters: [{ name: 'x', label: 'X', default: 1, min: 0, max: 2, unit: '' }], assumptions: [], limitations: [],
+      requiredCapabilities: ['solver'], blocks: [
+        { id: 'answer', type: 'derived', name: 'answer', expression: 'x + 1', label: 'Answer', unit: '' },
+        { id: 'solver-1', type: 'solver', path: 'solver/main.js', inputNames: ['x'], outputBlocks: ['answer'] },
+      ], checks: [], staticFallback: 'Unavailable.' };
+    const resultAuthority = { withResultAcceptance: <T>(_job: unknown, _attemptId: string, commit: () => T) => commit() } as unknown as JobConsentAuthority;
+    await commitSucceededReplyWithSolverBindings({ store: jobs, authority: resultAuthority, job: jobs.get(input.id)!,
+      attemptId: attempt.id, expectedRevision: 1, reply: solverReply, workspace });
+
+    const plannedResponse = await fetch(mounted.helper.origin + '/api/solver/prepare', { method: 'POST', headers: localHeaders,
+      body: JSON.stringify({ schema: 'marginalia.solver-plan-request.v1', replyVersionId: 'job-solver-reply',
+        blockId: 'answer', solverId: 'solver-1', inputs: { x: 1 }, stateKey: STATE_KEY }) });
+    const planned = await plannedResponse.json() as { outcome: { status: string; plan: Record<string, unknown> } };
+    assert.equal(planned.outcome.status, 'planned', JSON.stringify(planned));
+    const recompute = await fetch(mounted.helper.origin + '/api/solver/recompute', { method: 'POST', headers: localHeaders,
+      body: JSON.stringify({ ...planned.outcome.plan, schema: 'marginalia.solver-execute.v1', requestId: 'request-1',
+        inputs: { x: 1 }, stateKey: STATE_KEY, requestedAt: '2026-09-18T00:00:00.000Z' }) });
+    const payload = await recompute.json() as { outcome: { status: string; code: string; issues?: string[] } };
+    assert.equal(payload.outcome.status, 'unavailable', JSON.stringify(payload));
+    assert.equal(payload.outcome.code, 'isolation-evidence-unavailable');
+    assert.ok(payload.outcome.issues?.includes('confinement-falsified:loopback-network'));
+
+    const unmounted = await fixture();
+    try {
+      const status = await fetch(unmounted.helper.origin + '/api/solver/status', { headers: unmounted.headers() });
+      assert.equal((await status.json() as { reason: string }).reason, 'No saved-solver command transport is available.');
+    } finally { await unmounted.helper.close(); }
+  } finally {
+    await mounted.helper.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

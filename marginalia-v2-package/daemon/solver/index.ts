@@ -34,6 +34,11 @@ export {
   type SolverTransportLimits,
 } from './transport.ts';
 export {
+  createLazySolverTransport,
+  type LazySolverTransport,
+  type LazySolverTransportOptions,
+} from './lazy-transport.ts';
+export {
   CONFINEMENT_EVIDENCE_VERSION,
   PROBE_SENTINEL_PREFIX,
   confinementProbeCommand,
