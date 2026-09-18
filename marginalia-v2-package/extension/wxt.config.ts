@@ -6,7 +6,7 @@ const { version } = JSON.parse(readFileSync(new URL('../package.json', import.me
 export default defineConfig({
   manifest: {
     name: 'Marginalia', version,
-    description: 'A margin beside what you read. Select a passage to save notes locally, or ask your own Codex about it.',
+    description: 'A personalized, agentic margin for the web. Keep local notes beside any page. Ask your own Codex about a passage you approve.',
     minimum_chrome_version: '116',
     permissions: ['storage', 'tabs', 'webNavigation', 'sidePanel', 'alarms'],
     host_permissions: ['http://127.0.0.1/*'],
