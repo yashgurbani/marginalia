@@ -33,7 +33,7 @@ export default defineContentScript({
       let loaded = false;
       frame.addEventListener('load', () => { if (loaded) { host?.remove(); host = null; } loaded = true; });
       frame.src = browser.runtime.getURL('/panel.html') + '#capability=' + encodeURIComponent(response.capability);
-      frame.style.cssText = 'position:fixed;right:12px;top:12px;width:min(420px,calc(100vw - 24px));height:calc(100vh - 24px);border:1px solid #aaa;z-index:2147483647;background:#faf8f3;color-scheme:light dark;';
+      frame.style.cssText = 'position:fixed;right:12px;top:12px;width:min(440px,calc(100vw - 24px));height:calc(100vh - 24px);border:1px solid #aaa;border-radius:var(--m-radius,6px);box-shadow:0 12px 32px color-mix(in oklch,var(--m-scrim,currentColor) 18%,transparent);z-index:2147483647;background:var(--m-surface,transparent);color-scheme:light dark;';
       shadow.append(frame); document.documentElement.append(host);
     }
     async function select() {
