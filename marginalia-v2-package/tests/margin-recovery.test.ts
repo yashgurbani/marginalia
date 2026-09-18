@@ -4,6 +4,9 @@ import { registerHooks } from 'node:module';
 import { ReaderJournal, type JournalState, type Persistence } from '../ui/journal.ts';
 import { wholePageAnchor, type ReaderMutation, type SourceCapture, type Thread } from '../contracts/reader.ts';
 import { HelperClient, HelperTransportError, forgetPairingIfCurrent, pairingCode, pairingIdentity } from '../ui/helper.ts';
+import type { AskingSelection } from '../ui/asking-host.ts';
+import { storage, asHost } from './t05-harness.ts';
+import { dom, button, replaceGlobals } from './t05-dom.ts';
 
 // Isolate the scientific-contract boundary; no test here validates or authorizes
 // a scientific reply. Journal, persistence lifecycle and transport are the actual modules.
@@ -16,7 +19,7 @@ registerHooks({ resolve(specifier, context, next) {
 } });
 const { applyIntendedNote, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle,
   documentJournal, documentDraft, documentQuestion, unsavedDrafts, unsavedQuestions, sourceBoundJournal, localPersistence } = await import('../ui/persistence.ts');
-const { marginItemSize, composerOffset, sectionMapState, threadContentKey } = await import('../ui/margin.ts');
+const { mountMargin, marginItemSize, composerOffset, sectionMapState, threadContentKey } = await import('../ui/margin.ts');
 function deferred<T = void>() { let resolve!: (v: T) => void, reject!: (e: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const capture: SourceCapture = { url: 'https://example.test/a', title: 'Original', text: 'alpha beta gamma', pageType: 'article', capturedAt: '2026-09-17T00:00:00Z', extractionVersion: 'test-v1' };
@@ -143,4 +146,21 @@ test('network, timeout and unreadable success never become definitive applicatio
 test('EOF stays in the last section rather than jumping to the page head',async()=>{
  const {sectionIndexAt}=await import('../ui/margin.ts');const sections=[{title:'A',start:0,end:10},{title:'B',start:15,end:20}];
  assert.equal(sectionIndexAt(sections,20),1);assert.equal(sectionIndexAt(sections,12),0);assert.equal(sectionIndexAt(sections,-1),0);
+});
+
+test('a retained unknown request reappears after remount and opens by reads only',async t=>{
+ const e={...dom(t),...storage(t),namespace:crypto.randomUUID()};sessionStorage.setItem('marginalia-draft-tab','recovery-tab');
+ const persistence=localPersistence(e.namespace),journal=documentJournal(e.namespace,persistence.journal);
+ await journal.change(keep('saved'));const remote=structuredClone(journal.state.threads[0]);remote.sourceVersionId='source';await journal.sync(async()=>{},async()=>[remote]);
+ e.data(e.namespace).set('pairing',{origin:e.document.location.origin,token:'x'.repeat(43)});
+ const draftKey='draft:recovery-tab:'+capture.url,jobId='unknown-job';
+ const retained={jobId,selection:{capture,anchor:remote.anchor,threadId:remote.id,sourceVersionId:'source',question:'Was this accepted?',context:'',resumeJobId:jobId}};
+ const first=await mountMargin(asHost(e.root),{capture,storageName:e.namespace,asking:()=>({open(){},setVisible(){},destroy(){}})});
+ await persistence.write('asking:'+draftKey+':request:'+jobId,retained);first.destroy();await first.drain();
+ const requests:Array<{url:string;method:string}>=[];replaceGlobals(t,{fetch:async(url:string,init:RequestInit={})=>{requests.push({url,method:init.method??'GET'});return Response.json({state:'outcome_unknown'})}});
+ let opened:AskingSelection|undefined;
+ const second=await mountMargin(asHost(e.root),{capture,storageName:e.namespace,asking:(_root,_context)=>({async open(selection){opened=structuredClone(selection);await fetch('/api/jobs/'+selection.resumeJobId,{method:'GET'})},setVisible(){},destroy(){}})});
+ button(e.root,'Check saved request').click();await second.drain();
+ assert.equal(opened?.resumeJobId,jobId);assert.deepEqual(requests,[{url:'/api/jobs/'+jobId,method:'GET'}]);assert.equal(requests.some(request=>request.method==='POST'&&request.url==='/api/jobs'),false);
+ second.destroy();await second.drain();
 });
