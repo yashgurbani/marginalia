@@ -5,24 +5,48 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import type { FrozenJobContext, HostInstructionBundle, ProviderJobPacket } from '../contracts/jobs.ts';
+import { prepareEnvelope } from '../daemon/jobs/envelope.ts';
 import { loadHostInstructions, hostInstructionText } from '../daemon/jobs/host-instructions.ts';
 
-test('the actual installed definition bundle is included verbatim and is not a runtime or tool grant', async () => {
+const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+const installed = {
+  define: ['../skills/define/SKILL.md', '../skills/define/references/runtime-contract.md'],
+  simulate: ['../skills/simulate/SKILL.md', '../skills/simulate/IO.md'],
+  evidence: ['../skills/evidence/SKILL.md', '../skills/evidence/IO.md'],
+  explore: ['../skills/explore/SKILL.md', '../skills/explore/IO.md'],
+} as const;
+
+test('every supported instruction bundle includes its installed files verbatim with matching digests', async () => {
+  for (const [intent, paths] of Object.entries(installed)) {
+    const bundle = await loadHostInstructions(intent as HostInstructionBundle['kind']); assert.ok(bundle);
+    assert.equal(bundle.kind, intent);
+    const documents = await Promise.all(paths.map(path => readFile(new URL(path, import.meta.url), 'utf8')));
+    for (const document of documents) assert.ok(bundle.text.includes(document));
+    assert.equal(bundle.sha256, digest(bundle.text));
+    assert.deepEqual(bundle.documents.map(file => file.sha256), documents.map(digest));
+    assert.equal(hostInstructionText(bundle, intent as HostInstructionBundle['kind']), bundle.text);
+  }
+});
+
+test('definition instruction bytes retain the installed digest fixture', async () => {
   const bundle = await loadHostInstructions('define'); assert.ok(bundle);
-  const skill = await readFile(new URL('../skills/define/SKILL.md', import.meta.url), 'utf8');
-  const contract = await readFile(new URL('../skills/define/references/runtime-contract.md', import.meta.url), 'utf8');
-  assert.ok(bundle.text.includes(skill)); assert.ok(bundle.text.includes(contract));
-  assert.equal(bundle.sha256, createHash('sha256').update(bundle.text).digest('hex'));
-  assert.deepEqual(bundle.documents.map(file => file.sha256), [skill, contract].map(text => createHash('sha256').update(text).digest('hex')));
-  assert.equal(hostInstructionText(bundle, 'define'), bundle.text);
-  assert.throws(() => hostInstructionText({ ...bundle, text: bundle.text + 'altered' }, 'define'), /binding/);
-  assert.throws(() => hostInstructionText(bundle, 'simulate'), /binding/);
+  assert.equal(bundle.sha256, '386e436434cad6be5e8b8cf9f16b78c7e40eee40b5cc56dfa391cec72dd3b0f7');
+});
+
+test('instruction bindings reject altered bytes and every cross-intent use', async () => {
+  const intents = Object.keys(installed) as HostInstructionBundle['kind'][];
+  for (const [index, intent] of intents.entries()) {
+    const bundle = await loadHostInstructions(intent); assert.ok(bundle);
+    assert.throws(() => hostInstructionText({ ...bundle, text: bundle.text + 'altered' }, intent), /binding/);
+    assert.throws(() => hostInstructionText(bundle, intents[(index + 1) % intents.length]), /binding/);
+  }
 });
 
 test('loading is host-selected, bounded, stable and refreshed on a new preparation', async t => {
   const root = await mkdtemp(join(tmpdir(), 't06-instructions-')); t.after(() => rm(root, { recursive: true, force: true }));
   const url = pathToFileURL(root + '/');
-  assert.equal(await loadHostInstructions('simulate', url), undefined); // No accidental document loading for another intent.
+  assert.equal(await loadHostInstructions('derive', url), undefined); // Unsupported intent cannot select a path.
   await assert.rejects(loadHostInstructions('define', url));
   await mkdir(join(root, 'references')); await writeFile(join(root, 'SKILL.md'), 'first instructions');
   await writeFile(join(root, 'references/runtime-contract.md'), 'integration boundary');
@@ -34,6 +58,28 @@ test('loading is host-selected, bounded, stable and refreshed on a new preparati
   await writeFile(join(root, 'SKILL.md'), Buffer.from([0xff, 0xfe])); await assert.rejects(loadHostInstructions('define', url), /encoded data/);
   await writeFile(join(root, 'SKILL.md'), '\ufeffsafe instructions');
   const bom = await loadHostInstructions('define', url); assert.ok(bom!.text.includes('\ufeffsafe instructions'));
-  assert.equal(bom!.documents[0].sha256, createHash('sha256').update('\ufeffsafe instructions').digest('hex')); await link(join(root, 'SKILL.md'), join(root, 'other'));
+  assert.equal(bom!.documents[0].sha256, digest('\ufeffsafe instructions')); await link(join(root, 'SKILL.md'), join(root, 'other'));
   await assert.rejects(loadHostInstructions('define', url), /authoritative/);
+});
+
+test('a prepared simulate envelope derives its instruction label from the bundle kind', async () => {
+  const hostInstructions = await loadHostInstructions('simulate'); assert.ok(hostInstructions);
+  const outgoing: ProviderJobPacket = {
+    schema: 'marginalia.job-packet.v1', intent: 'simulate', question: 'Show the behavior.',
+    source: { url: 'https://example.test/page', title: 'Example', pageType: null, capturedAt: null, sourceHash: 'source-hash', sourceVersionId: 'source-version' },
+    selection: { exact: 'selected', prefix: '', suffix: '', start: 0, end: 8, originalEnd: 8, omittedCharacters: 0 },
+    adjacentContext: { before: '', after: '', basis: 'bounded-character-context' },
+    availableCapabilities: [], omissions: [],
+  };
+  const context: FrozenJobContext = {
+    hostInstructions, threadId: 'thread', sourceVersionId: 'source-version', sourceUrl: 'https://example.test/page',
+    sourceTitle: 'Example', sourcePageType: null, sourceCapturedAt: null, sourceHash: 'source-hash', sourceText: 'selected',
+    passage: { exact: 'selected', prefix: '', suffix: '', start: 0, end: 8 }, question: 'Show the behavior.', intent: 'simulate',
+    preparedPayloadDigest: '0'.repeat(64), modelSettingsRevision: 1, modelCompatibilityKey: 'test', outgoing,
+  };
+  const prepared = prepareEnvelope({ sourceUrl: context.sourceUrl, scope: 'cloud-inference', recipient: 'provider', provider: 'app-server',
+    model: 'test', mode: 'structured-final', policyKey: 'policy', context, replySchemaText: '{}' });
+  const instruction = prepared.outgoing.find(part => part.label === 'Pinned simulate instructions');
+  assert.ok(instruction);
+  assert.equal(instruction.sha256, hostInstructions.sha256);
 });

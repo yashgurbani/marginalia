@@ -43,7 +43,7 @@ export type PrepareRetryJobInput = Pick<RetryJobInput, 'id' | 'idempotencyKey'>;
 
 /** Actual installed instruction bytes included in the reviewed model prompt, not model data. */
 export type HostInstructionBundle = {
-  kind: 'define'; text: string; sha256: string;
+  kind: 'define' | 'simulate' | 'evidence' | 'explore'; text: string; sha256: string;
   documents: { path: string; sha256: string }[];
 };
 
