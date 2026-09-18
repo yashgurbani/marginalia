@@ -1,11 +1,7 @@
+# Do not switch the repository's Pages source to GitHub Actions before 2026-09-21 17:00 PT, because that replaces the live WebMCP Challenge site.
 name: Pages
 
 on:
-  push:
-    branches: [codex/marginalia-v2]
-    paths:
-      - 'site/**'
-      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
