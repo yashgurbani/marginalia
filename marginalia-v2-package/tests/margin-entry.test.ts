@@ -47,7 +47,10 @@ for (const outcome of ['succeeded', 'cancelled', 'failed', 'outcome_unknown', 'c
       requests.push({ path: new URL(url).pathname, method: init.method!, body: init.body }); return Response.json(job);
     } });
     const writes: string[] = []; e.onWrite(async key => { writes.push(key); });
+    button(e.root, 'Collapse').click();
     const dot = e.root.querySelector('.m-activity')!; dot.click();
+    assert.match(dot.getAttribute('aria-label')!, /^Open What was sent:/);
+    assert.equal(e.root.querySelector('.mg')!.classList.contains('is-collapsed'), false);
     const sheet = e.root.querySelector('[aria-label="What was sent"]')!;
     await until(() => sheet.textContent.includes('recorded-model'));
     assert.equal(sheet.hidden, false);
@@ -65,6 +68,26 @@ for (const outcome of ['succeeded', 'cancelled', 'failed', 'outcome_unknown', 'c
     api.destroy(); await api.drain();
   });
 }
+
+test('collapsed saved-work dot identifies and opens its thread without sending', async t => {
+  const e = env(t); await threadFixture(e.namespace);
+  replaceGlobals(t, { matchMedia: (query: string) => ({ matches: query === '(max-width: 899px)' }) });
+  let asks = 0;
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false,
+    asking: () => { asks++; return { open() {}, setVisible() {}, destroy() {} }; } });
+  button(e.root, 'Collapse').click();
+  const dots = e.root.querySelectorAll('.m-rail-thread');
+  assert.equal(dots.length, 1);
+  const dot = dots[0];
+  assert.match(dot.getAttribute('aria-label')!, /^Open saved thread:/);
+  dot.focus(); dot.click();
+  await until(() => e.root.querySelector('.mg')!.classList.contains('is-collapsed') === false);
+  assert.equal(e.document.activeElement, e.root.querySelector('.m-source-action'));
+  e.root.fire('keydown', { key: 'Escape' });
+  assert.equal(e.document.activeElement, dot);
+  assert.equal(asks, 0);
+  api.destroy(); await api.drain();
+});
 test('reading-position editor is connected, anchored and single-map across save failure, collapse and suspend', async t => {
   const e = env(t); const api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false });
   button(e.root, 'Settings').click(); assert.equal(e.root.querySelectorAll('button').some(node => node.textContent === 'Retry saving'), false, 'clean hydrated settings do not claim recovery is needed'); button(e.root, 'Close settings').click();

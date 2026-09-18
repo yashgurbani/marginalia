@@ -159,6 +159,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const attachmentMessages = new Map<string, string>();
   const attachmentPending = new Set<string>();
   const threadNodes = new Map<string, { signature: string; node: HTMLElement }>();
+  const railThreadNodes = new Map<string, HTMLButtonElement>();
   const replyMounts = new Map<string, { threadId: string; node: HTMLElement; mounted: MountedReply; flush(): Promise<void>; close(): void }>();
   const replyLoads = new Map<string, number>();
   const sessionKey = 'marginalia-draft-tab';
@@ -274,6 +275,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const followingLabel = el('span', 'Reading', 'm-meta');
   const followButton = button('Follow reading', () => { held = false; updateReading(); renderPosition(); readingTitle.focus(); });
   reading.append(readingTitle, followingLabel, followButton);
+  const railThreads = el('div', undefined, 'm-rail-threads');
+  map.append(railThreads);
   const activityButton = button('Work status', () => { void openEgress(); });
   activityButton.className = 'm-activity'; activityButton.hidden = true; map.append(activityButton);
   function updateActivity(value: { phase: string; sending?: boolean; elapsedSeconds?: number }) {
@@ -284,7 +287,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     // Closing the question does not erase the last job's record.
     if (!text && activityJobId) return;
     activityButton.hidden = !text; activityButton.dataset.sending = String(sending);
-    activityButton.setAttribute('aria-label', (text || 'Work status') + (value.elapsedSeconds !== undefined && value.elapsedSeconds >= 30 ? `, ${Math.floor(value.elapsedSeconds)} seconds` : '') + '. What was sent.');
+    activityButton.setAttribute('aria-label', 'Open What was sent: ' + (text || 'work status') + (value.elapsedSeconds !== undefined && value.elapsedSeconds >= 30 ? `, ${Math.floor(value.elapsedSeconds)} seconds` : '') + '.');
     activityButton.title = text; activityButton.textContent = text;
   }
   function closeEgress() { ++egressGeneration; egressSheet.hidden = true; egressSheet.replaceChildren(); activityButton.focus(); }
@@ -656,6 +659,18 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       }
       // placeItems maintains source order without rebuilding reply/editor subtrees.
     });
+    for (const [threadId, dot] of railThreadNodes) if (!threads.some(thread => thread.id === threadId)) { dot.remove(); railThreadNodes.delete(threadId); }
+    threads.forEach(thread => {
+      const label = thread.notes.find(note => !note.deletedAt)?.text ?? thread.anchor.exact;
+      let dot = railThreadNodes.get(thread.id);
+      if (!dot) {
+        dot = button('', () => { void safely(() => openSavedThread(thread.id, dot)); });
+        dot.className = 'm-rail-thread'; railThreadNodes.set(thread.id, dot);
+      }
+      dot.setAttribute('aria-label', 'Open saved thread: ' + excerpt(label, 66));
+      dot.title = 'Saved work: ' + excerpt(label, 66);
+      railThreads.append(dot);
+    });
     footerCount.textContent = `${threads.length} ${threads.length === 1 ? 'thread' : 'threads'} on this page`;
     renderPosition(); paintHighlights();
     if (active?.isConnected && focusedThreadId && threadList.contains(active) && document.activeElement !== active) active.focus({ preventScroll: true });
@@ -663,6 +678,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       const replacement = Array.from(threadList.querySelectorAll<HTMLElement>('[data-focus-key]')).find(node => node.dataset.focusKey === focusKey);
       (replacement ?? writeButton).focus();
     }
+  }
+  async function openSavedThread(threadId: string, opener?: HTMLElement) {
+    await locked(() => journal.load());
+    const thread = currentThread(threadId);
+    if (!thread || thread.deletedAt || thread.sourceUrl !== capture.url) throw new Error('The current thread is unavailable; local work is unchanged.');
+    expandAdditionally(threadId); renderThreads(); hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0));
+    showPanel(true, opener);
+    threadNodes.get(threadId)?.node.querySelector<HTMLElement>('.m-source-action')?.focus({ preventScroll: true });
   }
   function renderThread(thread: Thread) {
     const node = el('section', undefined, 'm-thread'); node.id = instance + '-' + thread.id; node.dataset.thread = thread.id;
@@ -1114,7 +1137,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     setReadingPosition(start: number) { if (alive() && !suspended && !held) { const next = Math.max(0, Math.min(capture.text.length, start)); if (restoredPosition && sectionFor(next) === sectionIndex) return; restoredPosition = false; if (next === readingPosition) return; readingPosition = next; sectionIndex = sectionFor(readingPosition); renderPosition(); if (hydrationFinished) { positionDirty = true; queueReadingPosition(); } } },
     suspend() { highlight(null); suspended = true; management?.close(); askingMount?.setVisible(false); },
     resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); renderSettings(); paintHighlights(); },
-    async openThread(threadId: string) { await locked(() => journal.load()); const thread = currentThread(threadId); if (!thread || thread.deletedAt || thread.sourceUrl !== capture.url) throw new Error('The current thread is unavailable; local work is unchanged.'); expandAdditionally(threadId); renderThreads(); hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); threadNodes.get(threadId)?.node.querySelector<HTMLElement>('.m-source-action')?.focus({ preventScroll: true }); },
+    async openThread(threadId: string) { await openSavedThread(threadId); },
     destroy,
   };
   const startupGeneration = editorGeneration;
