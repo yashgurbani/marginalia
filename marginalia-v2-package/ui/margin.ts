@@ -3,7 +3,8 @@ import type { QuoteAnchor, ReaderMutation, SourceCapture, Thread } from '../cont
 import { wholePageAnchor, attachQuote } from '../contracts/reader.ts';
 import { el, button } from './dom.ts';
 import { localPersistence, documentJournal, documentDraft, documentQuestion, unsavedDrafts, unsavedQuestions, sourceBoundJournal, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle, type MarginDraft, type CachedReply } from './persistence.ts';
-import { anchorAt, orderedThreads, outgoingPreview, sourceLocation, pageDefinition, displayPosition } from './margin-model.ts';
+import { anchorAt, orderedThreads, outgoingPreview, sourceLocation, pageDefinition, displayPosition, egressRecord } from './margin-model.ts';
+import type { JobSnapshot } from '../contracts/jobs.ts';
 import { HelperClient, documentHelper, forgetPairingIfCurrent } from './helper.ts';
 import { mountHelperManagement } from './helper-management.ts';
 import { mountNoteEditor } from './note-editor.ts';
@@ -116,6 +117,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const reading = el('div', undefined, 'm-reading');
   const selectionCard = el('section', undefined, 'm-selection'); selectionCard.hidden = true;
   const questionArea = el('section', undefined, 'm-question'); questionArea.hidden = true;
+  const egressSheet = el('section', undefined, 'm-question-slot'); egressSheet.hidden = true;
+  egressSheet.setAttribute('role', 'region'); egressSheet.setAttribute('aria-label', 'What was sent');
+  let egressGeneration = 0, activityJobId: string | undefined;
   const questionForm = el('div'), askingHost = el('div'); askingHost.hidden = true; questionArea.append(questionForm, askingHost);
   let askingMount: ReturnType<AskingMountFactory> | undefined;
   const threadList = el('div', undefined, 'm-threads');
@@ -125,7 +129,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const setup = el('section', undefined, 'm-settings'); setup.hidden = true;
   const settingsBody = el('div'), managementHost = el('div'); setup.append(settingsBody, managementHost);
   const mapSlot = el('div', undefined, 'm-map-slot'); mapSlot.append(map);
-  const scroll = el('div', undefined, 'm-scroll'); scroll.append(mapSlot, reading, selectionCard, threadList, footer);
+  const scroll = el('div', undefined, 'm-scroll'); scroll.append(mapSlot, reading, egressSheet, selectionCard, threadList, footer);
   panel.append(bar, heading, setup, scroll, status, toast); shell.append(rail, panel); workspace.append(shell); root.append(workspace);
   const management = options.helperManagement && options.allowHelper !== false ? mountHelperManagement(managementHost) : undefined;
   let suspended = false, readingPosition = 0, hydrationFinished = false, editorGeneration = 0;
@@ -228,8 +232,43 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const followingLabel = el('span', 'Reading', 'm-meta');
   const followButton = button('Follow reading', () => { held = false; updateReading(); renderPosition(); readingTitle.focus(); });
   reading.append(readingTitle, followingLabel, followButton);
-  const activityButton = button('Work status', () => { showPanel(); if (questionDraft?.threadId) { expanded.add(questionDraft.threadId); renderPosition(); } if (askingMount) { questionArea.hidden = false; questionForm.hidden = true; askingMount.setVisible(true); } else if (questionDraft) showQuestion(questionDraft); });
+  const activityButton = button('Work status', () => { void openEgress(); });
   activityButton.className = 'm-activity'; activityButton.hidden = true; map.append(activityButton);
+  function updateActivity(value: { phase: string; sending?: boolean; elapsedSeconds?: number }) {
+    if (!alive()) return;
+    const sending = value.sending ?? value.phase === 'sending';
+    const working = ['queued', 'working', 'provisional', 'validating', 'loading-reply', 'cancel_requested'].includes(value.phase);
+    const text = sending ? 'Sending' : working ? 'Working' : value.phase === 'committed' ? 'Ready' : value.phase === 'unknown' || value.phase === 'timed_out' ? 'Outcome unconfirmed' : value.phase === 'failed' ? 'Failed' : value.phase === 'cancelled' ? 'Cancelled' : '';
+    // Closing the question does not erase the last job's record.
+    if (!text && activityJobId) return;
+    activityButton.hidden = !text; activityButton.dataset.sending = String(sending);
+    activityButton.setAttribute('aria-label', (text || 'Work status') + (value.elapsedSeconds !== undefined && value.elapsedSeconds >= 30 ? `, ${Math.floor(value.elapsedSeconds)} seconds` : '') + '. What was sent.');
+    activityButton.title = text; activityButton.textContent = text;
+  }
+  function closeEgress() { ++egressGeneration; egressSheet.hidden = true; egressSheet.replaceChildren(); activityButton.focus(); }
+  async function openEgress() {
+    const generation = ++egressGeneration;
+    showPanel(); egressSheet.hidden = false;
+    const close = button('Close', closeEgress), content = el('div');
+    content.setAttribute('role', 'status'); content.textContent = 'Reading the stored record…';
+    egressSheet.replaceChildren(el('h2', 'What was sent'), close, content); close.focus();
+    try {
+      const jobId = activityJobId ?? questionDraft?.resumeJobId;
+      if (!jobId) throw new Error('No stored job is linked to this activity. Whether anything was sent is unconfirmed.');
+      const client = trustedHelper(), epoch = client.connectionVersion;
+      const job = await client.request('/api/jobs/' + encodeURIComponent(jobId), undefined, signal) as JobSnapshot;
+      if (!alive() || generation !== egressGeneration || helper !== client || epoch !== client.connectionVersion) return;
+      if (job.id !== jobId) throw new Error('The stored record does not match this activity.');
+      const record = egressRecord(job);
+      content.replaceChildren(el('p', record.summary));
+      for (const [label, value] of record.fields) content.append(el('h3', label), el('p', value));
+      const packet = el('pre', canonicalReplyData(record.packet));
+      packet.style.whiteSpace = 'pre-wrap'; packet.style.overflowWrap = 'anywhere';
+      content.append(el('p', record.retention, 'm-meta'), el('h3', 'Retained reading packet'), packet);
+    } catch (error) {
+      if (alive() && generation === egressGeneration) content.textContent = error instanceof Error ? error.message : 'The stored record is unavailable. The outcome is unconfirmed.';
+    }
+  }
   const footerCount = el('span', '', 'm-meta');
   footer.append(footerCount, actions(button('Export JSON', exportWork), button('Think with it', () => pageQuestion('unsure', 'Help me reflect on this page and connect it to my own questions.')), button('Go further', () => pageQuestion('explore', 'Suggest useful further reading related to this page.'))), el('span', 'Hear it · not available yet', 'm-meta'));
   const skip = button('Go to margin', () => showPanel(true)); skip.className = 'm-skip'; root.prepend(skip);
@@ -514,8 +553,12 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         },
         persistence, track,
         read: <T>(key: string) => persistence.read<T>('asking:' + draftKey + ':' + key),
-        write: (key, value) => persistence.write('asking:' + draftKey + ':' + key, value),
-        retainedQuestion: value => { void saveQuestion(value).catch(fail); },
+        write: async (key, value) => {
+          await persistence.write('asking:' + draftKey + ':' + key, value);
+          const record = value as { jobId?: string } | undefined;
+          if ((key === 'request' || key === 'completion') && typeof record?.jobId === 'string') activityJobId = record.jobId;
+        },
+        retainedQuestion: value => { if (value.resumeJobId) activityJobId = value.resumeJobId; void saveQuestion(value).catch(fail); },
         onClosed: () => { if (alive()) {
           askingHost.hidden = true; questionForm.hidden = false;
           const fields = questionForm.querySelectorAll<HTMLTextAreaElement>('textarea');
@@ -527,19 +570,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         prepareReplyView: async (threadId, replyId) => {
           for (const [key, entry] of replyMounts) if (entry.threadId === threadId && entry.node.dataset.replyVersion === replyId) { await entry.flush(); entry.close(); entry.node.remove(); replyMounts.delete(key); }
         },
-        activity: value => {
-        if (!alive()) return;
-        const working = ['queued', 'working', 'provisional', 'validating', 'loading-reply', 'cancel_requested'].includes(value.phase);
-        const text = value.sending ? 'Sending' : working ? 'Working' : value.phase === 'committed' ? 'Ready' : value.phase === 'unknown' || value.phase === 'timed_out' ? 'Outcome unconfirmed' : value.phase === 'failed' ? 'Failed' : value.phase === 'cancelled' ? 'Cancelled' : '';
-        activityButton.hidden = !text; activityButton.dataset.sending = String(value.sending);
-        activityButton.setAttribute('aria-label', (text || 'Work status') + (value.elapsedSeconds !== undefined && value.elapsedSeconds >= 30 ? `, ${Math.floor(value.elapsedSeconds)} seconds` : '') + '. Open the question.');
-        activityButton.title = text; activityButton.textContent = text;
-      },
+        activity: updateActivity,
+        onState: updateActivity,
       onCommitted: threadId => { if (alive()) { changed(); announce('A validated reply is available. Your notes remain above it.'); } },
       openSettings,
       });
       questionForm.hidden = true; askingMount.setVisible(!suspended && !questionArea.hidden);
       const opening = askingMount;
+      activityJobId = selected.resumeJobId;
       await opening.open(selected);
       if (!alive() || request !== questionRequest) opening.setVisible(false);
     } catch (error) {
@@ -894,7 +932,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   source?.addEventListener('keyup', event => { if (event.key === 'Shift') captureSelection(); }, { signal });
   window.addEventListener('scroll', updateReading, { passive: true, signal });
   compose.addEventListener('focusin', () => hold());
-  root.addEventListener('keydown', event => { if (event.defaultPrevented) return; if (event.key === 'Escape') { if (!questionArea.hidden) { closeQuestion(); return; } if (!selectionCard.hidden) closeSelection(); else if (matchMedia('(max-width: 899px)').matches) closePanel(); } }, { signal });
+  root.addEventListener('keydown', event => { if (event.defaultPrevented) return; if (event.key === 'Escape') { if (!egressSheet.hidden) { closeEgress(); event.preventDefault(); return; } if (!questionArea.hidden) { closeQuestion(); return; } if (!selectionCard.hidden) closeSelection(); else if (matchMedia('(max-width: 899px)').matches) closePanel(); } }, { signal });
 
   async function sync() {
     if (!alive()) return;
