@@ -11,9 +11,12 @@ at a public URL, because the dashboard requires that URL and a contact address.
 
 ## Listing description
 
-Short description, matching the current manifest (`extension/wxt.config.ts:9`):
+Proposed short description:
 
-> A personalized, agentic margin for the web. Keep local notes beside any page. Ask your own Codex about a passage you approve.
+> A personalized, agentic and dynamic margin, right in your browser. Your research assistant for the web.
+
+The current manifest (`extension/wxt.config.ts:9`) uses a different form. Reconcile
+the two before submission.
 
 Description to paste:
 
@@ -22,8 +25,10 @@ Description to paste:
 > write a note, and the answer appears next to it, anchored to the words that
 > prompted it. The page itself is never changed.
 >
-> The margin reads a page only when you select text on it. Selecting sends
-> nothing anywhere.
+> Instant help is on by default. It sends each allowed open page to Codex so
+> quick definitions and simple explanations are ready when you select text. You
+> can turn it off during onboarding or in Settings. Excluded sites never send
+> anything.
 >
 > Your reading, notes and threads stay on your computer, in a local database, and
 > export as plain files.
@@ -33,22 +38,23 @@ Description to paste:
 > it listens on 127.0.0.1 and holds your reading. Without it, the extension has
 > nowhere to save and nothing to ask.
 >
-> Asking for help sends the passage, your note and a bounded slice of the
-> surrounding page to the Codex runtime you configured. The first time text from
-> a site is about to leave, the margin shows you the exact outgoing text, the
-> recipient and the scope, and asks: this time, always on this site, or never on
-> this site.
+> A full Ask sends the passage, your note and a bounded slice of the surrounding
+> page to the Codex runtime you configured. Before it goes, the margin shows you
+> the exact outgoing text and recipient for review.
 >
 > Web checks are not available in this version. "What supports this" and "go
 > further" cannot fetch anything, because this build has no network-capable
 > policy.
 >
-> This is an alpha. No run against a real model provider has been recorded yet.
-> Real asks run in a reader-authorized mode where solver confinement is requested
-> but not observed.
+> This is an alpha. Live public-page runs have been recorded for Define, Simulate it,
+> Step by step, Diagram, Explore and Not sure on OpenAI's Navier-Stokes post,
+> and Define and Give an example on a NASA page. “Check this claim” is early and
+> has not produced an accepted live reply. Real asks run in a reader-authorized
+> mode where solver confinement is requested but not observed.
 
 Chrome's single-purpose rule and the prominent-disclosure rule both rest on this
-text, so the helper requirement and the consent step must stay in it.
+text, so the helper requirement, instant-help disclosure and full-Ask review must
+stay in it.
 
 ## Permission justifications
 
@@ -103,11 +109,10 @@ The justification to paste:
 
 > Marginalia is a margin for whatever the reader is reading. A margin that worked
 > only on a pre-approved list of sites would not be the product. The breadth is
-> bounded in four ways. The script runs in the top frame only. It captures
-> nothing until the reader makes a deliberate text selection. The reader can
-> exclude any site and its subdomains, which also blocks every subdomain. And no
-> page content leaves the machine without a per-site consent decision that shows
-> the exact outgoing text first.
+> bounded in four ways. The script runs in the top frame only. Instant help can
+> be turned off during onboarding or in Settings. The reader can exclude any
+> site and its subdomains, which also blocks every subdomain. A full Ask shows
+> the exact outgoing text and recipient before it goes.
 
 Future narrowing, worth stating as intent: `optional_host_permissions`, or a
 per-site enable flow, would cut the default scope to the sites a reader actually

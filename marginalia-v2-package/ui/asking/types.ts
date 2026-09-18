@@ -2,6 +2,7 @@ import type { ConsentDecisionRequest, ConsentGrant, ConsentPreview } from '../..
 import type { FollowupJobInput, JobSnapshot, PrepareFollowupJobInput, PrepareJobInput, PreparedJobResult, PrepareRetryJobInput, RetryJobInput, StartJobInput } from '../../contracts/jobs.ts';
 import type { NoteVersionRef, QuoteAnchor, ReplyVersion, ReplyViewState, SourceVersion } from '../../contracts/reader.ts';
 import type { CandidateReply, Intent, ValidationContext, ValidationResult } from '../../contracts/reply.ts';
+import type { ReaderSkillSelection } from '../../contracts/reader-skills.ts';
 
 /** Saved identities plus the current T05 capture lifetime. No moving selection or guessed IDs. */
 export type AskingBinding = {
@@ -34,8 +35,9 @@ export type AskingAccess = {
 };
 
 /** HTTP result is {job, preview}; the internal PreparedJobResult uses {job, consent}. */
-export type AskingPreparation = { job: PreparedJobResult['job']; preview: ConsentPreview };
-export type AskingAvailability = { configured: boolean; available: boolean; unavailableReason?: string };
+export type AskingDisclosure = { unverified: string[]; disclosureVersion: string | null };
+export type AskingPreparation = AskingDisclosure & { job: PreparedJobResult['job']; preview: ConsentPreview };
+export type AskingAvailability = AskingDisclosure & { configured: boolean; available: boolean; unavailableReason?: string };
 export type SavedAskingReply = { reply: ReplyVersion; source: SourceVersion; view?: ReplyViewState };
 export type AskingHost = {
   availability(signal: AbortSignal): Promise<AskingAvailability>;
@@ -108,6 +110,7 @@ export type AskingState = {
 };
 
 export type AskingSuggestion = { id: string; label: string; intent: Intent; question: string; time?: 'quick' | 'longer' };
+export type AskingSkillChoice = ReaderSkillSelection;
 export type AskingExposure = {
   kind: 'shown' | 'choice' | 'no-choice';
   captureId: string;

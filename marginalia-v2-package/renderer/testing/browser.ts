@@ -94,6 +94,6 @@ export async function runBrowserRegressions(executable: string, fixture: HostFix
     socket?.close();
     if (browser.pid && browser.exitCode === null && browser.signalCode === null) { const stopped = once(browser, 'exit').catch(() => {}); browser.kill('SIGKILL'); await stopped; }
     await new Promise<void>(done => server.close(() => done()));
-    await rm(profile, { recursive: true, force: true });
+    await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }

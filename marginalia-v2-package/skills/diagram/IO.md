@@ -34,3 +34,9 @@ origin must name the supplied noteId and revision. Origins never certify a resul
 
 Follow the host-selected delivery instructions in SKILL.md. Only the host validates
 and commits a reply; an authored status is not a saved completion.
+
+The first visible block is an answer-bearing text block. The diagram follows it. Origins cover
+the answer, every node, edge and group. In source correspondence, each node and edge origin
+must be source-page and must name a binding whose selector matches the captured source. In
+illustration correspondence, source parts keep page origins while invented parts use authored
+or analogy origins, and the illustration statement explains the boundary.

@@ -156,6 +156,46 @@ test('E30 published schema includes distinct origins and source-diagram edge req
   assert.deepEqual(schema.$defs.diagramBlock.allOf[0].then.properties.edges.items.required, ['binding']);
 });
 
+test('F-SCHEMA published pointer shapes and local text limits match admission', () => {
+  const schema = JSON.parse(readFileSync(new URL('../contracts/reply.schema.json', import.meta.url), 'utf8'));
+  const admission = readFileSync(new URL('../contracts/reply.ts', import.meta.url), 'utf8');
+  const pointer = new RegExp(schema.properties.origins.properties.parts.propertyNames.pattern);
+  const legal = [
+    '/title', '/summary', '/staticFallback', '/illustration', '/sourceBindings/0', '/parameters/1', '/assumptions/2', '/limitations/3', '/blocks/4',
+    '/blocks/4/nodes/0', '/blocks/4/edges/1', '/blocks/4/groups/2', '/blocks/4/steps/3', '/blocks/4/variants/4', '/blocks/4/answers/5',
+    '/blocks/4/columns/6', '/blocks/4/rows/7/cell_key', '/blocks/4/entries/8/claim', '/blocks/4/entries/8/support', '/blocks/4/entries/8/source',
+    '/blocks/4/items/9/title', '/blocks/4/items/9/reason', '/blocks/4/envelope', '/blocks/4/samples/10', '/blocks/4/alt', '/blocks/4/transcript', '/blocks/4/timecodes/11',
+  ];
+  for (const path of legal) assert.equal(pointer.test(path), true, path);
+  for (const path of ['/parameters/0/sourceBinding', '/checks/0', '/blocks/0/rhs/y']) assert.equal(pointer.test(path), false, path);
+
+  const parity: [string, { maxLength: number }, RegExp][] = [
+    ['summary', schema.properties.summary, /stringValue\(input\.summary,[^\n]+?max: ([\d_]+)/],
+    ['illustration statement', schema.properties.illustration.properties.statement, /stringValue\(input\.illustration\.statement,[^\n]+?max: ([\d_]+)/],
+    ['source binding meaning', schema.$defs.sourceBinding.properties.meaning, /stringValue\(value\.meaning,[^\n]+?max: ([\d_]+)/],
+    ['static fallback', schema.properties.staticFallback, /stringValue\(input\.staticFallback,[^\n]+?max: ([\d_]+)/],
+    ['plot and classification labels', schema.$defs.stringMap.additionalProperties, /stringValue\(item,[^\n]+?max: ([\d_]+)/],
+    ['classification rule', schema.$defs.classificationBlock.properties.rule, /stringValue\(block\.rule,[^\n]+?max: ([\d_]+)/],
+    ['diagram node label', schema.$defs.diagramBlock.properties.nodes.items.properties.label, /stringValue\(node\.label,[^\n]+?max: ([\d_]+)/],
+    ['diagram edge label', schema.$defs.diagramBlock.properties.edges.items.properties.label, /stringValue\(edge\.label,[^\n]+?max: ([\d_]+)/],
+    ['diagram group label', schema.$defs.diagramBlock.properties.groups.items.properties.label, /stringValue\(group\.label,[^\n]+?max: ([\d_]+)/],
+    ['question prompt', schema.$defs.questionBlock.properties.prompt, /stringValue\(block\.prompt,[^\n]+?max: ([\d_]+)/],
+    ['question answer value', schema.$defs.questionBlock.properties.answers.items.properties.value, /stringValue\(answer\.value,[^\n]+?max: ([\d_]+)/],
+    ['turn text', schema.$defs.turnBlock.properties.text, /stringValue\(block\.text,[^\n]+?max: ([\d_]+)/],
+    ['shelf title', schema.$defs.shelfBlock.properties.items.items.properties.title, /stringValue\(item\.title,[^\n]+?max: ([\d_]+)/],
+    ['shelf reason', schema.$defs.shelfBlock.properties.items.items.properties.reason, /stringValue\(item\.reason,[^\n]+?max: ([\d_]+)/],
+    ['forbidden region reason', schema.$defs.samplesBlock.properties.envelope.properties.forbiddenRegions.items.properties.reason, /stringValue\(region\.reason,[^\n]+?max: ([\d_]+)/],
+    ['media alt', schema.$defs.mediaBlock.properties.alt, /stringValue\(block\.alt,[^\n]+?max: ([\d_]+)/],
+    ['media timecode label', schema.$defs.mediaBlock.properties.timecodes.items.properties.label, /stringValue\(timecode\.label,[^\n]+?max: ([\d_]+)/],
+    ['table row string cell', schema.$defs.tableBlock.properties.rows.items.additionalProperties, /typeof value === 'string'[^\n]+?max: ([\d_]+)/],
+  ];
+  for (const [name, fragment, pattern] of parity) {
+    const match = admission.match(pattern);
+    assert.ok(match, `${name}: admission maximum not found`);
+    assert.equal(fragment.maxLength, Number(match[1]!.replaceAll('_', '')), name);
+  }
+});
+
 test('E30 immutable reply admission refuses origin-less new data and round-trips declared origins', () => {
   const store = new ReaderStore(':memory:');
   try {

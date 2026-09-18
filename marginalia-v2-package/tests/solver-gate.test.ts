@@ -13,6 +13,7 @@ import { withFixtureOrigins } from './origins-fixture.ts';
 import type { FrozenJobContext, JobConsentAuthority, StartJobInput } from '../contracts/jobs.ts';
 import type { ProviderHandle } from '../contracts/job-runner.ts';
 import type { SolverAuthorization, SolverFinalizationInput } from '../daemon/solver/service.ts';
+import { writeSolverManifest } from './solver-fixture.ts';
 
 const SOURCE = 'A source passage.';
 const SOLVER_SOURCE = 'process.stdout.write(JSON.stringify({schema:"marginalia.solver-output.v1",values:{answer:2}}));\n';
@@ -46,6 +47,7 @@ async function fixture() {
   const workspace = join(root, 'job-1');
   await mkdir(join(workspace, 'solver'), { recursive: true });
   await writeFile(join(workspace, 'solver', 'main.js'), SOLVER_SOURCE, 'utf8');
+  await writeSolverManifest(workspace, SOLVER_SOURCE, [{ name: 'x', min: 0, max: 10, default: 1, unit: '' }], ['answer']);
   const reader = new ReaderStore(':memory:');
   reader.apply({ id: 'keep-1', kind: 'keep', threadId: 'thread-1',
     capture: { url: 'https://example.test/article', title: 'Article', pageType: 'article', text: SOURCE,

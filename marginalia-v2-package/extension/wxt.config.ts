@@ -6,7 +6,7 @@ const { version } = JSON.parse(readFileSync(new URL('../package.json', import.me
 export default defineConfig({
   manifest: {
     name: 'Marginalia', version,
-    description: 'A personalized, agentic margin for the web. Keep local notes beside any page. Ask your own Codex about a passage you approve.',
+    description: 'A personalized, agentic and dynamic margin in your browser. Your research assistant for the web. Notes stay on your machine.',
     minimum_chrome_version: '116',
     permissions: ['storage', 'tabs', 'webNavigation', 'sidePanel', 'alarms'],
     host_permissions: ['http://127.0.0.1/*'],
@@ -18,6 +18,7 @@ export default defineConfig({
     side_panel: { default_path: 'panel.html' },
     incognito: 'not_allowed',
     web_accessible_resources: [{ resources: ['panel.html'], matches: ['http://*/*', 'https://*/*'] }],
-    content_security_policy: { extension_pages: "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; connect-src http://127.0.0.1:* ws://127.0.0.1:*; base-uri 'none'; frame-ancestors 'none'" },
+    // The public panel fallback is embedded in HTTP(S) pages; WAR still exposes only panel.html.
+    content_security_policy: { extension_pages: "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; connect-src http://127.0.0.1:* ws://127.0.0.1:*; base-uri 'none'; frame-ancestors http: https:" },
   },
 });

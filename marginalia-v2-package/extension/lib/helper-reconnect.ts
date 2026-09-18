@@ -106,6 +106,7 @@ export function helperReconnect() {
     finally { connecting = false; }
   }
   return {
+    isEnabled: enabled,
     async setEnabled(value: boolean) {
       ++generation; socket?.close(); socket = undefined; retryAt = 0;
       await persistence.write('extension-helper-enabled', value);

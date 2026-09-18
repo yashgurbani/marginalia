@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { LibrarySettingsService } from '../daemon/library.ts';
 import { ReaderMigrationError, ReaderStore, UnsupportedReaderSchemaError } from '../daemon/store.ts';
 import { startServer } from '../daemon/server.ts';
-import type { VocabularyObservation } from '../contracts/library.ts';
+import { vocabularyOriginLabels, type VocabularyObservation } from '../contracts/library.ts';
 
 import Database from 'better-sqlite3';
 import { oldReaderPreflight } from './fixtures/reader-preflight-89a6335.ts';
@@ -66,6 +66,21 @@ test('operation IDs are idempotent, deletion blocks old retries, and a new Remem
   } finally { reader.close(); }
 });
 
+test('stated observations use the familiar label and deleting one restores auto-assist eligibility', () => {
+  const reader = new ReaderStore(':memory:'), library = new LibrarySettingsService(reader);
+  try {
+    const dismissed = remember('dismissed-candidate', 'Entropy');
+    assert.deepEqual(dismissed, {
+      operationId: 'dismissed-candidate', term: 'Entropy', origin: 'stated', observedAt: at, source: { kind: 'reader' },
+    });
+    library.recordVocabularyObservation(dismissed);
+    assert.equal(vocabularyOriginLabels.stated, 'You said this was familiar.');
+    assert.equal(library.vocabulary().some(entry => entry.term.toLocaleLowerCase('en') === 'entropy'), true);
+    assert.equal(library.deleteVocabulary('Entropy').deleted, true);
+    assert.equal(library.vocabulary().some(entry => entry.term.toLocaleLowerCase('en') === 'entropy'), false);
+  } finally { reader.close(); }
+});
+
 test('migration preserves compatible origins and labels unknown historical rows legacy without harvesting notes', () => {
   const directory = mkdtempSync(join(tmpdir(), 'e22-vocabulary-')), filename = join(directory, 'reader.sqlite');
   try {
@@ -86,6 +101,7 @@ test('migration preserves compatible origins and labels unknown historical rows 
     try {
       const entries = new LibrarySettingsService(migrated).vocabulary();
       assert.deepEqual(entries.map(entry => [entry.term, entry.origins?.[0].origin]), [['known', 'stated'], ['looked-up-alias', 'looked-up'], ['older', 'legacy'], ['used-alias', 'used']]);
+      assert.equal(vocabularyOriginLabels[entries.find(entry => entry.term === 'known')!.origins![0].origin], 'You said this was familiar.');
       assert.equal(entries.find(entry => entry.term === 'known')?.status, 'ignored');
       assert.equal((migrated.db.prepare('SELECT COUNT(*) count FROM vocabulary').get() as { count: number }).count, 4);
       assert.equal((migrated.db.prepare('SELECT COUNT(*) count FROM note_versions').get() as { count: number }).count, 0);

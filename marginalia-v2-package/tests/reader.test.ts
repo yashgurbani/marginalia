@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { attachQuote, wholePageAnchor } from '../contracts/reader.ts';
+import { attachQuote, highlightColour, wholePageAnchor } from '../contracts/reader.ts';
 
 test('whole-page intent contains no fabricated quote or text range', () => {
   const anchor = wholePageAnchor();
@@ -51,6 +51,8 @@ test('T07 F7 shared validation enforces source, section, anchor, identity and mu
     ...[-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1].map(expectedRevision => ({ id: 'edit', threadId: 'thread', kind: 'note', noteId: 'note', text: '', expectedRevision })),
     { id: 'state', threadId: 'thread', kind: 'thread-state', expectedRevision: 1, state: 'unknown' },
     { id: 'highlight', threadId: 'thread', kind: 'highlight', expectedRevision: 1, highlighted: 'yes' },
+    { id: 'highlight-colour', threadId: 'thread', kind: 'highlight', expectedRevision: 1, highlighted: true, highlightColour: '<script>' },
+    { id: 'removed-highlight-colour', threadId: 'thread', kind: 'highlight', expectedRevision: 1, highlighted: false, highlightColour: 'green' },
     { id: 'remove', threadId: 'thread', kind: 'remove', expectedRevision: 1, removed: 'yes' },
   ];
   for (const mutation of invalid) assert.throws(() => validate(mutation), InvalidReaderMutationError);
@@ -60,6 +62,9 @@ test('T07 F7 shared validation enforces source, section, anchor, identity and mu
   assert.doesNotThrow(() => validate({ id: 'x'.repeat(100), threadId: 'thread', kind: 'note', noteId: 'n', text: 'x'.repeat(20000), expectedRevision: Number.MAX_SAFE_INTEGER }));
   assert.doesNotThrow(() => validate({ id: 'state', threadId: 'thread', kind: 'thread-state', expectedRevision: 0, state: 'open' }));
   assert.doesNotThrow(() => validate({ id: 'highlight', threadId: 'thread', kind: 'highlight', expectedRevision: 0, highlighted: true }));
+  assert.equal(highlightColour(undefined), 'yellow');
+  assert.throws(() => highlightColour('<script>'), InvalidReaderMutationError);
+  assert.doesNotThrow(() => validate({ id: 'highlight-green', threadId: 'thread', kind: 'highlight', expectedRevision: 0, highlighted: true, highlightColour: 'green' }));
 });
 
 test('Keep and Highlight remain distinct through local persistence, helper round trip, reload and removal', async () => {
@@ -71,7 +76,7 @@ test('Keep and Highlight remain distinct through local persistence, helper round
     anchor: { exact: 'Keep this passage.', prefix: '', suffix: '', start: 0, end: 18 }, note: 'Senior note' };
   await journal.change(keep);
   assert.equal(journal.state.threads[0].highlighted, false, 'Keep alone is the underline state');
-  await journal.change({ id: 'add-highlight', kind: 'highlight', threadId: keep.threadId, highlighted: true, expectedRevision: 1 });
+  await journal.change({ id: 'add-highlight', kind: 'highlight', threadId: keep.threadId, highlighted: true, highlightColour: 'green', expectedRevision: 1 });
   const sent: ReaderMutation[] = [];
   await journal.sync(async change => { sent.push(change); }, async () => structuredClone(journal.state.threads));
   assert.deepEqual(sent.map(change => change.kind), ['keep', 'highlight']);
@@ -79,8 +84,10 @@ test('Keep and Highlight remain distinct through local persistence, helper round
   const reopened = new ReaderJournal(persistence);
   await reopened.load();
   assert.equal(reopened.state.threads[0].highlighted, true);
+  assert.equal(reopened.state.threads[0].highlightColour, 'green');
   await reopened.change({ id: 'remove-highlight', kind: 'highlight', threadId: keep.threadId, highlighted: false, expectedRevision: 2 });
   assert.equal(reopened.state.threads[0].highlighted, false);
+  assert.equal(reopened.state.threads[0].highlightColour, undefined);
   assert.equal(reopened.state.threads[0].notes[0].text, 'Senior note');
   assert.equal(reopened.state.threads[0].anchor.exact, keep.anchor.exact);
   assert.equal(reopened.state.threads[0].deletedAt, null);

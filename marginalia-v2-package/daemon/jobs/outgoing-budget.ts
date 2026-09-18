@@ -50,6 +50,7 @@ export function fitOutgoingPacket<T extends Measured>(original: ProviderJobPacke
     if (bytes(prepared) <= OUTGOING_PREVIEW_BYTES) break;
     const text = field.get(), length = Buffer.byteLength(text), minimum = Math.min(length, field.minimum ?? 0);
     if (length === minimum) continue;
+    const previousPacket = structuredClone(packet), previousPrepared = prepared;
     const marker = packet.omissions.length;
     const set = (limit: number) => {
       const shortened = (field.suffix ? utf8Suffix : utf8Prefix)(text, limit);
@@ -58,6 +59,11 @@ export function fitOutgoingPacket<T extends Measured>(original: ProviderJobPacke
       return measure();
     };
     prepared = set(minimum);
+    // A short excerpt can cost fewer bytes than its omission notice. Keep it when
+    // trimming would increase the reviewed envelope instead of freeing space.
+    if (bytes(prepared) >= bytes(previousPrepared)) {
+      Object.assign(packet, previousPacket); prepared = previousPrepared; continue;
+    }
     if (bytes(prepared) > OUTGOING_PREVIEW_BYTES) continue;
     // Every retained candidate is measured; the final result never relies on a byte estimate.
     let lo = minimum, hi = length - 1, best = minimum;

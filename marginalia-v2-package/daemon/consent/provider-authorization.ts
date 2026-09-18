@@ -19,6 +19,7 @@ export interface PolicyEvidenceCollector {
 }
 
 export type ConsentProviderAuthorizationOptions = PolicyAuthorizationOptions & {
+  homeMode?: 'dedicated' | 'ordinary';
   consent: ConsentSessionService;
   platform: Platform;
   evidence: PolicyEvidenceCollector;
@@ -33,6 +34,7 @@ export function createConsentProviderAuthorization(options: ConsentProviderAutho
       const auditId = options.evidence.auditId({ job, request, audit, stage });
       const operation = job.mode === 'structured-final' ? 'definition' : 'generation';
       const common = {
+        homeMode: options.homeMode,
         version: PINNED_CODEX_VERSION, platform: options.platform, adapter: job.provider,
         model: request.model, workspace: request.workspace, codexHome: audit.codexHome, auditId,
       } as const;

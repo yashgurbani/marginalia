@@ -149,7 +149,7 @@ test('unconfirmed confinement is reported as unverified', async () => {
 
 test('a refusal never echoes the helper reason text', async () => {
   const codes = ['invalid-request', 'unknown-reply', 'unknown-solver', 'reply-changed', 'artifact-unknown',
-    'artifact-modified', 'path-unsafe', 'inputs-invalid', 'limits-invalid', 'unsupported-capability',
+    'artifact-modified', 'manifest-required', 'path-unsafe', 'inputs-invalid', 'limits-invalid', 'unsupported-capability',
     'authorization-refused', 'authorization-expired', 'policy-mismatch', 'handoff-refused', 'output-invalid',
     'plan-unknown', 'plan-expired', 'request-identity-mismatch', 'generation-drift'] as const satisfies readonly SolverRejectionCode[];
   for (const code of codes) {
@@ -158,6 +158,16 @@ test('a refusal never echoes the helper reason text', async () => {
     const view = await adapter(fake.transport).run(request()), copy = view.headline + view.detail;
     assert.equal(view.state, 'denied'); assert.doesNotMatch(copy, /C:\\Users|attempt-9/);
   }
+});
+
+test('a missing legacy manifest renders the bounded positive refusal and keeps raw helper text private', async t => {
+  const fake = fakeTransport(); let executions = 0;
+  fake.prepareWith(async () => ({ status: 'rejected', code: 'manifest-required', reason: 'C:\\private\\raw-error' }));
+  fake.executeWith(async () => { executions++; throw new Error('A manifestless solver must not execute.'); });
+  const view = await adapter(fake.transport).run(request()), rendered = renderRecomputeOutcome(dom(t).document as unknown as Document, view);
+  assert.equal(view.state, 'denied'); assert.equal(executions, 0);
+  assert.match(rendered.textContent, /This saved solver needs a manifest before it can run\. Your saved reply remains available to read\./);
+  assert.doesNotMatch(rendered.textContent, /private|raw-error/);
 });
 
 test('a result for a changed view is discarded rather than painted', async () => {
@@ -196,3 +206,4 @@ test('the adapter imports nothing Node-only and nothing from the daemon', () => 
     else assert.match(line, /^import type/);
   }
 });
+

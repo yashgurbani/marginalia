@@ -19,9 +19,22 @@ import { createServerSolver, createSolverRouteHandler } from './routes/solver.ts
 import { handleStaticRoute } from './routes/static.ts';
 import type { ApiRouteContext } from './routes/types.ts';
 import { createDiagnosticsRoute } from './routes/diagnostics.ts';
+import { createInstantService, type InstantServiceOptions } from './instant/index.ts';
+import { createInstantRoutes } from './routes/instant.ts';
+import { createInstantForgetService } from './instant/forget.ts';
+import { createInstantForgetRoute } from './routes/instant-forget.ts';
+import { createRelatedRoutes } from './routes/related.ts';
+import { createPreparedDefinitionRoutes } from './routes/prepared-definitions.ts';
+import { createAmbientRoutes } from './routes/ambient.ts';
+import { createJournalSummaryService } from './journal-synthesis.ts';
+import { createJournalSummaryRoute } from './routes/journal-summary.ts';
+import { createLibraryImportRoutes } from './routes/library-import.ts';
+import { createShareRoutes } from './routes/share.ts';
+import { createCollectionAnswerRoutes } from './routes/collection-answer.ts';
 
 export async function startServer(options: { database: string; port?: number; webRoot?: string; diagnostics?: (refresh?: boolean) => unknown;
   jobWorkspaceRoot?: string; runtimeFactory?: AuthorizedRuntimeFactory;
+  instant?: Omit<InstantServiceOptions, 'store'>;
   runtimeFactoryBuilder?: (input: { store: ReaderStore; consent: ConsentSessionService }) => Promise<AuthorizedRuntimeFactory | undefined>;
   solverTransport?: SolverCommandTransport; solverRpc?: Pick<RpcTransport, 'request'>; solverProbeRoot?: string;
   jobDefaults?: JobServiceOptions['defaults']; jobTimeoutMs?: number }) {
@@ -36,6 +49,8 @@ export async function startServer(options: { database: string; port?: number; we
   const solver = createServerSolver({ database: options.database, store, jobs, consent, solverTransport: options.solverTransport,
     solverRpc: options.solverRpc, solverProbeRoot: options.solverProbeRoot });
   void jobs.recover().catch(() => { /* Per-job recovery records its own honest outcome. */ });
+  const instant = createInstantService({ ...options.instant, store });
+  const preparedDefinitions = createPreparedDefinitionRoutes(instant);
   const pairing = new Pairing(store), challenge = pairing.issue();
   let origin = '';
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
@@ -55,7 +70,23 @@ export async function startServer(options: { database: string; port?: number; we
   // Preserve the original dispatch order, including solver prefix fallthrough.
   const apiRoutes = [
     createDiagnosticsRoute(options.database, diagnostics),
+    createInstantForgetRoute(createInstantForgetService({ release: instant.forget.bind(instant), forgetPreparedDefinitions: preparedDefinitions.forget })),
+    preparedDefinitions.handle,
+    createInstantRoutes(instant),
     createSolverRouteHandler(solver, store, pairing),
+    createRelatedRoutes(store),
+    createAmbientRoutes({ readSettings: () => library.autoAssist(), readHostPolicy: sourceOrigin => {
+      const host = new URL(sourceOrigin).hostname.toLowerCase().replace(/\.$/, '');
+      const denied = [...consent.exclusions().filter(row => row.excluded), ...consent.grants(false).filter(row => row.decision === 'deny-site')];
+      return { excluded: denied.some(row => {
+        const other = new URL(row.site).hostname.toLowerCase().replace(/\.$/, '');
+        return host === other || host.endsWith(`.${other}`);
+      }) };
+    } }),
+    createJournalSummaryRoute(createJournalSummaryService(store, () => library.vocabulary().map(entry => entry.term))),
+    createLibraryImportRoutes(store),
+    createShareRoutes(store),
+    createCollectionAnswerRoutes(store),
     createReaderRoutes({ store, pairing, library, consent, sessions }),
     createJobRoutes(jobs, consent, runtimeInitializationError),
   ];
@@ -64,6 +95,7 @@ export async function startServer(options: { database: string; port?: number; we
       if (request.headers.host !== new URL(origin).host) return sendJson(response, 403, { error: 'This address is not allowed.' });
       const url = new URL(request.url ?? '/', origin);
       const management = await handleHelperManagement(request, url, origin, pairing, () => {
+        preparedDefinitions.prune();
         for (const [ws, session] of sessions) if (!pairing.valid(session.token, session.origin)) ws.close(1008, 'Pairing revoked');
       });
       if (management) return sendJson(response, management.status, management.body);
@@ -117,7 +149,7 @@ export async function startServer(options: { database: string; port?: number; we
     });
   });
   try { await new Promise<void>((ready, reject) => { server.once('error', reject); server.listen(options.port ?? 43120, '127.0.0.1', ready); }); }
-  catch (error) { sockets.close(); await jobs.close(); store.close(); throw error; }
+  catch (error) { preparedDefinitions.close(); instant.close(); sockets.close(); await jobs.close(); store.close(); throw error; }
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Local helper did not bind.');
   origin = `http://127.0.0.1:${address.port}`;
@@ -125,8 +157,8 @@ export async function startServer(options: { database: string; port?: number; we
   // delivered, without coupling event delivery to any one HTTP mutation route.
   const delivery = setInterval(() => { for (const ws of sessions.keys()) try { deliver(ws); } catch { ws.close(1011, 'Reconnect to resume'); } }, 100);
   delivery.unref();
-  return { origin, challenge, store, jobs, solver, library, consent, pairing, close: async () => {
-    clearInterval(delivery); solver.close(); for (const client of sockets.clients) client.terminate(); sockets.close();
+  return { origin, challenge, store, jobs, solver, library, consent, pairing, instant, close: async () => {
+    clearInterval(delivery); preparedDefinitions.close(); instant.close(); solver.close(); for (const client of sockets.clients) client.terminate(); sockets.close();
     await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); await jobs.close(); store.close();
   } };
 }

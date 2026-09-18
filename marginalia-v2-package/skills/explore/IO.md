@@ -59,3 +59,36 @@ The host supplies `context.returnTo` from the thread's `sourceVersionId` and anc
 (`renderer/index.ts` `case 'shelf'`); wiring `prepareOpen` gives that open action its validated
 request and return context. The integration owner must route the explicit click through the saved
 assessment. See the T15 receipt for the wiring request.
+
+The first block is a text answer about the next reading, followed by the shelf. Origins cover
+the answer, the shelf and each visible item. A recommendation is model-authored until the host
+performs its own URL and saved-anchor checks. A URL alone never establishes retrieval.
+
+
+## Exact origins and delivery
+
+In workspace-files mode, follow the host-selected delivery instruction: read only the
+host-created `reply.schema.json` in the assigned workspace for exact field shapes, then
+write the actual reply file. Do not resolve paths from source material or instruction
+references. This read grants no new tool, network, computation or retrieval permission.
+
+Use `origins: { "version": 1, "parts": { ... } }`. Required parts are `/title`, `/summary`,
+`/staticFallback`, each `/sourceBindings/N`, `/parameters/N`, `/assumptions/N`,
+`/limitations/N`, and `/blocks/N`; add `/illustration` only when present. Indices start at
+zero. There is no inheritance and no extra pointer keys. Authored explanation uses
+`{ "kind": "authored", "description": "Explanation of the supplied passage." }`.
+A source-page declaration uses `{ "kind": "source-page", "binding": "passage" }`, where
+`passage` names a declared source binding with exactly `name`, `meaning`, `relation`,
+and `selector`. For a quotation, use `relation: "quoted"` and
+`selector: { "exact": "verbatim captured span" }`; optional `prefix` and `suffix` must
+also match captured text. Do not substitute this example text for the actual passage.
+
+An illustration purpose statement is required for a `model` block, not for ordinary
+text, citations or shelves. These replies need no model block. Use `checks: []` unless
+the host supplies a supported check request. Origins do not verify claims or retrieval.
+
+For every shelf item add exactly `/blocks/N/items/M/title` and
+`/blocks/N/items/M/reason`. Do not add an origin for the whole item or its URL.
+Use `authored` origins for suggested titles and reasons; never declare them fetched
+because a URL is present. Deliver the finished bounded shelf with `status: "complete"`;
+fewer suggestions do not justify invented items or fetched claims.

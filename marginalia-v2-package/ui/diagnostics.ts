@@ -39,20 +39,20 @@ export async function loadReaderDiagnostics(input: { origin: string; token?: str
 }
 export function diagnosticLines(v: ReaderDiagnostics): { label: string; value: string }[] {
   const s = v.snapshot;
-  const unknown = 'Unknown — check again when the helper is reachable and pairing is confirmed.';
+  const unknown = 'Unknown. Check again when the helper is reachable and pairing is confirmed.';
   return [
     { label: 'Helper address', value: v.origin },
     { label: 'Helper', value: v.reachability === 'checking' ? 'Checking…' : v.reachability === 'reachable' ? 'Reachable.'
-      : v.reachability === 'invalid' ? 'Invalid address — set an HTTP loopback helper address.' : 'Not reachable — start the local helper.' },
+      : v.reachability === 'invalid' ? 'Invalid address. Set an HTTP loopback helper address.' : 'The helper is unreachable. Start the local helper.' },
     { label: 'Pairing', value: v.pairing === 'paired' ? 'Confirmed by the helper.' : v.pairing === 'unpaired'
-      ? 'Not paired — enter a fresh helper code in the browser margin Settings.' : 'Not confirmed — check pairing in the browser margin Settings.' },
+      ? 'Pairing is absent. Enter a fresh helper code in the browser margin Settings.' : 'Pairing is unconfirmed. Check pairing in the browser margin Settings.' },
     { label: 'Data folder', value: s?.dataDirectory ?? unknown },
     { label: 'Codex sign-in', value: s?.codex.login === 'signed-in' ? 'Signed in for the helper’s configured Codex home.'
-      : s?.codex.login === 'signed-out' ? 'Signed out — sign in using the helper’s configured Codex executable and home.'
-        : s?.codex.status === 'unavailable' ? 'Unknown: the configured Codex could not be checked — check the helper’s Codex configuration.' : unknown },
+      : s?.codex.login === 'signed-out' ? 'Signed out. Sign in using the helper’s configured Codex executable and home.'
+        : s?.codex.status === 'unavailable' ? 'The configured Codex check was unavailable. Check the helper’s Codex configuration.' : unknown },
     { label: 'Helper version', value: s?.helperVersion ?? unknown },
     { label: 'Codex version', value: s?.codex.status === 'version-mismatch'
-      ? `${s.codex.version ?? 'Unrecognized release'}; expected ${s.codex.expectedVersion ?? 'unknown'} — configure the expected Codex release.`
+      ? `${s.codex.version ?? 'Unrecognized release'}; expected ${s.codex.expectedVersion ?? 'unknown'}. Configure the expected Codex release.`
       : s?.codex.version ?? unknown },
     { label: 'Last migration backup', value: s?.backup.state === 'present' ? `${s.backup.path} (folder observed; contents not checked here).`
       : s?.backup.state === 'none' ? 'No migration backup folder exists.' : unknown },

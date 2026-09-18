@@ -17,7 +17,7 @@ Button names below come from the code at `main`. If a control looks different on
 | Time | On screen | Say | Do |
 |---|---|---|---|
 | 0:00 to 0:10 | The article, full width. Scroll slowly past the opening. | "I read a lot of hard material on the web. My notes end up in one app, my questions in another, and the page in a third." | Scroll once. |
-| 0:10 to 0:22 | The margin opens on the right. The article stays as it was. | "Marginalia is a personalized, agentic margin for the web. It opens beside the page, and the page itself is never rewritten." | Click the toolbar icon. |
+| 0:10 to 0:22 | The margin opens on the right. The article stays as it was. | "Marginalia is a personalized, agentic and dynamic margin, right in your browser. It is my research assistant for the web. It opens beside the page, and the page itself is never rewritten." | Click the toolbar icon. |
 | 0:22 to 0:40 | Select one dense sentence about the result. The selection card appears. | "I select a passage and the margin gives me small choices. Keep, Highlight, Ask, Park, or Write a note. So far nothing has left this computer." | Drag-select one sentence. Hold on the card for two seconds. |
 | 0:40 to 0:55 | A note typed in the margin, then saved beside its quoted passage. | "I write what I think first. My note is attached to these exact words, and it stays above anything a model says later." | Click Write a note. Type one honest sentence of your own. Save it. |
 | 0:55 to 1:20 | Ask: a question drafted in the margin, then the review screen with the outgoing text and the recipient. | "When I want help, I ask on purpose. Before anything is sent, I see the exact text that will go out and who receives it. I can allow it this time, always on this site, or never on this site." | Click Ask. Type "Explain this step by step." Open the review. Hold on the outgoing text for three seconds. |
@@ -55,5 +55,5 @@ Use these beats in order: margin opens (0:10), select a passage (0:22), write a 
 ## End card text
 
 Marginalia
-A personalized, agentic margin for the web
+A personalized, agentic and dynamic margin, right in your browser. Your research assistant for the web.
 github.com/yashgurbani/marginalia

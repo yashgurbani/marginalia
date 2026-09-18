@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ReaderStore } from '../daemon/store.ts';
@@ -9,10 +10,12 @@ import { JobStore } from '../daemon/jobs/store.ts';
 import { ConsentSessionService } from '../daemon/consent/service.ts';
 import { prepareContinuationWorkspace, prepareWorkspace, restoreCompletedWorkspace } from '../daemon/jobs/workspace.ts';
 import { JOB_WORKSPACE_INSTRUCTIONS } from '../daemon/jobs/envelope.ts';
+import { directoryIdentity } from '../daemon/jobs/workspace-integrity.ts';
 import type { AuthorizedRuntimeFactory } from '../daemon/jobs/runtime.ts';
 import type { FrozenJobContext, JobSnapshot, StartJobInput } from '../contracts/jobs.ts';
 import { ProviderNotSentError, type ProviderHandle, type ProviderRequest } from '../contracts/job-runner.ts';
 import { capabilitiesForIntent, type ReplyCapability, type CandidateReply } from '../contracts/reply.ts';
+import { SOLVER_MANIFEST_SCHEMA } from '../contracts/solver.ts';
 import { withFixtureOrigins } from './origins-fixture.ts';
 
 const policyKey = 'a'.repeat(64);
@@ -36,7 +39,29 @@ function factory(revalidate: AuthorizedRuntimeFactory['consent']['revalidate']):
       grantId: job.grantId, grantRevision: 1, sitePermissionEpoch: 0, site: 'https://example.org', scope: 'open-session', recipient: 'test',
       provider: job.provider, policyKey: job.policyKey, bindingDigest: job.preparedPayloadDigest, permissionFingerprint: 'f'.repeat(64), egressEventId: 'egress' }),
     withResultAcceptance: (_job, _attempt, commit) => commit(), recordOutcome: () => undefined },
-    create: async () => { throw new Error('Provider must not start in this test.'); } };
+     create: async () => { throw new Error('Provider must not start in this test.'); } };
+}
+function textOnlyReply(number: number): CandidateReply {
+  return withFixtureOrigins({ schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title: `Follow-up ${number}`,
+    summary: `Follow-up ${number}.`, sourceBindings: [], parameters: [], assumptions: [], limitations: [],
+    blocks: [{ id: `follow-up-${number}`, type: 'text', md: `Follow-up ${number}.` }], checks: [], staticFallback: `Follow-up ${number}.` });
+}
+function solverReply(title = 'Saved computation'): CandidateReply {
+  return withFixtureOrigins({ schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title, summary: `${title}.`,
+    sourceBindings: [], parameters: [{ name: 'x', label: 'Input', default: 1, min: 0, max: 10, unit: '',
+      sourceBinding: { name: 'start', meaning: 'The starting value.', relation: 'interpreted', selector: { exact: 'Start' } } }], assumptions: [], limitations: [],
+    requiredCapabilities: ['solver' as const], blocks: [
+      { id: 'answer', type: 'derived', name: 'answer', expression: 'x + 1', unit: '', label: 'Answer' },
+      { id: 'solver-1', type: 'solver', path: 'solver/main.js', inputNames: ['x'], outputBlocks: ['answer'] },
+    ], checks: [], staticFallback: `${title}.` });
+}
+async function writeSolverArtifacts(workspace: string, source: string) {
+  await mkdir(join(workspace, 'solver'), { recursive: true });
+  await writeFile(join(workspace, 'solver', 'main.js'), source);
+  const solverSha256 = createHash('sha256').update(source).digest('hex');
+  await writeFile(join(workspace, 'solver', 'manifest.json'), JSON.stringify({ schema: SOLVER_MANIFEST_SCHEMA,
+    files: [{ path: 'solver/main.js', sha256: solverSha256 }], inputs: [{ name: 'x', min: 0, max: 10, default: 1, unit: '' }], outputs: ['answer'] }));
+  return solverSha256;
 }
 
 async function waitForCondition(
@@ -288,6 +313,7 @@ test('retry keeps frozen source lineage and original capabilities when the ceili
     const retry = await next.prepareRetry('retry-parent', { id: 'retry-child', idempotencyKey: 'retry-child-key' });
     const packet = JSON.parse(retry.consent.outgoing[0].text) as { availableCapabilities: string[]; source: { sourceHash: string } };
     assert.deepEqual(packet.availableCapabilities, []);
+    (next as unknown as { assertHostPlan(input: typeof retry.job, previous: JobSnapshot): void }).assertHostPlan(retry.job, next.get('retry-parent')!);
     assert.equal(packet.source.sourceHash, next.get('retry-parent')?.context.sourceHash);
   } finally { await next.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -309,6 +335,201 @@ test('continuation verifies reviewed files before mutation and rejects undeclare
     await assert.rejects(prepareContinuationWorkspace(workspace, 'attempt', packet, '{"type":"object"}'), /Undeclared/);
     assert.equal((await readFile(join(workspace, 'packet.json'), 'utf8')).includes('Question'), true);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a follow-up preserves and resumes with the unchanged host-pinned solver', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'p05-solver-followup-')), reader = fixture();
+  const parent = await persistedSolverParent(root, reader); let starts = 0, resumes = 0;
+  const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
+  const runtimeFactory: AuthorizedRuntimeFactory = { ...base, create: async (_job, _attempt, _workspace, host) => ({ close: () => undefined, runner: {
+    capabilities: { interrupt: 'turn-interrupt', recovery: 'thread-state', structuredFinal: true, schemaEnforced: true, liveEvents: true },
+    start: async () => { starts++; throw new Error('A continuation must resume.'); },
+    resume: async (previous, request) => {
+      if (!request) throw new Error('A continuation request is required.');
+      resumes++; assert.equal(await readFile(join(request.workspace, 'solver', 'main.js'), 'utf8'), parent.solverSource);
+      host.finalizeSend(request, { ...starting(request), threadId: previous.threadId }); throw new Error('resume outcome unconfirmed');
+    },
+    inspect: async () => { throw new Error('Unexpected inspect.'); }, cancel: async () => { throw new Error('Unexpected cancel.'); },
+  } }) };
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: ['solver'], solverAuthoring: false }, runtimeFactory });
+  try {
+    const prepared = await jobs.prepareFollowup('solver-parent', { id: 'solver-followup', idempotencyKey: 'solver-followup-key', question: 'Continue.' });
+    (jobs as unknown as { assertHostPlan(input: typeof prepared.job, previous: JobSnapshot): void }).assertHostPlan(prepared.job, jobs.get('solver-parent')!);
+    await jobs.followup('solver-parent', { id: 'solver-followup', idempotencyKey: 'solver-followup-key', question: 'Continue.',
+      grantId: 'grant', preparedPayloadDigest: prepared.job.preparedPayloadDigest });
+    const settled = await waitForJob(jobs, 'solver-followup', job => ['outcome_unknown', 'failed'].includes(job.state), 'solver continuation resume');
+    assert.equal(settled.state, 'outcome_unknown', settled.reason);
+    assert.equal(settled.attempts[0].handoffMarked, true); assert.equal(starts, 0); assert.equal(resumes, 1);
+    assert.equal(createHash('sha256').update(await readFile(join(parent.workspace, 'solver', 'main.js'))).digest('hex'), parent.solverSha256);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('two consecutive follow-ups retain an ancestor solver after a text-only reply', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'p05-solver-followup-chain-')), reader = fixture();
+  const parent = await persistedSolverParent(root, reader), manifestBefore = await readFile(join(parent.workspace, 'solver', 'manifest.json'));
+  let starts = 0, resumes = 0;
+  const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
+  const runtimeFactory: AuthorizedRuntimeFactory = { ...base, create: async (_job, _attempt, _workspace, host) => ({ close: () => undefined, runner: {
+    capabilities: { interrupt: 'turn-interrupt', recovery: 'thread-state', structuredFinal: true, schemaEnforced: true, liveEvents: true },
+    start: async () => { starts++; throw new Error('A saved-solver follow-up must resume.'); },
+    resume: async (previous, request) => {
+      if (!request) throw new Error('A continuation request is required.');
+      resumes++;
+      const sent = host.finalizeSend(request, { ...starting(request), threadId: previous.threadId });
+      await writeFile(join(request.workspace, 'reply.json'), JSON.stringify(textOnlyReply(resumes)));
+      const completed = await host.checkpoint({ ...sent, state: 'completed' });
+      if (!completed) throw new Error('The fake provider did not checkpoint completion.');
+      return completed;
+    },
+    inspect: async () => { throw new Error('Unexpected inspect.'); }, cancel: async () => { throw new Error('Unexpected cancel.'); },
+  } }) };
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: ['solver'], solverAuthoring: false }, runtimeFactory });
+  try {
+    const firstPrepared = await jobs.prepareFollowup('solver-parent', { id: 'solver-chain-one', idempotencyKey: 'solver-chain-one-key', question: 'Continue once.' });
+    await jobs.followup('solver-parent', { id: 'solver-chain-one', idempotencyKey: 'solver-chain-one-key', question: 'Continue once.',
+      grantId: 'grant', preparedPayloadDigest: firstPrepared.job.preparedPayloadDigest });
+    const first = await waitForJob(jobs, 'solver-chain-one', job => job.state === 'succeeded', 'first saved-solver follow-up');
+    assert.ok(first.replyVersionId);
+    assert.equal(reader.reply(first.replyVersionId!)!.reply.blocks.some(block => block.type === 'solver'), false);
+
+    const secondPrepared = await jobs.prepareFollowup(first.id, { id: 'solver-chain-two', idempotencyKey: 'solver-chain-two-key', question: 'Continue twice.' });
+    await jobs.followup(first.id, { id: 'solver-chain-two', idempotencyKey: 'solver-chain-two-key', question: 'Continue twice.',
+      grantId: 'grant', preparedPayloadDigest: secondPrepared.job.preparedPayloadDigest });
+    const second = await waitForJob(jobs, 'solver-chain-two', job => job.state === 'succeeded', 'second saved-solver follow-up');
+    assert.ok(second.replyVersionId);
+    assert.equal(reader.reply(second.replyVersionId!)!.reply.blocks.some(block => block.type === 'solver'), false);
+    assert.equal(starts, 0); assert.equal(resumes, 2);
+    assert.equal(await readFile(join(parent.workspace, 'solver', 'main.js'), 'utf8'), parent.solverSource);
+    assert.equal((await readFile(join(parent.workspace, 'solver', 'manifest.json'))).toString(), manifestBefore.toString());
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('a newer explicitly authored solver survives a follow-up after the older reply is removed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'p05-solver-followup-newer-')), reader = fixture();
+  const parent = await persistedSolverParent(root, reader), newerSource = 'process.stdout.write(JSON.stringify({answer:3}));\n';
+  let starts = 0, resumes = 0;
+  const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
+  const runtimeFactory: AuthorizedRuntimeFactory = { ...base, create: async (_job, _attempt, _workspace, host) => ({ close: () => undefined, runner: {
+    capabilities: { interrupt: 'turn-interrupt', recovery: 'thread-state', structuredFinal: true, schemaEnforced: true, liveEvents: true },
+    start: async () => { starts++; throw new Error('A compatible solver follow-up must resume.'); },
+    resume: async (previous, request) => {
+      if (!request) throw new Error('A continuation request is required.');
+      resumes++;
+      assert.equal(request.workspace, parent.workspace);
+      if (resumes === 1) {
+        const solverSha256 = await writeSolverArtifacts(request.workspace, newerSource);
+        await writeFile(join(request.workspace, 'reply.json'), JSON.stringify(solverReply('Newer saved computation')));
+        const sent = host.finalizeSend(request, { ...starting(request), threadId: previous.threadId });
+        const completed = await host.checkpoint({ ...sent, state: 'completed' });
+        if (!completed) throw new Error('The fake provider did not checkpoint the authored solver.');
+        assert.equal(solverSha256, createHash('sha256').update(newerSource).digest('hex'));
+        return completed;
+      }
+      assert.equal(await readFile(join(request.workspace, 'solver', 'main.js'), 'utf8'), newerSource);
+      await writeFile(join(request.workspace, 'reply.json'), JSON.stringify(textOnlyReply(2)));
+      const sent = host.finalizeSend(request, { ...starting(request), threadId: previous.threadId });
+      const completed = await host.checkpoint({ ...sent, state: 'completed' });
+      if (!completed) throw new Error('The fake provider did not checkpoint the follow-up.');
+      return completed;
+    },
+    inspect: async () => { throw new Error('Unexpected inspect.'); }, cancel: async () => { throw new Error('Unexpected cancel.'); },
+  } }) };
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: ['solver'], solverAuthoring: true }, runtimeFactory });
+  try {
+    const firstPrepared = await jobs.prepareFollowup('solver-parent', { id: 'solver-newer-one', idempotencyKey: 'solver-newer-one-key', question: 'Author a newer solver.' });
+    await jobs.followup('solver-parent', { id: 'solver-newer-one', idempotencyKey: 'solver-newer-one-key', question: 'Author a newer solver.',
+      grantId: 'grant', preparedPayloadDigest: firstPrepared.job.preparedPayloadDigest });
+    const first = await waitForJob(jobs, 'solver-newer-one', job => job.state === 'succeeded', 'newer authored solver follow-up');
+    assert.ok(first.replyVersionId);
+    const newerBinding = jobs.store.solverArtifactBinding(first.replyVersionId!, 'solver-1');
+    assert.ok(newerBinding);
+    assert.notEqual(newerBinding.solverSha256, parent.solverSha256);
+    const removed = reader.setReplyRemoved({ id: 'remove-older-solver-reply', replyVersionId: 'solver-parent-reply', removed: true, expectedRevision: 1 });
+    assert.ok(removed.deletedAt);
+
+    const secondPrepared = await jobs.prepareFollowup(first.id, { id: 'solver-newer-two', idempotencyKey: 'solver-newer-two-key', question: 'Continue after the newer solver.' });
+    await jobs.followup(first.id, { id: 'solver-newer-two', idempotencyKey: 'solver-newer-two-key', question: 'Continue after the newer solver.',
+      grantId: 'grant', preparedPayloadDigest: secondPrepared.job.preparedPayloadDigest });
+    const second = await waitForJob(jobs, 'solver-newer-two', job => ['succeeded', 'failed'].includes(job.state), 'follow-up after newer solver');
+    assert.equal(second.state, 'succeeded', second.reason);
+    assert.equal(starts, 0); assert.equal(resumes, 2);
+    assert.equal(await readFile(join(parent.workspace, 'solver', 'main.js'), 'utf8'), newerSource);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('a text-only fork to a fresh workspace does not inherit old solver authority', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'p05-solver-followup-fork-')), reader = fixture();
+  const parent = await persistedSolverParent(root, reader);
+  let continuationIdentity = 'b'.repeat(64), starts = 0, resumes = 0, firstWorkspace: string | undefined;
+  const forkLibrary = { modelFor: library.modelFor, continuationIdentity: () => continuationIdentity };
+  const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
+  const runtimeFactory: AuthorizedRuntimeFactory = { ...base, create: async (_job, _attempt, _workspace, host) => ({ close: () => undefined, runner: {
+    capabilities: { interrupt: 'turn-interrupt', recovery: 'thread-state', structuredFinal: true, schemaEnforced: true, liveEvents: true },
+    start: async request => {
+      starts++; firstWorkspace = request.workspace;
+      assert.notEqual(request.workspace, parent.workspace);
+      await assert.rejects(readFile(join(request.workspace, 'solver', 'main.js')));
+      await writeFile(join(request.workspace, 'reply.json'), JSON.stringify(textOnlyReply(1)));
+      const sent = host.finalizeSend(request, { ...starting(request), threadId: 'fresh-thread' });
+      const completed = await host.checkpoint({ ...sent, state: 'completed' });
+      if (!completed) throw new Error('The fake provider did not checkpoint the fresh fork.');
+      return completed;
+    },
+    resume: async (previous, request) => {
+      if (!request) throw new Error('A continuation request is required.');
+      resumes++; assert.equal(request.workspace, firstWorkspace);
+      await assert.rejects(readFile(join(request.workspace, 'solver', 'main.js')));
+      await writeFile(join(request.workspace, 'reply.json'), JSON.stringify(textOnlyReply(2)));
+      const sent = host.finalizeSend(request, { ...starting(request), threadId: previous.threadId });
+      const completed = await host.checkpoint({ ...sent, state: 'completed' });
+      if (!completed) throw new Error('The fake provider did not checkpoint the fresh follow-up.');
+      return completed;
+    },
+    inspect: async () => { throw new Error('Unexpected inspect.'); }, cancel: async () => { throw new Error('Unexpected cancel.'); },
+  } }) };
+  const jobs = new JobService({ reader, workspaceRoot: root, library: forkLibrary,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: ['solver'], solverAuthoring: false }, runtimeFactory });
+  try {
+    const firstPrepared = await jobs.prepareFollowup('solver-parent', { id: 'solver-fork-one', idempotencyKey: 'solver-fork-one-key', question: 'Fork with text only.' });
+    continuationIdentity = 'c'.repeat(64);
+    await jobs.followup('solver-parent', { id: 'solver-fork-one', idempotencyKey: 'solver-fork-one-key', question: 'Fork with text only.',
+      grantId: 'grant', preparedPayloadDigest: firstPrepared.job.preparedPayloadDigest });
+    const first = await waitForJob(jobs, 'solver-fork-one', job => job.state === 'succeeded', 'text-only fresh fork');
+
+    const secondPrepared = await jobs.prepareFollowup(first.id, { id: 'solver-fork-two', idempotencyKey: 'solver-fork-two-key', question: 'Continue the fresh fork.' });
+    await jobs.followup(first.id, { id: 'solver-fork-two', idempotencyKey: 'solver-fork-two-key', question: 'Continue the fresh fork.',
+      grantId: 'grant', preparedPayloadDigest: secondPrepared.job.preparedPayloadDigest });
+    const second = await waitForJob(jobs, 'solver-fork-two', job => ['succeeded', 'failed'].includes(job.state), 'fresh fork second follow-up');
+    assert.equal(second.state, 'succeeded', second.reason);
+    assert.equal(starts, 1); assert.equal(resumes, 1);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('a replaced solver and manifest refuse a follow-up before workspace mutation or dispatch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'p05-solver-refusal-')), reader = fixture();
+  const parent = await persistedSolverParent(root, reader), changed = 'process.stdout.write(JSON.stringify({answer:999}));\n';
+  await writeFile(join(parent.workspace, 'solver', 'main.js'), changed);
+  const manifestPath = join(parent.workspace, 'solver', 'manifest.json'), manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.files[0].sha256 = createHash('sha256').update(changed).digest('hex'); await writeFile(manifestPath, JSON.stringify(manifest));
+  const packetBefore = await readFile(join(parent.workspace, 'packet.json'), 'utf8'), replyBefore = await readFile(join(parent.workspace, 'reply.json'), 'utf8');
+  let runtimeCreates = 0;
+  const base = factory(async () => ({ grantId: 'grant', policyKey, auditScope: 'scope' }));
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: ['solver'], solverAuthoring: false },
+    runtimeFactory: { ...base, create: async () => { runtimeCreates++; throw new Error('A modified solver must refuse before runtime creation.'); } } });
+  try {
+    const prepared = await jobs.prepareFollowup('solver-parent', { id: 'solver-refused-followup', idempotencyKey: 'solver-refused-key', question: 'Continue.' });
+    await jobs.followup('solver-parent', { id: 'solver-refused-followup', idempotencyKey: 'solver-refused-key', question: 'Continue.',
+      grantId: 'grant', preparedPayloadDigest: prepared.job.preparedPayloadDigest });
+    const failed = await waitForJob(jobs, 'solver-refused-followup', job => job.state === 'failed', 'modified solver refusal');
+    assert.match(failed.reason ?? '', /host-pinned binding/);
+    assert.equal(failed.attempts[0].handoffMarked, false); assert.equal(runtimeCreates, 0);
+    assert.equal(await readFile(join(parent.workspace, 'packet.json'), 'utf8'), packetBefore);
+    assert.equal(await readFile(join(parent.workspace, 'reply.json'), 'utf8'), replyBefore);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('restart validates and commits the persisted completed workspace without starting a provider', async () => {
@@ -417,20 +638,78 @@ for (const intent of ['simulate', 'define', 'evidence'] as const) {
       runtimeFactory: factory(async () => ({ grantId: 'grant', policyKey })) });
     try {
       const prepared = await jobs.prepare({ id: 'intent-job', idempotencyKey: 'intent-key', threadId: 'thread-job-test', intent, question: 'Explain.' });
-      assert.deepEqual(prepared.job.capabilities, capabilitiesForIntent(intent));
-      assert.deepEqual(JSON.parse(prepared.consent.outgoing[0].text).availableCapabilities, capabilitiesForIntent(intent));
+      const expected = capabilitiesForIntent(intent).filter(capability => capability !== 'solver');
+      assert.deepEqual(prepared.job.capabilities, expected);
+      assert.deepEqual(JSON.parse(prepared.consent.outgoing[0].text).availableCapabilities, expected);
       await jobs.create({ ...prepared.job, grantId: 'grant' });
-      assert.deepEqual(jobs.store.capabilities('intent-job'), capabilitiesForIntent(intent));
+      assert.deepEqual(jobs.store.capabilities('intent-job'), expected);
     } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
   });
 }
 
-test('retry preparation and dispatch retain original capabilities across changed ceilings', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'marginalia-retry-capabilities-')), reader = fixture();
-  const make = (capabilities: ReplyCapability[]) => new JobService({ reader, workspaceRoot: root, library,
-    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities },
+async function persistedSolverParent(root: string, reader: ReaderStore) {
+  const thread = reader.get('thread-job-test')!, source = reader.sourceVersion(thread.sourceVersionId)!;
+  const packet = { schema: 'marginalia.job-packet.v1' as const, intent: 'simulate' as const, question: 'Compute.',
+    source: { url: thread.sourceUrl, title: thread.sourceTitle, pageType: source.pageType, capturedAt: source.capturedAt,
+      sourceHash: source.hash, sourceVersionId: source.id },
+    selection: { ...thread.anchor, originalEnd: thread.anchor.end, omittedCharacters: 0 },
+    adjacentContext: { before: '', after: '', basis: 'bounded-character-context' as const }, availableCapabilities: ['solver' as const], omissions: [] };
+  const context: FrozenJobContext = { threadId: thread.id, sourceVersionId: source.id, sourceUrl: thread.sourceUrl, sourceTitle: thread.sourceTitle,
+    sourcePageType: source.pageType, sourceCapturedAt: source.capturedAt, sourceHash: source.hash, sourceText: source.text,
+    passage: thread.anchor, question: 'Compute.', intent: 'simulate', preparedPayloadDigest: 'd'.repeat(64),
+    modelSettingsRevision: 1, modelCompatibilityKey: 'test', outgoing: packet };
+  const input: StartJobInput = { id: 'solver-parent', idempotencyKey: 'solver-parent-key', threadId: thread.id, intent: 'simulate', question: 'Compute.',
+    provider: 'app-server', model: 'test-model', mode: 'workspace-files', policyKey, grantId: 'grant',
+    preparedPayloadDigest: 'd'.repeat(64), capabilities: ['solver'] };
+  const store = new JobStore(reader); store.create(input, context, 'packet-digest', 'request-digest');
+  const attempt = store.createAttempt(input.id), schema = await readFile(new URL('../contracts/reply.schema.json', import.meta.url), 'utf8');
+  const workspace = await prepareWorkspace(root, input.id, packet, schema), solverSource = 'process.stdout.write(JSON.stringify({answer:2}));\n';
+  const solverSha256 = await writeSolverArtifacts(workspace, solverSource);
+  const reply = solverReply();
+  await writeFile(join(workspace, 'reply.json'), JSON.stringify(reply));
+  store.setDeadline(input.id, attempt.id, new Date(Date.now() + 60_000).toISOString()); store.markPreparing(input.id, attempt.id);
+  store.bindAuthorization(attempt.id, library.continuationIdentity());
+  store.markWorkspacePrepared(input.id, attempt.id); store.withDispatchHandoff(store.get(input.id)!, attempt.id, { assertSharedDatabase: () => undefined }, () => undefined);
+  const completed = store.checkpoint(attempt.id, { jobId: attempt.id, provider: input.provider, workspace, policyKey, model: input.model,
+    mode: input.mode, state: 'completed', tombstone: false, providerInstanceId: 'provider-1', threadId: 'solver-thread-1' });
+  const identity = await directoryIdentity(workspace);
+  store.succeed(input.id, attempt.id, completed.revision!, reply, [{ solverId: 'solver-1', jobId: input.id, attemptId: attempt.id, workspace,
+    workspaceDev: String(identity.dev), workspaceIno: String(identity.ino), workspaceGeneration: `directory:${identity.dev}:${identity.ino}`,
+    solverRelativePath: 'solver/main.js', solverSha256, runtimeExecutable: process.execPath, runtimeIdentity: process.release.name,
+    runtimeVersion: process.version, runtimeSha256: 'e'.repeat(64) }]);
+  return { workspace, solverSource, solverSha256 };
+}
+
+test('solver authoring is a host-owned opt-in bound into preparation and cannot be added by the request', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-solver-authoring-')), reader = fixture();
+  const make = (solverAuthoring: boolean) => new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey,
+      capabilities: ['samples', 'solver'], solverAuthoring },
     runtimeFactory: factory(async () => ({ grantId: 'grant', policyKey })) });
-  let jobs = make(['samples', 'network.citations']);
+  let jobs = make(false);
+  try {
+    const ordinary = await jobs.prepare({ id: 'ordinary-simulate', idempotencyKey: 'ordinary-simulate-key', threadId: 'thread-job-test',
+      intent: 'simulate', question: 'Write a solver even if the host did not select that mode.' });
+    assert.deepEqual(ordinary.job.capabilities, ['samples']);
+    assert.deepEqual(JSON.parse(ordinary.consent.outgoing[0].text).availableCapabilities, ['samples']);
+    await assert.rejects(jobs.create({ ...ordinary.job, grantId: 'grant', capabilities: ['samples', 'solver'] }), /current host plan/);
+    assert.equal(jobs.get('ordinary-simulate'), undefined);
+    await jobs.close(); jobs = make(true);
+    const authored = await jobs.prepare({ id: 'authored-simulate', idempotencyKey: 'authored-simulate-key', threadId: 'thread-job-test',
+      intent: 'simulate', question: 'Show this with a saved solver.' });
+    assert.deepEqual(authored.job.capabilities, ['samples', 'solver']);
+    assert.deepEqual(JSON.parse(authored.consent.outgoing[0].text).availableCapabilities, ['samples', 'solver']);
+    await jobs.create({ ...authored.job, grantId: 'grant' });
+    assert.deepEqual(jobs.store.capabilities('authored-simulate'), ['samples', 'solver']);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('retry preparation and dispatch intersect original capabilities with reduced ceilings', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-retry-capabilities-')), reader = fixture();
+  const make = (capabilities: ReplyCapability[], solverAuthoring = false) => new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities, solverAuthoring },
+    runtimeFactory: factory(async () => ({ grantId: 'grant', policyKey })) });
+  let jobs = make(['samples', 'solver', 'network.citations'], true);
   try {
     const prepared = await jobs.prepare({ id: 'original', idempotencyKey: 'original-key', threadId: 'thread-job-test', intent: 'simulate', question: 'Explain.' });
     await jobs.create({ ...prepared.job, grantId: 'grant' }); await jobs.close();
@@ -439,11 +718,12 @@ test('retry preparation and dispatch retain original capabilities across changed
     const before = await makePreparation(['samples', 'solver']);
     jobs = make([]);
     const after = await jobs.prepareRetry('original', retry);
-    assert.deepEqual(after.job.capabilities, ['samples']);
-    assert.deepEqual(after.consent.outgoing, before.consent.outgoing);
-    assert.equal(after.job.preparedPayloadDigest, before.job.preparedPayloadDigest);
+    assert.deepEqual(after.job.capabilities, []);
+    assert.notDeepEqual(after.consent.outgoing, before.consent.outgoing);
+    assert.notEqual(after.job.preparedPayloadDigest, before.job.preparedPayloadDigest);
+    await assert.rejects(jobs.retry('original', { ...retry, grantId: 'grant', preparedPayloadDigest: before.job.preparedPayloadDigest }), /changed/);
     await jobs.retry('original', { ...retry, grantId: 'grant', preparedPayloadDigest: after.job.preparedPayloadDigest });
-    assert.deepEqual(jobs.store.capabilities('retry'), ['samples']);
+    assert.deepEqual(jobs.store.capabilities('retry'), []);
     async function makePreparation(ceiling: ReplyCapability[]) {
       const service = make(ceiling);
       try { return await service.prepareRetry('original', retry); } finally { await service.close(); }

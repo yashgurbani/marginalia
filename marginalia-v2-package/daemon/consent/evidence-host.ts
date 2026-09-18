@@ -12,6 +12,7 @@ const required = [
  * requested sandbox flags, sign-in, a tools list, or a command-only probe into confinement.
  * Platform enforcement proof must come from an independently verified host implementation. */
 export function createDedicatedHostEvidenceSource(): PolicyHostEvidenceSource & {
+  /** Evidence completeness only. Operational availability is owned by the runtime factory. */
   readiness(): { ready: false; reasons: string[] };
 } {
   return {

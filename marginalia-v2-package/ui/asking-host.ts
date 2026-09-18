@@ -5,11 +5,13 @@ import type { CandidateReply, Intent } from '../contracts/reply.ts';
 import { canonicalReplyData, capabilitiesForIntent, validateReply } from '../contracts/reply.ts';
 import { replySaveLifecycle, type localPersistence } from './persistence.ts';
 import type { HelperClient } from './helper.ts';
+import type { ReaderSkillSelection } from '../contracts/reader-skills.ts';
 
 export type AskingSelection = {
   capture: SourceCapture; anchor: QuoteAnchor; threadId?: string; sourceVersionId?: string;
   answeredNote?: { noteId: string; revision: number; text: string };
   question: string; context: string; intent?: Intent;
+  readerSkill?: ReaderSkillSelection;
   keepMutation?: Extract<import('../contracts/reader.ts').ReaderMutation, { kind: 'keep' }>;
   resumeJobId?: string;
   /** Explicit reopening of this immutable reply permits its recorded historical note version. */
@@ -31,6 +33,7 @@ export type AskingContext = {
   track<T>(work: Promise<T>): Promise<T>;
   highlight(binding: import('../contracts/reply.ts').SourceBinding | null, original: string): void;
   navigate(binding: import('../contracts/reply.ts').SourceBinding, original: string): void;
+  returnToSource?(anchor: QuoteAnchor): void;
   onCommitted(threadId: string): void;
   /** Open the existing host-owned settings surface. */
   openSettings?(): void;
@@ -55,7 +58,7 @@ type Access = { epoch: string; paired: boolean; canAuthorize: boolean; excluded:
 type Result = { reply: ReplyVersion; source: SourceVersion; view?: ReplyViewState; binding: Binding; trace: { jobId: string } };
 type FlowState = { phase: string; intent?: Intent; requestId?: string; submitted: boolean; canCheck: boolean; question?: string; job?: { id: string; state: string }; result?: Result };
 type Flow = {
-  ask(intent: Intent, question: string): Promise<void>; openAsk(): void; reopen(target: { jobId: string } | { replyVersionId: string }): Promise<void>;
+  ask(intent: Intent, question: string, readerSkill?: ReaderSkillSelection): Promise<void>; openAsk(): void; reopen(target: { jobId: string } | { replyVersionId: string }): Promise<void>;
   refresh(): Promise<void>; close(): void; invalidate(): void; reconcile(): void;
   getState(): FlowState; subscribe(listener: (state: FlowState) => void): () => void;
 };
@@ -65,7 +68,7 @@ type Peer = {
   bindAskingThread(thread: Thread, source: SourceVersion, captureId: string, note?: NoteVersion): Binding;
   createAskingFlow(options: { binding: Binding; host: PeerHost; validateReply: typeof validateReply; currentBinding(): Binding | undefined; currentAccess(): Access; ensureContextSaved(binding: Binding, signal: AbortSignal): Promise<void> }): Flow;
   mountAskingCard(root: HTMLElement, options: {
-    flow: Flow; presentation: 'inline'; returnFocus?: HTMLElement;
+    flow: Flow; presentation: 'inline'; reviewOnly?: boolean; returnFocus?: HTMLElement;
     mountConsent(host: HTMLElement, options: ConsentSheetOptions): ConsentSheet;
     mountReply(host: HTMLElement, reply: CandidateReply, options: ReplyOptions): MountedReply;
     replyOptions(result: Result): Omit<ReplyOptions, 'sourceText' | 'hostReport' | 'onFollowup'>;
@@ -219,7 +222,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       mountedFlow = flow;
       let mountingReply = '';
       card = peer.mountAskingCard(host, {
-        flow, presentation: 'inline',
+        flow, presentation: 'inline', reviewOnly: true,
         returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
         mountConsent: (root, sheetOptions) => mountConsentSheet(root, { ...sheetOptions, onOpenSettings: context.openSettings }),
         replyOptions: result => {
@@ -228,6 +231,16 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
           if (!session) throw new Error('The saved reply view is not ready.');
           return { initialState: session.record.local, capabilities: capabilitiesForIntent(result.reply.reply.intent ?? 'define'),
             sampleGenerationRecords: session.record.sampleGenerationRecords,
+            onShelfOpen: async item => {
+              const current = await connection(); if (!active(epoch)) throw new Error('This asking view has closed.');
+              const opened = await current.openShelfItem(result.binding.threadId, result.reply.id, item);
+              if (!active(epoch) || current !== context.helper()) throw new Error('The saved reply connection changed.');
+              return opened;
+            },
+            onShelfReturn: origin => {
+              if (!active(epoch) || origin.threadId !== result.binding.threadId || origin.sourceVersionId !== result.source.id) return;
+              context.returnToSource?.(structuredClone(result.binding.anchor));
+            },
             onSourceHighlight: binding => context.highlight(binding, result.source.text),
             onSourceNavigate: binding => context.navigate(binding, result.source.text) };
         },
@@ -253,10 +266,12 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       const inputs = host.querySelectorAll<HTMLTextAreaElement>('.m-asking form textarea');
       if (inputs[0]) inputs[0].value = selection.question;
       if (inputs[1]) inputs[1].value = selection.context;
+      let previousPhase = flow.getState().phase;
       unsubscribe = flow.subscribe(state => {
+        const cancelledReview = previousPhase === 'consent' && state.phase === 'suggestions'; previousPhase = state.phase;
         if (!active(epoch)) return;
         context.onState?.({ phase: state.phase });
-        if (state.phase === 'closed') { snapshotQuestion(); context.onClosed?.(); }
+        if (state.phase === 'closed' || cancelledReview) { snapshotQuestion(); context.onClosed?.(); }
         // Identity was durably recorded at transport start; subscriptions are view updates only.
         if (state.result) {
           const completion = { jobId: state.result.trace.jobId, replyVersionId: state.result.reply.id }, key = canonicalReplyData(completion);
@@ -276,7 +291,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
         const question = selection.question + (selection.context.trim() ? '\n\nReader-stated context:\n' + selection.context.trim() : '');
         flow.openAsk();
         // The T05 Review button was the explicit action; this only prepares consent.
-        if (question.trim()) await flow.ask(selection.intent ?? (selection.answeredNote ? 'unsure' : 'define'), question);
+        if (question.trim()) await flow.ask(selection.intent ?? (selection.answeredNote ? 'unsure' : 'define'), question, selection.readerSkill);
       }
       // Read-only lifecycle observation while visible; never retry or dispatch from a timer.
       timer = setInterval(() => { if (!active(epoch) || !visible || !flow) return; const state = flow.getState();

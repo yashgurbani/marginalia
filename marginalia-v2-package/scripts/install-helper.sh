@@ -18,9 +18,13 @@ main="$root/daemon/main.ts"
 os=$(uname -s)
 label='com.marginalia.helper'
 
-finish() {
-  printf '%s\n' 'Helper address: http://127.0.0.1:43120'
-  printf '%s\n' 'Open the extension options and pair with the code the helper shows.'
+show_start_instructions() {
+  printf '%s\n' 'Helper address: http://127.0.0.1:43120/'
+  printf '%s\n' 'To pair, open the helper address in a browser, choose "Show pairing code", then enter the code in the extension options.'
+}
+
+show_removed_instructions() {
+  printf '%s\n' 'The helper is stopped. Install it again before opening the helper address or pairing.'
 }
 
 xml_escape() {
@@ -56,7 +60,7 @@ case "$os" in
       printf '%s\n' '[DRY RUN] Supported hosts register a LaunchAgent with launchctl or a systemd user unit with systemctl.'
       printf '[DRY RUN] Run npm ci in %s only if node_modules is missing.\n' "$root"
       printf '[DRY RUN] Run npm run build in %s.\n' "$root"
-      finish
+      show_start_instructions
       exit 0
     fi
     printf 'Unsupported operating system: %s.\n' "$os" >&2
@@ -79,7 +83,7 @@ if $uninstall; then
     systemctl --user daemon-reload
     printf 'Removed systemd user unit. Reader data remains in %s.\n' "$data_dir"
   fi
-  finish
+  show_removed_instructions
   exit 0
 fi
 
@@ -100,7 +104,7 @@ if $dry_run; then
     printf '[DRY RUN] Write systemd user unit %s, enable it at login, and start it now with systemctl.\n' "$service_path"
   fi
   printf '[DRY RUN] Run node daemon/main.ts from %s with MARGINALIA_DATA_DIR=%s.\n' "$root" "$data_dir"
-  finish
+  show_start_instructions
   exit 0
 fi
 
@@ -154,4 +158,4 @@ EOF
   systemctl --user restart marginalia-helper.service
   printf '%s\n' 'Installed and started systemd user unit. View helper output with: journalctl --user -u marginalia-helper -f'
 fi
-finish
+show_start_instructions

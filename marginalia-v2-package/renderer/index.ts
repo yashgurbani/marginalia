@@ -1,11 +1,13 @@
+import { prepareOpen, type OpenShelfItemRequest, type ReturnContext } from '../contracts/explore.ts';
 import 'katex/dist/katex.min.css';
 import './reply.css';
 import { canonicalReplyData, validateReply, type CandidateReply, type ReplyBlock, type ReplyCapability, type SourceBinding, type SolverBlock } from '../contracts/reply.ts';
 import { button, el, equation, formattedText, link, pagedTable, table } from './dom.ts';
 import { renderPlot } from './plot.ts';
 import { renderDiagram } from './diagram.ts';
+import { assumptionDetails } from './assumptions.ts';
 import { calculateReply, formatNumber, initialRendererState, type RendererState } from './state.ts';
-import { classificationsFromHost } from './host-authority.ts';
+import { classificationsFromHost, citationQuotesFromHost, citationReceiptKey, shelfFromHost } from './host-authority.ts';
 import type { ClassificationView, HostCheckReport } from '../contracts/host-checks.ts';
 import { validateSamplesInterpolationReadiness, type SampleGenerationRecord } from '../contracts/sample-provenance.ts';
 import { interpolateSamples } from '../kernel/samples.ts';
@@ -25,6 +27,8 @@ export type ReplyOptions = {
   resolveHostReport?: (parameters: Readonly<Record<string, number>>, context: { requestId: string; stateKey: string }) => Promise<HostCheckReport | undefined>;
   /** Trusted host-owned sidecars keyed by samples block ID. Candidate data must never populate this map. */
   sampleGenerationRecords?: Readonly<Record<string, SampleGenerationRecord>>;
+  onShelfOpen?: (item: { blockId: string; itemId: string }) => Promise<OpenShelfItemRequest>;
+  onShelfReturn?: (origin: ReturnContext) => void;
   onStateChange?: (state: RendererState) => void | Promise<void>;
   onSourceHighlight?: (binding: SourceBinding | null) => void;
   onSourceNavigate?: (binding: SourceBinding) => void;
@@ -67,8 +71,28 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   let samplesGeneration = 0;
   let remainingPlotVertices = 24_000;
   const invalidInputs = new Set<string>();
+  const lastCheckedConclusions = new Map<string, string>();
+  let sliderRecomputing = false;
+  let sliderSettlement: ReturnType<typeof setTimeout> | undefined;
+  const settleSlider = () => {
+    clearTimeout(sliderSettlement); sliderSettlement = undefined;
+    if (destroyed || !sliderRecomputing) return;
+    sliderRecomputing = false;
+    for (const update of authorityUpdates) update();
+  };
+  const parameterControls = new Map<string, (() => void)[]>();
+  const registerParameterControl = (name: string, update: () => void) => {
+    const controls = parameterControls.get(name) ?? [];
+    controls.push(update); parameterControls.set(name, controls); update();
+  };
+  const syncParameterControls = (name: string) => {
+    for (const update of parameterControls.get(name) ?? []) update();
+  };
   let injectedReport: HostCheckReport | undefined;
   try { injectedReport = options.hostReport ? structuredClone(options.hostReport) : undefined; } catch { /* An invalid injection is never authority. */ }
+  let citationQuotePromise: ReturnType<typeof citationQuotesFromHost> | undefined;
+  let shelfPromise: ReturnType<typeof shelfFromHost> | undefined;
+  const shelfWindows = new Set<Window>();
   let recentReport = injectedReport;
   let sampleGenerationRecords: Readonly<Record<string, SampleGenerationRecord>> = Object.freeze({});
   try { sampleGenerationRecords = Object.freeze(structuredClone(options.sampleGenerationRecords ?? {})); } catch { /* Unreadable sidecars confer no sample authority. */ }
@@ -76,7 +100,37 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   const status = el(doc, 'p', '', 'mr-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const saveStatus = el(doc, 'div', undefined, 'mr-save-status'); saveStatus.setAttribute('role', 'status');
   let returnFocusToMargin = true;
-  const announce = (text: string) => { if (!destroyed) status.textContent = text; };
+  let sliderAnnouncement: { message: string; announced: boolean; awaitingCheck: boolean } | undefined;
+  let sliderAnnouncementTimer: ReturnType<typeof setTimeout> | undefined;
+  const announce = (text: string) => {
+    clearTimeout(sliderAnnouncementTimer); sliderAnnouncementTimer = undefined;
+    // Explicit feedback supersedes the pending input message and any late check
+    // for that input. A new parameter change starts a fresh settlement.
+    if (sliderAnnouncement) sliderAnnouncement.announced = true;
+    if (!destroyed) status.textContent = text;
+  };
+  const announceCalculation = (text: string, final = false) => {
+    if (sliderAnnouncement) {
+      if (sliderAnnouncement.announced) return;
+      sliderAnnouncement.message = text;
+      if (final) {
+        sliderAnnouncement.awaitingCheck = false;
+        if (!sliderAnnouncementTimer) announce(text);
+      }
+    } else announce(text);
+  };
+  const startCalculationAnnouncement = (slider: boolean) => {
+    clearTimeout(sliderAnnouncementTimer); sliderAnnouncementTimer = undefined;
+    sliderAnnouncement = slider ? { message: '', announced: false, awaitingCheck: reply.status === 'complete' && reply.blocks.some(block => block.type === 'classification' && block.headline && block.check) } : undefined;
+    if (!sliderAnnouncement) return;
+    const pending = sliderAnnouncement;
+    sliderAnnouncementTimer = setTimeout(() => {
+      if (destroyed || sliderAnnouncement !== pending) return;
+      sliderAnnouncementTimer = undefined;
+      if (!pending.awaitingCheck && pending.message) announce(pending.message);
+    }, 300);
+  };
+
   // Callbacks are the only execution/inference boundary. They run only on explicit actions,
   // except local persistence and optional zero-inference host check resealing.
   const invoke = async (action: (() => void | Promise<void>) | undefined, unavailable: string) => {
@@ -120,8 +174,11 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
     const stateKey = canonicalReplyData({ reply, parameters });
     const current = () => !destroyed && generation === authorityGeneration && canonicalReplyData({ reply, parameters: state.parameters }) === stateKey;
     const apply = (views: ClassificationView[]) => {
-      hostViews = views; for (const update of authorityUpdates) update();
-      if (views.some(view => view.state === 'verified')) announce('Current host check received. The checked conclusion is ready.');
+      hostViews = views;
+      sliderRecomputing = false;
+      for (const update of authorityUpdates) update();
+      const sentences = views.filter(view => view.state === 'verified').map(view => view.label).join(' ');
+      announceCalculation(sentences || 'The current host check could not verify these inputs.', true);
     };
     try {
       for (const report of new Set([recentReport, injectedReport])) {
@@ -142,7 +199,10 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       if (views.some(view => view.state === 'verified')) recentReport = report;
       apply(views);
     } catch {
-      if (!destroyed && generation === authorityGeneration) announce('The current host check is unavailable. The headline stays withheld; local calculations remain available.');
+      if (!destroyed && generation === authorityGeneration) {
+        sliderRecomputing = false; for (const update of authorityUpdates) update();
+        announceCalculation('The current host check is unavailable. The headline stays withheld; local calculations remain available.', true);
+      }
     }
   };
   const requestSamples = async () => {
@@ -168,15 +228,19 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       for (const update of sampleUpdates.get(block.id) ?? []) update();
     }));
   };
-  const refresh = () => {
+  const refresh = (resealAuthority = true, slider = false) => {
     if (destroyed) return;
+    startCalculationAnnouncement(slider);
+    sliderRecomputing = slider;
+    clearTimeout(sliderSettlement);
+    if (slider) sliderSettlement = setTimeout(settleSlider, 300);
     ++samplesGeneration;
     ++authorityGeneration; hostViews = [];
     calculation = calculateReply(reply, state.parameters);
     for (const update of updates) update();
-    persist(); announce(invalidInputs.size ? 'Correct the invalid input. The plot uses the last accepted values; the headline stays withheld.' : 'Updated locally. No model request was sent.');
+    persist(); announceCalculation(invalidInputs.size ? 'Correct the invalid input. The plot uses the last accepted values; the headline stays withheld.' : 'Updated locally. No model request was sent.');
     if (!destroyed) void requestSamples();
-    if (!destroyed) void requestAuthority();
+    if (!destroyed && resealAuthority) void requestAuthority();
   };
   const onFollowup = (text: string, extra: { questionId?: string; answer?: string } = {}) => {
     if (destroyed || !text.trim()) return;
@@ -204,11 +268,14 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       states.set(prefix, active); highlightStates.set(options.onSourceHighlight, states); emitHighlight(options.onSourceHighlight, states);
     }
   };
-  const bind = (node: HTMLElement | SVGElement, binding: SourceBinding) => {
+  const bindHighlight = (node: HTMLElement | SVGElement, binding: SourceBinding) => {
     node.addEventListener('pointerenter', () => { hoveredBinding = { node, binding, order: ++highlightSequence }; updateHighlight(); });
     node.addEventListener('pointerleave', () => { if (hoveredBinding?.node === node) hoveredBinding = undefined; updateHighlight(); });
     node.addEventListener('focus', () => { focusedBinding = { node, binding, order: ++highlightSequence }; updateHighlight(); });
     node.addEventListener('blur', () => { if (focusedBinding?.node === node) focusedBinding = undefined; updateHighlight(); });
+  };
+  const bind = (node: HTMLElement | SVGElement, binding: SourceBinding) => {
+    bindHighlight(node, binding);
     node.addEventListener('click', () => navigate(binding));
     node.setAttribute('aria-label', `${binding.meaning}. ${binding.relation}. Go to source passage.`);
     if (node.tagName.toLowerCase() !== 'button') {
@@ -265,19 +332,20 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       const view = claim && hostViews.find(view => view.blockId === claim.classification && view.state === 'verified');
       node.dataset.assessment = view ? 'checked' : 'unassessed';
       if (target === 'text' && !claim) node.replaceChildren(formattedText(doc, authored));
-      else node.textContent = claim ? view ? view.label! : 'The requested result is withheld until a matching check is available.' : authored;
+      else if (claim && !view && sliderRecomputing && lastCheckedConclusions.has(claim.classification)) {
+        node.replaceChildren(doc.createTextNode(lastCheckedConclusions.get(claim.classification)!), el(doc, 'span', ' (recomputing)', 'mr-meta'));
+      } else {
+        node.textContent = claim ? view ? view.label! : 'The requested result is withheld until a matching check is available.' : authored;
+        if (claim && !view) node.append(el(doc, 'span', ' (not checked)', 'mr-meta'));
+      }
     };
     update(); authorityUpdates.push(update);
   };
   const hasClassification = reply.blocks.some(block => block.type === 'classification');
   const title = el(doc, 'h3'); copy(title, 'title', reply.title); title.id = `${prefix}-title`; article.setAttribute('aria-labelledby', title.id); article.append(title);
-  article.append(el(doc, 'p', 'Authored description is unassessed. Checked conclusions are identified separately.', 'mr-meta'));
-  if (!reply.origins) article.append(el(doc, 'p', LEGACY_ORIGIN_NOTICE, 'mr-meta'));
-  if (rejectedSavedInputs) article.append(el(doc, 'p', 'Some saved inputs were invalid and were replaced with the authored defaults. Review the inputs below.', 'mr-meta'));
   if (reply.illustration) article.append(el(doc, 'p', reply.illustration.statement, 'mr-illustration'));
-  else if (reply.blocks.some(block => block.type === 'model')) article.append(el(doc, 'p', 'Illustration purpose is unavailable for this saved model. Its authored explanation remains unassessed.', 'mr-meta'));
   if (reply.status === 'partial') article.append(el(doc, 'p', 'Provisional reply. Checks and content may change.', 'mr-meta'));
-  const summary = el(doc, 'p'); copy(summary, 'summary', reply.summary); article.append(summary);
+  const summary = el(doc, 'p'); copy(summary, 'summary', reply.summary);
   const actions = el(doc, 'div', undefined, 'mr-actions');
   const sources = el(doc, 'details'); sources.id = `${prefix}-sources`; sources.append(el(doc, 'summary', 'Source passage'));
   for (const binding of reply.sourceBindings) {
@@ -286,6 +354,7 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   }
   if (!reply.sourceBindings.length) sources.append(el(doc, 'p', 'No individual source bindings were supplied.'));
   const made = el(doc, 'details'); made.append(el(doc, 'summary', 'How this was made'));
+  if (!reply.illustration && reply.blocks.some(block => block.type === 'model')) made.append(el(doc, 'p', 'Illustration purpose is unavailable for this saved model. Its authored explanation remains unassessed.', 'mr-meta'));
   made.append(originPanel(originParts.filter(part => !part.path.startsWith('/blocks/')), 'Origins of the description and inputs'));
   if (hasClassification || reply.resultClaims?.length) {
     const authored = el(doc, 'details'); authored.append(el(doc, 'summary', 'Original authored description (not a checked result)'));
@@ -294,14 +363,16 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   }
   rememberDetails(sources, 'details:sources'); rememberDetails(made, 'details:made');
   made.append(el(doc, 'p', 'The author supplied structured content and mathematical expressions. The calculations run on this device. Only conclusions supported by a matching check are shown as checked.'));
+  if (!reply.origins) made.append(el(doc, 'p', LEGACY_ORIGIN_NOTICE, 'mr-meta'));
+  if (rejectedSavedInputs) made.append(el(doc, 'p', 'Some saved inputs were invalid and were replaced with the authored defaults. Review the inputs below.', 'mr-meta'));
   const hostStatus = el(doc, 'p', 'No checked conclusion is available for these inputs.', 'mr-meta'); made.append(hostStatus, el(doc, 'p', 'Recorded citation and error-evidence statements remain author-supplied.', 'mr-meta'));
   authorityUpdates.push(() => { hostStatus.textContent = hostViews.some(view => view.state === 'verified') ? 'This conclusion was checked for the inputs shown.' : 'No checked conclusion is available for these inputs.'; });
   const checks = el(doc, 'div'); made.append(checks);
   updates.push(() => {
     checks.replaceChildren();
     checks.append(el(doc, 'p', `Current inputs: ${reply.parameters.map(p => `${p.label} = ${formatNumber(state.parameters[p.name])} ${p.unit}`).join('; ') || 'none'}`, 'mr-meta'));
-    for (const check of calculation.checks) checks.append(el(doc, 'p', `${check.criterion} · ${check.status === 'pass' ? 'independently computed locally for current inputs' : check.status}. ${check.reason}`));
-    if (!calculation.checks.length) checks.append(el(doc, 'p', 'No independent scientific criterion is installed for this reply.'));
+    for (const check of calculation.checks) checks.append(el(doc, 'p', check.status === 'pass' ? 'Checked on this device for the current values.' : 'Could not be checked here.'));
+    if (!calculation.checks.length) checks.append(el(doc, 'p', 'Could not be checked here.'));
   });
   const expand = button(doc, 'Expand reply', () => {
     if (dialog.open) { dialog.close(); return; }
@@ -309,7 +380,7 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   });
   const dialog = el(doc, 'dialog', undefined, 'mr-dialog'); dialog.setAttribute('aria-label', 'Expanded reply with source and return controls');
   dialog.addEventListener('close', () => { if (!destroyed) { root.insertBefore(article, dialog); expand.textContent = 'Expand reply'; if (returnFocusToMargin) expand.focus(); } });
-  actions.append(expand); article.append(actions, sources, made);
+  actions.append(expand);
 
   if (reply.parameters.length) {
     const controls = el(doc, 'fieldset', undefined, 'mr-parameters'); controls.append(el(doc, 'legend', 'Try the model'));
@@ -318,11 +389,32 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       const text = `${parameter.label}${parameter.unit ? ` (${parameter.unit})` : ''}`;
       const label = el(doc, 'label', text); label.htmlFor = `${prefix}-input-${parameter.name}`;
       const input = el(doc, 'input'); input.type = 'number'; input.id = label.htmlFor; input.min = String(parameter.min); input.max = String(parameter.max); input.step = 'any'; input.value = String(state.parameters[parameter.name]);
-      const slider = el(doc, 'input'); slider.type = 'range'; slider.id = `${prefix}-slider-${parameter.name}`; slider.min = input.min; slider.max = input.max; slider.step = String((parameter.max - parameter.min) / 1000); slider.value = input.value; slider.setAttribute('aria-label', `${text} slider`);
+      const slider = el(doc, 'input'); slider.type = 'range'; slider.id = `${prefix}-slider-${parameter.name}`; slider.min = input.min; slider.max = input.max; slider.step = 'any'; slider.value = input.value; slider.setAttribute('aria-label', `${text} slider`);
+      input.hidden = true;
+      const edit = button(doc, '', () => {
+        input.hidden = false; slider.hidden = true; edit.hidden = true;
+        input.value = String(state.parameters[parameter.name]); input.focus(); input.select();
+      });
+      edit.setAttribute('aria-label', `Edit ${text}`);
       const error = el(doc, 'p', '', 'mr-error'); error.id = `${prefix}-error-${parameter.name}`; error.setAttribute('aria-live', 'polite'); input.setAttribute('aria-describedby', error.id);
-      const change = (target: HTMLInputElement, other: HTMLInputElement) => {
+      registerParameterControl(parameter.name, () => {
+        const value = state.parameters[parameter.name];
+        slider.value = String(value);
+        edit.textContent = `${formatNumber(value)} ${parameter.unit}`.trim();
+        if (doc.activeElement !== input) input.value = String(value);
+        error.textContent = '';
+        input.removeAttribute('aria-invalid'); slider.removeAttribute('aria-invalid');
+        slider.setAttribute('aria-valuetext', `${formatNumber(value)} ${parameter.unit}`);
+      });
+      if (parameter.sourceBinding) {
+        label.setAttribute('tabindex', '0');
+        bindHighlight(label, parameter.sourceBinding); bindHighlight(input, parameter.sourceBinding); bindHighlight(slider, parameter.sourceBinding);
+      }
+      const change = (target: HTMLInputElement) => {
         const value = target.valueAsNumber;
         if (!Number.isFinite(value) || value < parameter.min || value > parameter.max) {
+          startCalculationAnnouncement(false);
+          sliderRecomputing = false;
           error.textContent = `Enter a number from ${parameter.min} to ${parameter.max}${parameter.unit ? ` ${parameter.unit}` : ''}.`; target.setAttribute('aria-invalid', 'true');
           invalidInputs.add(parameter.name); ++authorityGeneration; ++samplesGeneration; hostViews = []; for (const update of authorityUpdates) update();
           for (const block of reply.blocks) if (block.type === 'samples') calculation.samples.set(block.id, { ok: false, reason: 'Correct the invalid input before applying the recorded sample grid.' });
@@ -332,10 +424,21 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
         const wasInvalid = invalidInputs.delete(parameter.name);
         error.textContent = ''; input.removeAttribute('aria-invalid'); slider.removeAttribute('aria-invalid');
         const changed = state.parameters[parameter.name] !== value;
-        state.parameters[parameter.name] = value; other.value = String(value); slider.setAttribute('aria-valuetext', `${formatNumber(value)} ${parameter.unit}`); if (changed || wasInvalid) refresh();
+        state.parameters[parameter.name] = value; syncParameterControls(parameter.name); if (changed || wasInvalid) refresh(true, target === slider);
       };
-      input.addEventListener('input', () => change(input, slider)); slider.addEventListener('input', () => change(slider, input));
-      row.append(label, input, slider, error); controls.append(row);
+      input.addEventListener('change', () => change(input)); input.addEventListener('blur', () => change(input)); slider.addEventListener('input', () => change(slider));
+      // Native range steps snap restored/typed values to a grid anchored at min.
+      // Keep those exact values while retaining the existing fine arrow increment.
+      slider.addEventListener('keydown', event => {
+        const direction = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 0;
+        if (!direction) return;
+        event.preventDefault();
+        slider.value = String(Math.max(parameter.min, Math.min(parameter.max, state.parameters[parameter.name] + direction * (parameter.max - parameter.min) / 1000)));
+        change(slider);
+      });
+      slider.addEventListener('change', settleSlider); slider.addEventListener('pointerup', settleSlider); slider.addEventListener('blur', settleSlider);
+      input.addEventListener('blur', () => { if (!invalidInputs.has(parameter.name)) { input.hidden = true; slider.hidden = false; edit.hidden = false; } });
+      row.append(label, edit, input, slider, error); controls.append(row);
     }
     article.append(controls);
   }
@@ -410,10 +513,15 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
         section.replaceChildren(el(doc, 'p', `${block.label}: ${result?.ok ? `${formatNumber(result.value)}${block.unit ? ` ${block.unit}` : ''}` : result && !result.ok ? result.reason : 'Unavailable'}`), el(doc, 'p', `Calculated from the authored expression ${block.expression}; this alone does not verify a scientific claim.`, 'mr-meta'));
       }); break;
       case 'classification': { const update = () => {
-        const check = calculation.checks.find(c => c.requestId === block.check && c.model === block.model && c.classification === block.id);
         const view = hostViews.find(view => view.blockId === block.id);
         const authorized = view?.state === 'verified';
-        section.replaceChildren(el(doc, 'p', authorized ? view.label! : 'No conclusion beyond the shown interval. The requested headline is withheld.', 'mr-conclusion'), el(doc, 'p', authorized ? 'This conclusion was checked for the inputs shown.' : check?.status === 'pass' ? 'The calculation was checked for these inputs, but no checked conclusion is available.' : check?.reason ?? 'No checked conclusion is available for these inputs.', 'mr-meta'));
+        if (authorized) lastCheckedConclusions.set(block.id, view.label!);
+        const conclusion = el(doc, 'p', undefined, 'mr-conclusion');
+        if (authorized) conclusion.textContent = view.label!;
+        else if (sliderRecomputing && lastCheckedConclusions.has(block.id)) {
+          conclusion.append(doc.createTextNode(lastCheckedConclusions.get(block.id)!), el(doc, 'span', ' (recomputing)', 'mr-meta'));
+        } else conclusion.append(doc.createTextNode('No conclusion beyond the shown interval. The requested headline is withheld.'), el(doc, 'span', ' (not checked)', 'mr-meta'));
+        section.replaceChildren(conclusion, el(doc, 'p', authorized ? 'Checked on this device for the current values.' : 'Could not be checked here.', 'mr-meta'));
       }; dynamic(update); authorityUpdates.push(update); break; }
       case 'table': section.append(pagedTable(doc, block.columns, block.rows, 'Table', tableView('data'))); break;
       case 'diagram': section.append(renderDiagram(doc, block, id, reply.sourceBindings, bind)); break;
@@ -463,16 +571,80 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
       case 'citations':
         for (const citation of block.entries) {
           const entry = el(doc, 'div', undefined, 'mr-citation');
-          entry.append(el(doc, 'p', citation.claim), el(doc, 'p', 'Author-supplied support assessment; fetching alone does not establish support.', 'mr-meta'), el(doc, 'blockquote', citation.support), el(doc, 'p', `${citation.source} · ${citation.date}. ${citation.fetched ? 'Author reports this was fetched; the retrieval record is separate.' : 'Not reported as fetched.'}`, 'mr-meta'));
+          const status = el(doc, 'p', 'Unverified. Claim support awaits assessment.', 'mr-citation-status');
+          citationQuotePromise ??= citationQuotesFromHost(reply, options.sourceText, injectedReport);
+          void citationQuotePromise.then(quoted => {
+            if (!destroyed && quoted.has(citationReceiptKey(block.id, citation.id))) status.textContent = 'Quoted from this page. Claim support remains unverified.';
+          });
+          const assessment = el(doc, 'div'); assessment.append(el(doc, 'p', citation.claim), status, el(doc, 'p', 'Author-supplied support assessment; fetching alone does not establish support.', 'mr-meta')); made.append(assessment);
+          entry.append(el(doc, 'p', citation.claim), el(doc, 'blockquote', citation.support), el(doc, 'p', `${citation.source} · ${citation.date}. ${citation.fetched ? 'Author reports this was fetched; the retrieval record is separate.' : 'Not reported as fetched.'}`, 'mr-meta'));
           if (citation.url && capability('network.citations')) entry.append(link(doc, 'Open cited source', citation.url));
           section.append(entry);
         }
         if (!capability('network.citations')) section.append(el(doc, 'p', 'Opening citation links is unavailable in this view.', 'mr-meta'));
         break;
-      case 'shelf':
-        for (const item of block.items) { const entry = el(doc, 'div'); entry.append(capability('network.shelf') ? link(doc, item.title, item.url) : el(doc, 'p', item.title), el(doc, 'p', item.reason)); if (item.timecodeSeconds !== undefined) entry.append(el(doc, 'p', `Start at ${formatNumber(item.timecodeSeconds)} seconds.`, 'mr-meta')); section.append(entry); }
-        if (!capability('network.shelf')) section.append(el(doc, 'p', 'Opening reading links is unavailable in this view.', 'mr-meta'));
+      case 'shelf': {
+        made.append(el(doc, 'p', 'Suggested reading. Source contents and claim support remain unverified.', 'mr-meta'));
+        shelfPromise ??= shelfFromHost(reply, options.sourceText, injectedReport);
+        const back = button(doc, 'Return to original passage', () => {
+          void shelfPromise!.then(assessment => { if (!destroyed && assessment) options.onShelfReturn?.(structuredClone(assessment.returnTo)); });
+        });
+        back.disabled = true;
+        void shelfPromise.then(assessment => { if (!destroyed) back.disabled = !assessment || !options.onShelfReturn; });
+        for (const item of block.items) {
+          const entry = el(doc, 'div'), fallback = el(doc, 'div'), status = el(doc, 'p', 'Checking the saved reading link.', 'mr-meta');
+          status.setAttribute('role', 'status');
+          const open = button(doc, item.title, () => {
+            if (open.disabled || destroyed || !options.onShelfOpen) return;
+            open.disabled = true;
+            // Reserve a blank tab during the click so async durability does not lose activation.
+            let pending: Window | null = null;
+            try {
+              pending = doc.defaultView?.open('about:blank', '_blank') ?? null;
+              if (pending) {
+                pending.opener = null;
+                const policy = pending.document.createElement('meta'); policy.name = 'referrer'; policy.content = 'no-referrer';
+                pending.document.head.append(policy);
+                pending.document.body.textContent = 'Saving your return passage.';
+                shelfWindows.add(pending);
+              }
+            } catch { pending?.close(); pending = null; }
+            status.textContent = 'Saving your return passage.';
+            void Promise.resolve().then(() => {
+              if (destroyed) throw new Error('This saved reply has closed.');
+              return options.onShelfOpen!({ blockId: block.id, itemId: item.id });
+            }).then(async request => {
+              const assessment = await shelfPromise!;
+              if (destroyed) { pending?.close(); return; }
+              const expected = assessment && prepareOpen(assessment, item.id, undefined, block.id);
+              if (!expected?.ok || canonicalReplyData(expected.open) !== canonicalReplyData(request)) throw new Error('The saved reading link changed. Reopen this reply.');
+              status.textContent = 'Return passage saved. This opens suggested reading.';
+              if (pending && !pending.closed) {
+                const destination = pending.document.createElement('a');
+                destination.href = request.url; destination.target = '_self'; destination.rel = 'noopener noreferrer'; destination.referrerPolicy = 'no-referrer';
+                destination.textContent = 'Open ' + item.title;
+                pending.document.body.replaceChildren(destination);
+                destination.click();
+              } else fallback.replaceChildren(link(doc, 'Open ' + item.title, request.url));
+            }).catch(error => {
+              pending?.close();
+              if (!destroyed) status.textContent = error instanceof Error ? error.message : 'The return passage could not be saved. Try again.';
+            }).finally(() => { if (pending) shelfWindows.delete(pending); if (!destroyed) open.disabled = false; });
+          });
+          open.disabled = true;
+          entry.append(open, el(doc, 'p', item.reason), status, fallback);
+          if (item.timecodeSeconds !== undefined) entry.append(el(doc, 'p', `Start at ${formatNumber(item.timecodeSeconds)} seconds.`, 'mr-meta'));
+          void shelfPromise.then(assessment => {
+            if (destroyed) return;
+            const allowed = assessment && prepareOpen(assessment, item.id, undefined, block.id);
+            open.disabled = !allowed?.ok || !capability('network.shelf') || !options.onShelfOpen;
+            status.textContent = !assessment ? 'Saved reading review is unavailable.' : !allowed?.ok ? 'This destination is unavailable or repeats another suggestion.' : !options.onShelfOpen ? 'Connect the helper to keep your return passage before opening.' : 'Ready to open on your action.';
+          });
+          section.append(entry);
+        }
+        section.append(back);
         break;
+      }
       case 'samples': {
         section.append(el(doc, 'p', `Precomputed samples · ${block.envelope.interpolation} interpolation`, 'mr-meta'));
         section.append(el(doc, 'p', block.envelope.axes.map(axis => `${axis.name}: ${axis.min} to ${axis.max}, ${axis.count} samples`).join('; ')), el(doc, 'p', `Recorded error evidence: ${block.envelope.errorEvidence}`, 'mr-meta'));
@@ -517,20 +689,51 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
     if (occurrences >= 160) { blocks.append(el(doc, 'p', 'The reply reached its display limit; remaining repeated views are omitted.')); break; }
     try { blocks.append(renderBlock(block)); } catch { blocks.append(el(doc, 'p', `The ${block.type} block could not be displayed. Its content has not been executed.`)); }
   }
-  article.append(blocks);
-  const assumptions = el(doc, 'details'); assumptions.append(el(doc, 'summary', `What this example assumes (${reply.assumptions.length})`));
-  rememberDetails(assumptions, 'details:assumptions');
+  // Keep the authored answer sequence intact and retain the summary for
+  // textual replies before the supporting disclosures.
+  article.append(blocks, summary, actions, sources, made);
+  const assumptions = assumptionDetails(doc, reply.assumptions);
+  if (reply.assumptions.length) rememberDetails(assumptions, 'details:assumptions');
   for (const assumption of reply.assumptions) {
     assumptions.append(el(doc, 'p', assumption.text));
     if (assumption.editable) {
-      const field = el(doc, 'textarea'); const draftKey = `assumption:${assumption.id}`; field.value = typeof state.view[draftKey] === 'string' ? state.view[draftKey] as string : assumption.text; field.maxLength = 2048; field.setAttribute('aria-label', `Change assumption: ${assumption.text}`);
-      field.addEventListener('input', () => { state.view[draftKey] = field.value; persist(); });
-      const revise = button(doc, 'Ask again with this assumption', () => onFollowup(`Revise assumption ${assumption.id} from "${assumption.text}" to "${field.value}". Create a new reply version.`)); revise.disabled = !options.onFollowup;
-      assumptions.append(field, revise);
+      if (assumption.binding) {
+        const binding = assumption.binding;
+        const parameter = reply.parameters.find(candidate => candidate.name === binding.parameter);
+        if (parameter) {
+          const row = el(doc, 'div', undefined, 'mr-assumption');
+          const label = el(doc, 'label', `${parameter.label}${parameter.unit ? ` (${parameter.unit})` : ''}`);
+          const field = el(doc, 'input'); field.type = 'number'; field.id = `${prefix}-assumption-${assumption.id}`; field.min = String(binding.min); field.max = String(binding.max); field.step = 'any'; field.value = String(state.parameters[parameter.name]); field.setAttribute('data-assumption-id', assumption.id); field.setAttribute('aria-label', `Change assumption: ${assumption.text}`);
+          const error = el(doc, 'p', '', 'mr-error'); error.id = `${prefix}-assumption-error-${assumption.id}`; error.setAttribute('aria-live', 'polite'); field.setAttribute('aria-describedby', error.id); label.htmlFor = field.id;
+          registerParameterControl(parameter.name, () => {
+            if (doc.activeElement !== field) field.value = String(state.parameters[parameter.name]);
+            error.textContent = ''; field.removeAttribute('aria-invalid');
+          });
+          if (parameter.sourceBinding) { bindHighlight(label, parameter.sourceBinding); bindHighlight(field, parameter.sourceBinding); }
+          const change = () => {
+            const value = field.valueAsNumber;
+            if (!Number.isFinite(value) || value < binding.min || value > binding.max) {
+              error.textContent = 'That value is outside the assumption range. The previous value remains.'; field.setAttribute('aria-invalid', 'true'); announce('That value is outside the assumption range. The previous value remains.'); return;
+            }
+            error.textContent = ''; field.removeAttribute('aria-invalid');
+            const changed = state.parameters[parameter.name] !== value;
+            const wasInvalid = invalidInputs.delete(parameter.name);
+            state.parameters[parameter.name] = value;
+            syncParameterControls(parameter.name);
+            if (changed || wasInvalid) refresh(true);
+          };
+          field.addEventListener('change', change); field.addEventListener('blur', change); row.append(label, field, el(doc, 'p', `Local range: ${formatNumber(binding.min)} to ${formatNumber(binding.max)}${parameter.unit ? ` ${parameter.unit}` : ''}`, 'mr-meta'), error); assumptions.append(row);
+        }
+      } else {
+        const field = el(doc, 'textarea'); const draftKey = `assumption:${assumption.id}`; field.value = typeof state.view[draftKey] === 'string' ? state.view[draftKey] as string : assumption.text; field.maxLength = 2048; field.setAttribute('aria-label', `Change assumption: ${assumption.text}`);
+        field.addEventListener('input', () => { state.view[draftKey] = field.value; persist(); });
+        const revise = button(doc, 'Ask again with this assumption', () => onFollowup(`Revise assumption ${assumption.id} from "${assumption.text}" to "${field.value}". Create a new reply version.`)); revise.disabled = !options.onFollowup;
+        assumptions.append(field, revise);
+      }
     }
   }
-  for (const limitation of reply.limitations) assumptions.append(el(doc, 'p', limitation, 'mr-meta'));
-  article.append(assumptions);
+  for (const limitation of reply.limitations) (reply.assumptions.length ? assumptions : made).append(el(doc, 'p', limitation, 'mr-meta'));
+  if (reply.assumptions.length) article.append(assumptions);
   const followup = el(doc, 'form', undefined, 'mr-followup'); const followupLabel = el(doc, 'label', 'Follow up'); followupLabel.htmlFor = `${prefix}-followup`;
   const input = el(doc, 'textarea'); input.id = followupLabel.htmlFor; input.maxLength = 8192; input.value = typeof state.view.draft === 'string' ? state.view.draft : ''; input.placeholder = 'Ask about this reply…';
   input.addEventListener('input', () => { state.view.draft = input.value; persist(); });
@@ -541,5 +744,6 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
   for (const update of updates) update();
   void requestSamples();
   void requestAuthority();
-  return { getState, destroy() { if (destroyed) return; destroyed = true; ++authorityGeneration; ++samplesGeneration; clearHighlight(); if (dialog.open) dialog.close(); article.remove(); dialog.remove(); updates.length = 0; sampleUpdates.clear(); authorityUpdates.length = 0; } };
+  return { getState, destroy() { if (destroyed) return; destroyed = true; clearTimeout(sliderSettlement); clearTimeout(sliderAnnouncementTimer); for (const pending of shelfWindows) pending.close(); shelfWindows.clear(); ++authorityGeneration; ++samplesGeneration; clearHighlight(); if (dialog.open) dialog.close(); article.remove(); dialog.remove(); updates.length = 0; sampleUpdates.clear(); authorityUpdates.length = 0; } };
 }
+

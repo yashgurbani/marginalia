@@ -1,5 +1,5 @@
-import type { CandidateReply, CitationsBlock } from '../../../contracts/reply.ts';
-import type { ConsentScope, FetchedResourceRecord } from '../../../contracts/consent.ts';
+import type { CandidateReply } from '../../../contracts/reply.ts';
+import type { FetchedResourceRecord } from '../../../contracts/consent.ts';
 
 /**
  * T14 Evidence host reconciliation.
@@ -14,82 +14,55 @@ import type { ConsentScope, FetchedResourceRecord } from '../../../contracts/con
  * a model citation is never accepted as a fetched source.
  */
 
-export const EVIDENCE_TRANSFORM = 'marginalia.transform.evidence.v1' as const;
+export { EVIDENCE_TRANSFORM } from '../../../contracts/evidence.ts';
+export type { BoundSourceVersion, EvidenceRetrieval, EvidenceObservations, CitationAttribution, EvidenceDates, EvidenceEntryAssessment, EvidenceVerdict, EvidenceAssessment } from '../../../contracts/evidence.ts';
+import { EVIDENCE_TRANSFORM, type EvidenceObservations, type CitationAttribution, type EvidenceDates, type EvidenceEntryAssessment, type EvidenceVerdict, type EvidenceAssessment } from '../../../contracts/evidence.ts';
 
-/** Host-supplied identity of the captured source version a reply was generated against. */
-export type BoundSourceVersion = { id: string; hash: string; capturedAt: string | null };
+function privateIpv4(parts: readonly number[]): boolean {
+  const [a, b, c, d] = parts;
+  if (parts.length !== 4 || parts.some(value => !Number.isInteger(value) || value < 0 || value > 255)) return true;
+  return a === 0 || a === 10 || a === 127 || a === 192 && b === 168 ||
+    a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 ||
+    a === 100 && b >= 64 && b <= 127 || a === 198 && (b === 18 || b === 19);
+}
 
-/**
- * Host observations. Never parsed from reply JSON. `observed` are the exact broker records for
- * this attempt. The caller must validate the reply, bind it to the same attempt's egress
- * record and frozen source, and pass the validated final or partial reply distinctly.
- * `retrievalComplete` is the host confinement truth: false means another route
- * could have fetched, so the log is not authoritative and must not be treated as complete.
- */
-export type EvidenceObservations = {
-  sessionScope: ConsentScope;
-  retrievalComplete: boolean;
-  observed: readonly FetchedResourceRecord[];
-  boundSourceVersion: BoundSourceVersion;
-  /** When present and different from the bound version, the claim binding is stale. */
-  currentSourceVersion?: BoundSourceVersion;
-};
+/** URL supplies canonical bracketed IPv6 hostnames, including mapped IPv4. */
+function privateIpv6(host: string): boolean {
+  const halves = host.slice(1, -1).split('::');
+  const words = (part: string) => part ? part.split(':').map(word => Number.parseInt(word, 16)) : [];
+  const left = words(halves[0]);
+  const right = halves.length === 2 ? words(halves[1]) : [];
+  const address = halves.length === 2 ? [...left, ...Array<number>(8 - left.length - right.length).fill(0), ...right] : left;
+  if (address.length !== 8 || address.some(word => !Number.isInteger(word) || word < 0 || word > 0xffff)) return true;
+  if (address.slice(0, 7).every(word => word === 0) && address[7] <= 1) return true;
+  if ((address[0] & 0xfe00) === 0xfc00 || (address[0] & 0xffc0) === 0xfe80) return true;
+  if (address.slice(0, 5).every(word => word === 0) && address[5] === 0xffff) {
+    return privateIpv4([address[6] >>> 8, address[6] & 255, address[7] >>> 8, address[7] & 255]);
+  }
+  return false;
+}
 
-export type CitationAttribution =
-  | 'observed-fetch'          // fetch claimed and a real fetched record matches the URL
-  | 'author-supplied'         // support offered with no fetch claim: reasoning or local context
-  | 'unsupported-fetch-claim' // fetch claimed but no fetched record backs it
-  | 'unresolved';             // fetch observed, but the log is incomplete or the source is stale
-
-export type EvidenceDates = {
-  /** The publication date the model declared. The host cannot verify it from a fetch. */
-  claimedSourceDate: string;
-  claimedSourceDateVerified: false;
-  /** The date the host observed the fetch, or null when no fetch was observed. */
-  retrievalDate: string | null;
-};
-
-export type EvidenceEntryAssessment = {
-  id: string;
-  claim: string;
-  support: string;
-  source: string;
-  dates: EvidenceDates;
-  fetchedClaimed: boolean;
-  fetchedObserved: boolean;
-  attribution: CitationAttribution;
-  /** The bound observed record when a fetch resolves; null otherwise. */
-  record: FetchedResourceRecord | null;
-  /** Which broker URL matched the model's citation; a redirect may yield a different resource. */
-  citationUrlMatch: 'requested' | 'final' | 'both' | null;
-  /** Page-text containment ("the fetched page contains the attributed text") is a separate step. */
-  textVerified: false;
-  notes: readonly string[];
-};
-
-export type EvidenceVerdict = 'unverified' | 'insufficient' | 'refused';
-
-export type EvidenceAssessment = {
-  transform: typeof EVIDENCE_TRANSFORM;
-  verdict: EvidenceVerdict;
-  replyStatus: CandidateReply['status'];
-  reason: string;
-  sessionScope: ConsentScope;
-  retrievalComplete: boolean;
-  sourceStale: boolean;
-  boundSourceVersion: BoundSourceVersion;
-  entries: readonly EvidenceEntryAssessment[];
-  observedFetchCount: number;
-  /** Semantic headline is withheld: a retrieved URL cannot verify a claim. */
-  headline: string | null;
-  issues: readonly string[];
-};
+/** Citation matching is limited to public, credential-free HTTP(S) origins. */
+export function isPublicHttpUrl(input: string | undefined): boolean {
+  if (typeof input !== 'string' || input.length === 0 || input.length > 8192) return false;
+  let url: URL;
+  try { url = new URL(input); } catch { return false; }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  if (url.username || url.password) return false;
+  const host = url.hostname.toLowerCase();
+  const name = host.replace(/\.$/u, '');
+  if (name.length === 0 || name === 'localhost' || name.endsWith('.localhost') ||
+      name.endsWith('.local') || name.endsWith('.internal')) return false;
+  if (host.startsWith('[')) return !privateIpv6(host);
+  if (/^\d+(?:\.\d+){3}$/u.test(host)) return !privateIpv4(host.split('.').map(Number));
+  return true;
+}
 
 /** Canonical origin+path+query with a lowercased host, or null when the URL is unusable. */
 function normalizeUrl(input: string | undefined): string | null {
-  if (typeof input !== 'string' || input.length === 0 || input.length > 8192) return null;
+  if (!isPublicHttpUrl(input)) return null;
   let url: URL;
-  try { url = new URL(input); } catch { return null; }
+  try { url = new URL(input as string); } catch { return null; }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
   return `${url.protocol}//${url.hostname.toLowerCase()}${url.port ? `:${url.port}` : ''}${url.pathname}${url.search}`;
 }
@@ -111,10 +84,30 @@ function matchRecord(url: string | undefined, observed: readonly FetchedResource
   return fallback;
 }
 
-function citationEntries(reply: CandidateReply): CitationsBlock['entries'] {
-  const entries: CitationsBlock['entries'] = [];
-  for (const block of reply.blocks) if (block.type === 'citations') entries.push(...block.entries);
-  return entries;
+function citationEntries(reply: CandidateReply) {
+  return reply.blocks.flatMap((block, blockIndex) => block.type === 'citations'
+    ? block.entries.map((entry, entryIndex) => ({ entry, blockId: block.id, blockIndex, entryIndex })) : []);
+}
+
+/** A local quotation proves containment only, never the truth of the surrounding claim. */
+function sourceQuote(reply: CandidateReply, item: ReturnType<typeof citationEntries>[number], observations: EvidenceObservations, stale: boolean): EvidenceEntryAssessment['sourceQuote'] {
+  const { entry, blockIndex, entryIndex } = item;
+  const text = observations.boundSourceText;
+  if (stale || reply.status !== 'complete' || entry.fetched || !entry.support.trim() || typeof text !== 'string') return null;
+  const origin = reply.origins?.parts[`/blocks/${blockIndex}/entries/${entryIndex}/support`];
+  if (origin?.kind !== 'source-page') return null;
+  const binding = reply.sourceBindings.find(value => value.name === origin.binding);
+  if (binding?.relation !== 'quoted' || binding.selector.exact !== entry.support) return null;
+  if (entry.url && (normalizeUrl(entry.url) === null || normalizeUrl(entry.url) !== normalizeUrl(observations.boundSourceUrl))) return null;
+  const { exact, prefix = '', suffix = '' } = binding.selector;
+  let found: EvidenceEntryAssessment['sourceQuote'] = null;
+  for (let start = text.indexOf(exact); start >= 0; start = text.indexOf(exact, start + 1)) {
+    const end = start + exact.length;
+    if (!text.slice(0, start).endsWith(prefix) || !text.slice(end).startsWith(suffix)) continue;
+    if (found) return null;
+    found = { start, end };
+  }
+  return found;
 }
 
 /**
@@ -131,7 +124,8 @@ export function reconcileEvidence(reply: CandidateReply, observations: EvidenceO
   if (sourceStale) issues.push('source-version-changed-since-generation');
 
   const entries = citationEntries(reply);
-  const assessed: EvidenceEntryAssessment[] = entries.map((entry) => {
+  const assessed: EvidenceEntryAssessment[] = entries.map((item) => {
+    const { entry, blockId } = item;
     const notes: string[] = [];
     const claimed = entry.fetched === true;
     let attribution: CitationAttribution = 'author-supplied';
@@ -183,7 +177,9 @@ export function reconcileEvidence(reply: CandidateReply, observations: EvidenceO
     };
 
     return {
+      blockId,
       id: entry.id,
+      sourceQuote: sourceQuote(reply, item, observations, sourceStale),
       claim: entry.claim,
       support: entry.support,
       source: entry.source,

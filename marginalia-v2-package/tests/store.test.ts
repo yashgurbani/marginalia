@@ -184,14 +184,18 @@ test('Keep underlines without tint while explicit Highlight persists, reloads an
     let thread = store.get(keep.threadId)!;
     assert.equal(thread.highlighted, false);
     assert.equal(store.db.prepare('SELECT COUNT(*) FROM highlights').pluck().get(), 0);
-    store.apply({ id: 'highlight-on', kind: 'highlight', threadId: keep.threadId, highlighted: true, expectedRevision: thread.revision });
+    store.apply({ id: 'highlight-on', kind: 'highlight', threadId: keep.threadId, highlighted: true, highlightColour: 'blue', expectedRevision: thread.revision });
     store.close(); store = new ReaderStore(file);
     thread = store.get(keep.threadId)!;
     assert.equal(thread.highlighted, true);
+    assert.equal(thread.highlightColour, 'blue');
+    assert.equal(store.db.prepare('SELECT value FROM settings WHERE key=?').pluck().get('highlight-colour:' + keep.threadId), 'blue');
     const note = structuredClone(thread.notes[0]), anchor = structuredClone(thread.anchor), sourceVersionId = thread.sourceVersionId;
     store.apply({ id: 'highlight-off', kind: 'highlight', threadId: keep.threadId, highlighted: false, expectedRevision: thread.revision });
     thread = store.get(keep.threadId)!;
     assert.equal(thread.highlighted, false);
+    assert.equal(thread.highlightColour, undefined);
+    assert.equal(store.db.prepare('SELECT value FROM settings WHERE key=?').pluck().get('highlight-colour:' + keep.threadId), undefined);
     assert.deepEqual(thread.notes[0], note);
     assert.deepEqual(thread.anchor, anchor);
     assert.equal(thread.sourceVersionId, sourceVersionId);
@@ -207,6 +211,7 @@ test('existing highlight rows keep their visible meaning after the Keep versus H
     store.apply(keep);
     store.db.prepare('INSERT INTO highlights VALUES(?,?,?,NULL)').run('legacy-mark', keep.threadId, '2026-09-17T00:00:00Z');
     assert.equal(store.get(keep.threadId)!.highlighted, true);
+    assert.equal(store.get(keep.threadId)!.highlightColour, undefined);
     store.apply({ id: 'remove-legacy-highlight', kind: 'highlight', threadId: keep.threadId, highlighted: false, expectedRevision: 1 });
     assert.equal(store.get(keep.threadId)!.highlighted, false);
     assert.equal(store.get(keep.threadId)!.notes[0].text, keep.note);
@@ -331,7 +336,7 @@ test('v1 database migration preserves original captures and labels unrecoverable
     assert.deepEqual(store.exportThread('t').targetVersions, []);
     store.close(); store = new ReaderStore(filename);
     assert.equal(store.list().length, 1);
-    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 4, 7001, 7002, 7004, 22001, 33001]);
+    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 4, 7001, 7002, 7004, 18001, 18002, 22001, 33001]);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -410,7 +415,7 @@ test('T07 F2 v4 upgrade preserves old IDs, legacy/unavailable metadata and forei
     assert.throws(() => store.db.prepare("UPDATE source_versions SET title='changed' WHERE id='legacy-id'").run(), /immutable/);
     store.close(); store = new ReaderStore(filename);
     assert.deepEqual(store.db.pragma('foreign_key_check'), []);
-    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 3, 4, 13, 7001, 7002, 7004, 22001, 33001]);
+    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 3, 4, 13, 7001, 7002, 7004, 18001, 18002, 22001, 33001]);
     assert.equal(store.sourceVersion('unavailable-id')!.capturedAt, null);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

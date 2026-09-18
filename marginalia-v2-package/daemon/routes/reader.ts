@@ -6,10 +6,12 @@ import type { Pairing } from '../pairing.ts';
 import type { LibrarySettingsService } from '../library.ts';
 import { ConsentSessionService, handleConsentDecision, handleConsentSettingsChange, handleConsentSettingsRead } from '../consent/index.ts';
 import type { ApiRouteContext } from './types.ts';
+import { JourneyEditsStore } from '../journey-edits.ts';
 
 export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing; library: LibrarySettingsService;
   consent: ConsentSessionService; sessions: Map<WebSocket, { token: string; origin: string; after: number }> }) {
   const { store, pairing, library, consent, sessions } = input;
+  const journeys = new JourneyEditsStore(store);
   return async (context: ApiRouteContext) => {
     const { request, response, url, requestOrigin, token, principal, requireCurrentPairing, send, body, emptyBody } = context;
     if (url.pathname === '/api/position' && request.method === 'POST') {
@@ -21,13 +23,21 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       if (typeof value?.url !== 'string' || value.url.length > 8000) throw new Error('A page address is required.');
       send(response, 200, { anchor: store.readerPosition(value.url) ?? null }); return true;
     }
-    let readOperation: 'threads' | 'replies' | 'reply-view' | 'library-search' | 'library-related' | undefined;
+    let readOperation: 'threads' | 'replies' | 'reply-view' | 'library-search' | 'library-related' | 'library-journal' | 'export' | 'auto-assist' | 'vocabulary' | undefined;
+    // Job reads share this prefix but are handled by the following job router.
+    if (url.pathname === '/api/read/skills') return false;
+    if (url.pathname === '/api/read/instant/settings' || url.pathname === '/api/read/ambient/policy') return false;
+    if (/^\/api\/read\/jobs(?:\/[\w-]{1,100})?$/.test(url.pathname)) return false;
     if (url.pathname.startsWith('/api/read/')) {
       if (url.pathname === '/api/read/threads') readOperation = 'threads';
       else if (url.pathname === '/api/read/replies') readOperation = 'replies';
       else if (url.pathname === '/api/read/reply-view') readOperation = 'reply-view';
       else if (url.pathname === '/api/read/library-search') readOperation = 'library-search';
       else if (url.pathname === '/api/read/library-related') readOperation = 'library-related';
+      else if (url.pathname === '/api/read/library-journal') readOperation = 'library-journal';
+      else if (url.pathname === '/api/read/export') readOperation = 'export';
+      else if (url.pathname === '/api/read/settings/auto-assist') readOperation = 'auto-assist';
+      else if (url.pathname === '/api/read/vocabulary') readOperation = 'vocabulary';
       else { send(response, 404, { error: 'Unknown read operation.' }); return true; }
       if (request.method !== 'POST') { send(response, 405, { error: 'Use POST for this read operation.' }); return true; }
       if (!requestOrigin) { send(response, 401, { error: 'Origin required.' }); return true; }
@@ -39,6 +49,7 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       else if (url.pathname === '/api/reply-view') readOperation = 'reply-view';
       else if (url.pathname === '/api/library-search') readOperation = 'library-search';
       else if (url.pathname === '/api/library-related') readOperation = 'library-related';
+      else if (url.pathname === '/api/library-journal') readOperation = 'library-journal';
     }
     if (url.pathname === '/api/revoke' && request.method === 'POST') {
       await emptyBody(request);
@@ -48,6 +59,12 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       send(response, 200, { revoked: true }); return true;
     }
     if (readOperation === 'threads') { send(response, 200, { threads: store.list(url.searchParams.get('url') ?? undefined, url.searchParams.get('removed') === 'true') }); return true; }
+    if (readOperation === 'library-journal') { send(response, 200, { journal: journeys.journal(url.searchParams.get('timeZone') ?? 'UTC', library.vocabulary().map(entry => entry.term)) }); return true; }
+    if (url.pathname === '/api/journeys' && request.method === 'POST') {
+      const value = await body(request);
+      if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to save journeys.' }); return true; }
+      send(response, 200, { journeys: journeys.save(value) }); return true;
+    }
     if (readOperation === 'library-search') { send(response, 200, { results: library.search(url.searchParams.get('q') ?? '') }); return true; }
     if (readOperation === 'library-related') { send(response, 200, { results: library.related(url.searchParams.get('thread') ?? '') }); return true; }
     if (url.pathname === '/api/change' && request.method === 'POST') {
@@ -61,7 +78,7 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       if (typeof value.threadId !== 'string' || typeof value.text !== 'string' || value.text.length > 1000000 || typeof value.tabCapture !== 'string' || value.tabCapture.length > 100) throw new Error('Invalid page capture.');
       send(response, 200, store.reattach(value.threadId, value.text, value.tabCapture, value.capture)); return true;
     }
-    if (url.pathname === '/api/export' && request.method === 'GET') { send(response, 200, store.exportThread(url.searchParams.get('thread') ?? '')); return true; }
+    if (readOperation === 'export' || (url.pathname === '/api/export' && request.method === 'GET')) { send(response, 200, store.exportThread(url.searchParams.get('thread') ?? '')); return true; }
     if (url.pathname === '/api/events' && request.method === 'GET') {
       const after = Number(url.searchParams.get('after') ?? 0);
       if (!Number.isSafeInteger(after) || after < 0) throw new Error('Invalid replay position.');
@@ -89,6 +106,13 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       const view = store.saveReplyView({ id: value.id, replyVersionId: reply.id, expectedRevision: value.expectedRevision, parameters: value.parameters, view: value.view });
       send(response, 200, { view }); return true;
     }
+    if (url.pathname === '/api/shelf-open' && request.method === 'POST') {
+      const value = await body(request);
+      if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to keep your return passage.' }); return true; }
+      if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 5 ||
+        ['id', 'threadId', 'replyVersionId', 'blockId', 'itemId'].some(key => typeof value[key] !== 'string')) throw new Error('A saved shelf item is required.');
+      send(response, 200, { open: store.openShelfItem(value) }); return true;
+    }
     if (url.pathname === '/api/reply-removal' && request.method === 'POST') {
       const value = await body(request) as ReplyRemovalChange;
       if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to save reply changes.' }); return true; }
@@ -105,13 +129,29 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       validateReplyParameters(reply.reply.parameters, value.parameters);
       send(response, 200, { report: runHostChecks(reply.reply, value.parameters) }); return true;
     }
+    if (readOperation === 'auto-assist' || (url.pathname === '/api/settings/auto-assist' && request.method === 'GET')) {
+      send(response, 200, { autoAssist: library.autoAssist() }); return true;
+    }
+    if (url.pathname === '/api/settings/auto-assist' && request.method === 'POST') {
+      const value = await body(request);
+      if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to change automatic help.' }); return true; }
+      send(response, 200, { autoAssist: library.saveAutoAssist(value) }); return true;
+    }
     if (url.pathname === '/api/settings/models' && request.method === 'GET') { send(response, 200, { models: library.models() }); return true; }
     if (url.pathname === '/api/settings/models' && request.method === 'POST') {
       const value = await body(request);
       if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to change model choices.' }); return true; }
       send(response, 200, { models: library.saveModels(value) }); return true;
     }
-    if (url.pathname === '/api/vocabulary' && request.method === 'GET') { send(response, 200, { vocabulary: library.vocabulary() }); return true; }
+    if (readOperation === 'vocabulary' || (url.pathname === '/api/vocabulary' && request.method === 'GET')) { send(response, 200, { vocabulary: library.vocabulary() }); return true; }
+    if (url.pathname === '/api/settings/vocabulary-gathering' && request.method === 'GET') {
+      send(response, 200, { gathering: library.vocabularyGathering() }); return true;
+    }
+    if (url.pathname === '/api/settings/vocabulary-gathering' && request.method === 'POST') {
+      const value = await body(request);
+      if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to change vocabulary gathering.' }); return true; }
+      send(response, 200, { gathering: library.saveVocabularyGathering(value) }); return true;
+    }
     if (url.pathname === '/api/vocabulary/observe' && request.method === 'POST') {
       const value = await body(request);
       if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to remember a word.' }); return true; }

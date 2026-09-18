@@ -1,0 +1,202 @@
+{
+  "version": "marginalia.suggestions.score.v1",
+  "order": [
+    "simulate",
+    "evidence",
+    "define",
+    "instantiate",
+    "derive",
+    "diagram",
+    "explore",
+    "unsure"
+  ],
+  "blockFit": {
+    "term": {
+      "simulate": 0,
+      "evidence": 0,
+      "define": 6,
+      "instantiate": 2,
+      "derive": 1,
+      "diagram": 0,
+      "explore": 0,
+      "unsure": 1
+    },
+    "equation": {
+      "simulate": 5,
+      "evidence": 0,
+      "define": 2,
+      "instantiate": 5,
+      "derive": 6,
+      "diagram": 2,
+      "explore": 1,
+      "unsure": 1
+    },
+    "mechanism": {
+      "simulate": 6,
+      "evidence": 1,
+      "define": 1,
+      "instantiate": 3,
+      "derive": 3,
+      "diagram": 5,
+      "explore": 1,
+      "unsure": 1
+    },
+    "claim": {
+      "simulate": 1,
+      "evidence": 6,
+      "define": 1,
+      "instantiate": 2,
+      "derive": 3,
+      "diagram": 1,
+      "explore": 2,
+      "unsure": 1
+    },
+    "procedure": {
+      "simulate": 2,
+      "evidence": 1,
+      "define": 1,
+      "instantiate": 6,
+      "derive": 5,
+      "diagram": 3,
+      "explore": 1,
+      "unsure": 1
+    },
+    "page": {
+      "simulate": 2,
+      "evidence": 2,
+      "define": 1,
+      "instantiate": 2,
+      "derive": 2,
+      "diagram": 2,
+      "explore": 6,
+      "unsure": 3
+    },
+    "unknown": {
+      "simulate": 0,
+      "evidence": 0,
+      "define": 0,
+      "instantiate": 0,
+      "derive": 0,
+      "diagram": 0,
+      "explore": 0,
+      "unsure": 0
+    },
+    "prose": {
+      "simulate": 1,
+      "evidence": 2,
+      "define": 3,
+      "instantiate": 4,
+      "derive": 2,
+      "diagram": 3,
+      "explore": 3,
+      "unsure": 5
+    }
+  },
+  "pageFit": {
+    "paper": {
+      "simulate": 3,
+      "evidence": 2,
+      "define": 1,
+      "instantiate": 3,
+      "derive": 2,
+      "diagram": 2,
+      "explore": 1,
+      "unsure": 0
+    },
+    "docs": {
+      "simulate": 1,
+      "evidence": 0,
+      "define": 2,
+      "instantiate": 4,
+      "derive": 3,
+      "diagram": 1,
+      "explore": 1,
+      "unsure": 0
+    },
+    "article": {
+      "simulate": 1,
+      "evidence": 1,
+      "define": 1,
+      "instantiate": 1,
+      "derive": 1,
+      "diagram": 2,
+      "explore": 2,
+      "unsure": 0
+    },
+    "social": {
+      "simulate": 0,
+      "evidence": 5,
+      "define": 0,
+      "instantiate": 1,
+      "derive": 0,
+      "diagram": 0,
+      "explore": 2,
+      "unsure": 1
+    },
+    "reference": {
+      "simulate": 0,
+      "evidence": 1,
+      "define": 3,
+      "instantiate": 1,
+      "derive": 2,
+      "diagram": 1,
+      "explore": 1,
+      "unsure": 0
+    },
+    "unknown": {
+      "simulate": 0,
+      "evidence": 0,
+      "define": 0,
+      "instantiate": 0,
+      "derive": 0,
+      "diagram": 0,
+      "explore": 0,
+      "unsure": 0
+    }
+  },
+  "posture": {
+    "balanced": {
+      "simulate": 0,
+      "evidence": 0,
+      "define": 0,
+      "instantiate": 0,
+      "derive": 0,
+      "diagram": 0,
+      "explore": 0,
+      "unsure": 0
+    },
+    "flow": {
+      "simulate": 0,
+      "evidence": 0,
+      "define": 3,
+      "instantiate": 1,
+      "derive": 0,
+      "diagram": 0,
+      "explore": 0,
+      "unsure": 0
+    },
+    "learning": {
+      "simulate": 1,
+      "evidence": 2,
+      "define": 0,
+      "instantiate": 1,
+      "derive": 3,
+      "diagram": 1,
+      "explore": 0,
+      "unsure": 2
+    }
+  },
+  "preferredIntentBoost": 4,
+  "usefulNearbyBoost": 3,
+  "dismissalPenalty": 5,
+  "questioningNote": {
+    "simulate": 0,
+    "evidence": 5,
+    "define": -4,
+    "instantiate": 0,
+    "derive": 0,
+    "diagram": 0,
+    "explore": 5,
+    "unsure": 0
+  }
+}

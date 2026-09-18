@@ -1,4 +1,4 @@
-import { validateReaderMutation, type ReaderMutation, type Thread } from '../contracts/reader.ts';
+import { highlightColour, validateReaderMutation, type ReaderMutation, type Thread } from '../contracts/reader.ts';
 
 export type JournalConflict = { change: ReaderMutation; message: string; disposition?: 'invalid-change' };
 export type ConflictResolution = {
@@ -82,14 +82,14 @@ export class ReaderJournal {
         throw error;
       }
       if (!durable) {
-        const error = new Error('The durable journal is missing. Your unsaved changes were kept in memory.');
+        const error = new Error('The durable saved-work record is missing. Your unsaved changes were kept in memory.');
         this.persistenceError = error;
         throw error;
       }
 
       const durableFingerprintNow = durableFingerprint(durable);
       if (baseline === undefined) {
-        const error = new Error('The previous durable journal is unknown. Load it before reconciling unsaved changes.');
+        const error = new Error('The previous durable saved-work record is unknown. Load it before reconciling unsaved changes.');
         this.persistenceError = error;
         throw error;
       }
@@ -369,6 +369,8 @@ function normalizeState(state: JournalState): JournalState {
   // mark with tint. Preserve that visible meaning; only new Keeps default off.
   for (const thread of cloned.threads) {
     if (typeof thread.highlighted !== 'boolean') thread.highlighted = thread.anchor.kind !== 'whole-page';
+    if (!thread.highlighted) delete thread.highlightColour;
+    else if (thread.highlightColour !== undefined) thread.highlightColour = highlightColour(thread.highlightColour);
   }
 
   const acknowledged = new Map<string, MutationReceipt>();
@@ -553,6 +555,8 @@ function applyMutation(state: JournalState, mutation: ReaderMutation) {
     if (thread.anchor.kind === 'whole-page' && mutation.highlighted) throw new RecoverableMutationConflict('A whole-page thread cannot be highlighted. Your change was kept for review.');
     if (thread.revision !== mutation.expectedRevision) throw new RecoverableMutationConflict('This thread changed. Your change was kept for review.');
     thread.highlighted = mutation.highlighted;
+    if (!mutation.highlighted) delete thread.highlightColour;
+    else if (mutation.highlightColour !== undefined) thread.highlightColour = mutation.highlightColour;
   } else {
     if (thread.deletedAt && (mutation.kind === 'thread-state' || mutation.removed)) throw new RecoverableMutationConflict('The saved passage was removed. Your change was kept for review.');
     if (thread.revision !== mutation.expectedRevision) throw new RecoverableMutationConflict('This thread changed. Your change was kept for review.');

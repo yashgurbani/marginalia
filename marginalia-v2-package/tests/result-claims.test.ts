@@ -43,7 +43,7 @@ test('typed slots withhold authored numerical claims, admit only matched sentenc
   }
   assert.equal(root.querySelectorAll('[data-assessment="checked"]').length, 3);
   const input = root.querySelectorAll('input').find(node => node.type === 'number')!;
-  input.value = '0.8'; Object.assign(input, { valueAsNumber: 0.8 }); input.fire('input');
+  input.value = '0.8'; Object.assign(input, { valueAsNumber: 0.8 }); input.fire('change');
   assert.match(root.querySelector('h3')!.textContent, /withheld/);
   assert.equal(root.querySelectorAll('[data-assessment="checked"]').length, 0);
 });

@@ -1,10 +1,41 @@
-import type { Note, QuoteAnchor, Thread } from '../../contracts/reader.ts';
+import { highlightColour, type Note, type QuoteAnchor, type Thread, type SourceVersion } from '../../contracts/reader.ts';
 
 export type LibraryThreadExport = {
   thread: Thread;
-  source?: { text: string };
+  source?: { text: string } & Partial<SourceVersion>;
   [key: string]: unknown;
 };
+
+/** Retained removed records follow the same input set as the Markdown export.
+ * A source version is one capture; multiple threads on it share one citation. */
+export function bibtexLibraryExport(records: readonly LibraryThreadExport[]): string {
+  const entries = new Map<string, string>();
+  for (const { thread, source } of records) {
+    if (source?.id && source.id !== thread.sourceVersionId) throw new Error('A citation source differs from its saved thread.');
+    const identity = JSON.stringify([thread.sourceUrl, thread.sourceVersionId]);
+    // Encoding, rather than a shortened hash, keeps keys injective and stable.
+    const key = 'marginalia_' + Array.from(new TextEncoder().encode(identity), byte => byte.toString(16).padStart(2, '0')).join('');
+    const fields: [string, unknown][] = [['title', source?.title], ['author', source?.author], ['date', source?.publicationDate], ['howpublished', source?.venue], ['url', thread.sourceUrl]];
+    if (source?.publicationDate && /^\d{4}(?:-\d{2}(?:-\d{2})?)?$/.test(source.publicationDate)) fields.push(['year', source.publicationDate.slice(0, 4)]);
+    const body = fields.filter((pair): pair is [string, string] => typeof pair[1] === 'string' && pair[1].trim().length > 0)
+      .map(([name, value]) => `  ${name} = {${name === 'url' ? escapeBibtexUrl(value) : escapeBibtex(value)}}`).join(',\n');
+    const entry = `@misc{${key},\n${body}\n}\n`;
+    if (entries.has(key) && entries.get(key) !== entry) throw new Error('Saved citation metadata disagrees for one source version.');
+    entries.set(key, entry);
+  }
+  return [...entries].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value).join('\n');
+}
+
+function escapeBibtex(value: string): string {
+  const escaped: Record<string, string> = { '\\': '\\textbackslash{}', '{': '\\textbraceleft{}', '}': '\\textbraceright{}', '&': '\\&', '%': '\\%', '$': '\\$', '#': '\\#', '_': '\\_', '~': '\\textasciitilde{}', '^': '\\textasciicircum{}' };
+  return value.replace(/[\\{}&%$#_~^]/g, character => escaped[character]).replace(/[\u0000-\u001f\u007f]+/g, ' ');
+}
+
+function escapeBibtexUrl(value: string): string {
+  // URL fields are verbatim in bibliography consumers. Keep existing escapes
+  // and query punctuation; encode only characters that break the braced field.
+  return value.replace(/[{}\\\u0000-\u0020\u007f]/g, character => '%' + character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+}
 
 export type WholeLibraryExport = {
   markdown: string;
@@ -45,6 +76,7 @@ type WebAnnotation = {
   'marginalia:revision': number;
   'marginalia:deletedAt': string | null;
   'marginalia:highlighted': boolean;
+  'marginalia:highlightColour'?: Thread['highlightColour'];
 };
 
 /**
@@ -117,6 +149,7 @@ function annotation(record: LibraryThreadExport): WebAnnotation {
     'marginalia:revision': thread.revision,
     'marginalia:deletedAt': thread.deletedAt,
     'marginalia:highlighted': thread.highlighted,
+    ...(thread.highlighted ? { 'marginalia:highlightColour': highlightColour(thread.highlightColour) } : {}),
   };
 }
 
@@ -168,6 +201,7 @@ function markdownLibrary(records: readonly LibraryThreadExport[], exportedAt: Da
       lines.push(
         `### Thread \`${thread.id}\``, '',
         `State: ${state}`, `Created: ${thread.createdAt}`, `Updated: ${thread.updatedAt}`,
+        ...(thread.highlighted ? [`Highlight colour: ${highlightColour(thread.highlightColour)}`] : []),
         `Source version: \`${thread.sourceVersionId}\``,
         `Anchor: \`${thread.anchorId}\` (${thread.anchor.kind ?? 'legacy-quote'}, characters ${thread.anchor.start}–${thread.anchor.end})`, '',
         '#### Quote', '', ...markdownQuote(thread.anchor.exact), '',

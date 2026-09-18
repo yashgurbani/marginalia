@@ -1,3 +1,9 @@
+import { ForgetClient } from '../../../ui/forget/client.ts';
+import type { InstantPage } from '../../lib/instant-lifecycle.ts';
+import { panelInstantTransport } from '../../lib/panel-instant.ts';
+import { connectionControls } from '../../lib/panel-controls.ts';
+import type { ReadyPage } from '../../lib/auto-assist-bridge.ts';
+import { libraryThreadUrl } from '../../lib/library-link.ts';
 import { browser } from 'wxt/browser';
 import { mountMargin } from '../../../ui/margin.ts';
 import '../../../ui/tokens.css';
@@ -15,6 +21,26 @@ const exclude = document.querySelector<HTMLButtonElement>('#exclude')!;
 const controls = document.querySelector<HTMLElement>('#controls')!;
 const helperStatus = document.querySelector<HTMLElement>('#helper-status')!;
 const root = document.querySelector<HTMLElement>('#margin')!;
+let autoPending = false, autoIdentity = '';
+async function refreshAutoAssist() {
+  if (stopped || !current || !mounted || autoPending) return;
+  autoPending = true;
+  try {
+    const state = await send('auto-assist-status') as ReadyPage | null;
+    if (!state || state.document !== current.document || state.url !== current.capture.url) { mounted?.clearAutoAssist?.(); autoIdentity = ''; return; }
+    const items = state.items.map(({ candidateId, term, anchor, state, definition }) => ({ candidateId, term, anchor, state, definition }));
+    const readingPosition = state.items.find(item => item.candidateId === state.focused)?.anchor.start ?? current.position;
+    const identity = JSON.stringify([state.document, state.sourceHash, state.posture, readingPosition, items]);
+    if (identity === autoIdentity) return; autoIdentity = identity;
+    mounted?.showAutoAssist?.({ posture: state.posture, readingPosition, assumes: items, items });
+  } catch { mounted?.clearAutoAssist?.(); autoIdentity = ''; }
+  finally { autoPending = false; }
+}
+root.addEventListener('click', event => {
+  const button = (event.target as Element | null)?.closest<HTMLElement>('[data-auto-assist-action="open"]');
+  const candidateId = button?.dataset.autoAssistCandidate;
+  if (candidateId) void send('auto-assist-open', { candidateId }).then(() => refreshAutoAssist()).catch(() => {});
+});
 let mounted: Awaited<ReturnType<typeof mountMargin>> | undefined, current: Snapshot | undefined, pending = false, stopped = false;
 const send = async (action: string, extra: Record<string, unknown> = {}) => readReply(await browser.runtime.sendMessage({ type: 'surface', version: 1, action, capability, workspace, ...extra }));
 let savedMarks: SavedMark[] = [], markSends: Promise<unknown> = Promise.resolve();
@@ -32,11 +58,18 @@ async function refresh() {
     if (!validSnapshot(next)) throw new Error('Select a passage on this page to open your margin.');
     if (!current || current.document !== next.document || current.capture.text !== next.capture.text) {
       const origin = embedded ? undefined : await helperOrigin().catch(() => undefined);
-      mounted?.destroy();
+      mounted?.destroy(); autoIdentity = '';
       current = next;
       mounted = await mountMargin(root, {
+        instantHelp: panelInstantTransport(send),
+        settingsContent: controls,
+        forget: {
+          transport: new ForgetClient({ request: async (_path, body, signal) => { signal?.throwIfAborted(); return send('instant-forget', { pageId: (body as { pageId: string }).pageId }); } }),
+          getPageId: async signal => { signal?.throwIfAborted(); return ((await send('instant-status')) as InstantPage | null)?.pageId; },
+        },
+        autoAssist: { dismiss: async (item, signal) => { signal.throwIfAborted(); const result = await send('auto-assist-dismiss', { candidateId: item.candidateId }) as { dismissed?: boolean }; if (result?.dismissed !== true) throw new Error('This term could not be marked familiar.'); autoIdentity = ''; } },
         capture: next.capture, sections: next.sections, helperOrigin: origin ?? DEFAULT_HELPER_ORIGIN, storageName: 'marginalia-extension-reader', initialOpen: true, allowHelper: !embedded && !!origin,
-        onLibrary: origin ? () => { void browser.tabs.create({ url: new URL('/', origin).href }).catch(() => { status.textContent = 'The Library could not be opened. Your reading remains here.'; }); } : undefined,
+        onLibrary: origin ? thread => { void browser.tabs.create({ url: libraryThreadUrl(origin, thread?.id) }).catch(() => { status.textContent = 'The Library could not be opened. Your reading remains here.'; }); } : undefined,
         captureCurrentPage: async () => {
           const snapshot: unknown = await send('read');
           if (!validSnapshot(snapshot) || snapshot.document !== next.document || snapshot.capture.url !== next.capture.url) throw new Error('The page changed. Reopen its margin to look again.');
@@ -50,12 +83,14 @@ async function refresh() {
         onHighlight: anchor => { void send('highlight', { document: next.document, anchor }).catch(() => {}); },
         onSavedMarks: marks => { savedMarks = marks; paintSavedMarks(current?.document === next.document ? current : next, marks); },
       });
+      controls.hidden = false;
       restoredOnMount = mounted.restoredPosition;
       if (next.anchor) mounted.select(next.anchor);
     } else if (next.revision !== current.revision && next.anchor) mounted?.select(next.anchor);
     current = next; if (!restoredOnMount) mounted?.setReadingPosition(next.position); status.textContent = ''; controls.hidden = false;
-    paintSavedMarks(next, savedMarks);
+    paintSavedMarks(next, savedMarks); void refreshAutoAssist();
     const helper = await send('helper-status');
+    connectionControls(controls, embedded, (helper as { enabled?: boolean })?.enabled === true);
     if (typeof (helper as { status?: unknown })?.status === 'string' && (helper as { status: string }).status.length < 300) helperStatus.textContent = (helper as { status: string }).status;
   } catch (error) {
     // Invalidated sources cannot retain a previous page's private margin on screen.
@@ -64,10 +99,8 @@ async function refresh() {
   } finally { pending = false; }
 }
 exclude.addEventListener('click', () => { void send('exclude').then(() => { mounted?.destroy(); mounted = undefined; current = undefined; controls.hidden = true; status.textContent = 'This site is excluded. Manage exclusions in the extension options.'; }).catch(error => { status.textContent = String(error); }); });
-for (const [id, action] of [['connect', 'helper-connect'], ['disconnect', 'helper-disconnect']]) document.getElementById(id)!.addEventListener('click', () => { void send(action).then(result => { if (typeof (result as { status?: unknown })?.status === 'string') helperStatus.textContent = (result as { status: string }).status; }).catch(() => { helperStatus.textContent = 'Local helper unavailable. Your notes remain on this device.'; }); });
-document.getElementById('connect')!.hidden = embedded;
-document.getElementById('disconnect')!.hidden = embedded;
-document.getElementById('trusted-open')!.hidden = !embedded;
+for (const [id, action] of [['connect', 'helper-connect'], ['disconnect', 'helper-disconnect']]) document.getElementById(id)!.addEventListener('click', () => { void send(action).then(result => { connectionControls(controls, embedded, (result as { enabled?: boolean })?.enabled === true); if (typeof (result as { status?: unknown })?.status === 'string') helperStatus.textContent = (result as { status: string }).status; }).catch(() => { helperStatus.textContent = 'Local helper unavailable. Your notes remain on this device.'; }); });
+connectionControls(controls, embedded, false);
 document.getElementById('trusted-open')!.addEventListener('click', () => { void send('trusted-open').catch(() => { status.textContent = 'Reopen the margin from your source page.'; }); });
 // Each request wakes a disposable worker and reconstructs its source binding.
 // It never starts inference or automatically replays unknown provider outcomes.

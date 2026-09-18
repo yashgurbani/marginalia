@@ -50,7 +50,7 @@ Collapsed, the margin is a rail: ticks for your marks, rule lines for sections, 
 
 ## Asking
 
-Select text or use Ask on a note. A small card appears at the anchor: Keep, and Ask. If the document itself defines the term, that quoted definition shows at once with "from this page"; nothing is sent. If the site grant exists and you have chosen automatic definitions, a fast contextual definition arrives without a click and can be read and dismissed. Otherwise Ask opens at most three suggested helps, with a time word on deep ones, and a free-text line. Selecting sends nothing; only Ask (or an enabled automatic definition under an existing grant) sends.
+Select text or use Ask on a note. A small card appears at the anchor: Keep, and Ask. If the document itself defines the term, that quoted definition shows at once with "from this page"; nothing is sent. If the site grant exists and you have chosen automatic definitions, a fast contextual definition arrives without a click and can be read and dismissed. Otherwise Ask opens at most three suggested helps, with a time word on deep ones, and a free-text line. You control what selecting sends. With instant help on, a selection goes to Codex for a short definition. With instant help off, selecting sends nothing and only Ask sends. Excluded sites never send.
 
 Deep help builds while you keep reading: Working (with the plan line), first frame (visibly provisional until checks pass), Ready; cancel always visible; elapsed time after 30 s. One clarifying question at most; otherwise a sensible default the reply shows in "What this example assumes (n)", which you can open and change — a change creates a new reply version. A follow-up field inside a reply continues the same thread.
 
@@ -86,7 +86,7 @@ A note is yours, anchored to an explicit passage or a chosen section, written in
 3. Tool network: closed sessions (define, simulate) run with the sandbox's network off, verified by a test. Evidence and explore need an open session, which is a second, narrower consent per site.
 4. External retrieval: fetched URLs are recorded by an observed broker; if a session could fetch outside the broker, the record says "incomplete". Fetches refuse local/private addresses, unsupported schemes and oversized responses.
 
-Nothing automatic (assumed terms, metadata lookups, automatic definitions) runs before the site grant. Sites you exclude never send anything, checked before extraction and again in the daemon. No credential for Codex is ever in the browser; the extension holds only its own pairing token. Page text, fetched pages and skill instructions are untrusted data: they cannot add grants, tools or policy.
+Your controls (amended 18 September 2026, owner decision D5): instant help is one switch, offered during setup and always in Settings. While it is on, the open page is sent to Codex once so help is ready, and each selection is sent for a short definition, up to your daily token limit. While it is off, nothing automatic runs. Deep asks show the send sheet first. Sites you exclude never send anything, checked before extraction and again in the daemon. No credential for Codex is ever in the browser; the extension holds only its own pairing token. Page text, fetched pages and skill instructions are untrusted data: they cannot add grants, tools or policy.
 
 ## Codex
 

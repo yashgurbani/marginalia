@@ -32,3 +32,8 @@ Do not claim fetched origins without retrieval. No origin certifies a result.
 
 Preserve limits and exact shapes from the supplied schema. Do not add per-step binding,
 validity or verdict fields. Only the host validates and saves the final candidate.
+
+The first text block gives the conclusion and scope. The steps block follows it and carries the
+reasoning. Give every visible part an origin, including every step and equation. A page origin
+requires a matching exact source selector. An authored or computed origin describes work added
+by the reply and cannot certify what the source says.

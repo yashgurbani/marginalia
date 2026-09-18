@@ -1,9 +1,10 @@
 import type { ConsentChoice, ConsentGrant, ConsentPreview } from '../../contracts/consent.ts';
 import type { JobSnapshot, PrepareJobInput } from '../../contracts/jobs.ts';
 import type { Intent } from '../../contracts/reply.ts';
+import type { ReaderSkillSelection } from '../../contracts/reader-skills.ts';
 import { assertBinding, assertGrant, assertJob, assertPreparation, assertSavedReply, checkedCandidate, definitionFromPage,
   hostCopy, isId, sameData, type ExpectedRequest } from './binding.ts';
-import type { AskingAccess, AskingBinding, AskingBlocker, AskingHost, AskingPhase, AskingPreparation, AskingResult, AskingState, AskingValidator } from './types.ts';
+import type { AskingAccess, AskingAvailability, AskingBinding, AskingBlocker, AskingHost, AskingPhase, AskingPreparation, AskingResult, AskingState, AskingValidator } from './types.ts';
 
 const terminal = new Set<JobSnapshot['state']>(['succeeded', 'failed', 'cancelled', 'timed_out', 'outcome_unknown']);
 const retryable = new Set<JobSnapshot['state']>(['failed', 'cancelled', 'timed_out', 'outcome_unknown']);
@@ -26,6 +27,7 @@ const messages: Record<AskingBlocker, string> = {
 type Operation = {
   abort: AbortController; access: AskingAccess; mode: 'send' | 'read'; id: string;
   expected?: ExpectedRequest; preparation?: AskingPreparation; grant?: ConsentGrant; job?: JobSnapshot;
+  availability?: AskingAvailability;
   dispatched: boolean; receiveEpoch: number; preparing?: Promise<void>; reading?: Promise<void>;
   decision?: { choice: ConsentChoice; preview: ConsentPreview; task: Promise<ConsentGrant> };
   cancellation?: Promise<void>; cancelIssued: boolean;
@@ -133,6 +135,7 @@ export function createAskingFlow(options: AskingOptions) {
     requireCurrent(op);
     const value = hostCopy(await options.host.availability(op.abort.signal));
     requireCurrent(op);
+    op.availability = value;
     if (value?.configured !== true || value.available !== true) { blocked('runtime-unavailable'); throw inactive(); }
   }
   function question(raw: string): string | undefined {
@@ -142,11 +145,12 @@ export function createAskingFlow(options: AskingOptions) {
     return raw.trim();
   }
 
-  function begin(intent: Intent, q: string, kind: ExpectedRequest['kind'] = 'initial', parent?: JobSnapshot): Promise<void> {
+  function begin(intent: Intent, q: string, kind: ExpectedRequest['kind'] = 'initial', parent?: JobSnapshot, readerSkill?: ReaderSkillSelection): Promise<void> {
     const access = entryAccess('send'); if (!access) return Promise.resolve();
     let input: PrepareJobInput;
     try {
       input = { id: newId(), idempotencyKey: newId(), threadId: binding.threadId, intent, question: q,
+        ...(readerSkill ? { readerSkill } : {}),
         ...(binding.answeredNote ? { answeredNote: { noteId: binding.answeredNote.noteId, revision: binding.answeredNote.revision } } : {}),
         ...(kind === 'retry' && parent?.context.parentReplyId ? { parentReplyId: parent.context.parentReplyId } : {}),
         ...((kind === 'followup' || kind === 'note-followup') && parent?.replyVersionId ? { parentReplyId: parent.replyVersionId } : {}) };
@@ -198,13 +202,13 @@ export function createAskingFlow(options: AskingOptions) {
     return op.preparing;
   }
 
-  function ask(intent: Intent, rawQuestion: string): Promise<void> {
+  function ask(intent: Intent, rawQuestion: string, readerSkill?: ReaderSkillSelection): Promise<void> {
     if (closed || invalidated) return Promise.resolve();
     if (operation?.preparing) return operation.preparing;
     if (operation?.dispatched || ['consent', 'deciding', 'submitting'].includes(state.phase)) return Promise.resolve();
     const q = question(rawQuestion);
-    if (!q || !intents.has(intent)) return Promise.resolve();
-    return begin(intent, q);
+    if (!q || !intents.has(intent) || readerSkill && intent !== 'unsure') return Promise.resolve();
+    return begin(intent, q, 'initial', undefined, readerSkill);
   }
   function choose(choice: ConsentChoice, offered: ConsentPreview, signal?: AbortSignal): Promise<ConsentGrant> {
     const op = operation;
@@ -219,7 +223,12 @@ export function createAskingFlow(options: AskingOptions) {
       try {
         requireCurrent(op);
         // Never remains a permission write, not a request to start provider work.
-        if (choice !== 'never-site') await available(op);
+        if (choice !== 'never-site') {
+          await available(op);
+          p.unverified = op.availability!.unverified;
+          p.disclosureVersion = op.availability!.disclosureVersion;
+          publish({ preparation: hostCopy(p) });
+        }
         requireCurrent(op); assertPreparation(p, op.expected!, binding, now());
         const grant = hostCopy(await options.host.decide({ previewId: p.preview.id, expectedRevision: p.preview.revision, choice }, op.abort.signal));
         requireCurrent(op); assertGrant(grant, p.preview, choice);
@@ -302,7 +311,8 @@ export function createAskingFlow(options: AskingOptions) {
         cancel_requested: 'Cancellation was requested. Stopping is not yet confirmed.',
       };
       publish({ phase: phase[job.state], blocker: invalidPartial ? 'invalid-response' : undefined, job, provisional,
-        message: message[job.state] + (invalidPartial ? ' A malformed provisional update was withheld.' : '') }); return;
+        message: message[job.state] + (job.context.readerSkill && ['queued', 'sending', 'running', 'validating'].includes(job.state) ? ' This can take up to 15 minutes.' : '') +
+          (invalidPartial ? ' A malformed provisional update was withheld.' : '') }); return;
     }
     if (state.result?.reply.id === job.replyVersionId) { publish({ job }); return; }
     publish({ phase: 'loading-reply', message: 'Completed. Opening the saved reply.', job, provisional });

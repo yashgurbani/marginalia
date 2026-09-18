@@ -1,3 +1,5 @@
+import { validReaderSkill } from '../reader-skills.ts';
+import type { EvidenceRetrieval } from '../../contracts/evidence.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { preparationAuthorization, type PreparationAuthorization } from '../providers/preparation-authority.ts';
@@ -276,17 +278,25 @@ export class ConsentSessionService implements JobConsentAuthority {
     return this.db.transaction(() => this.requireCurrent(job, attemptId, requireDispatched))();
   }
 
-  /** T06 passes JobStore.succeed as commit; both fences then share the same SQLite transaction. */
-  withResultAcceptance<T>(job: Readonly<JobSnapshot>, attemptId: string, commit: () => T): T {
+  /** Structured admission and explicitly unformatted storage share the same current-grant transaction. */
+  withResultAcceptance<T>(job: Readonly<JobSnapshot>, attemptId: string, commit: () => T, outcome?: 'unformatted'): T {
+    if (outcome !== undefined && outcome !== 'unformatted') throw new Error('Invalid result acceptance outcome.');
     return this.db.transaction(() => {
       const authorization = this.requireCurrent(job, attemptId, true);
       const result = commit();
       const now = new Date().toISOString();
-      this.db.prepare('UPDATE consent_attempt_authorizations SET acceptedAt=?,outcome=? WHERE attemptId=?').run(now, 'accepted', attemptId);
-      this.db.prepare('UPDATE egress_events SET outcome=?,updatedAt=? WHERE id=?').run('accepted', now, authorization.egressEventId);
-      this.event('egress-outcome', { egressEventId: authorization.egressEventId, jobId: job.id, attemptId, outcome: 'accepted' });
+      this.db.prepare('UPDATE consent_attempt_authorizations SET acceptedAt=?,outcome=? WHERE attemptId=?').run(outcome ? null : now, outcome ?? 'accepted', attemptId);
+      this.db.prepare('UPDATE egress_events SET outcome=?,updatedAt=? WHERE id=?').run(outcome ?? 'accepted', now, authorization.egressEventId);
+      this.event('egress-outcome', { egressEventId: authorization.egressEventId, jobId: job.id, attemptId, outcome: outcome ?? 'accepted' });
       return result;
     })();
+  }
+
+  evidenceObservations(job: Readonly<JobSnapshot>, attemptId: string): EvidenceRetrieval | undefined {
+    const authorization = this.requireCurrent(job, attemptId, true);
+    const record = this.egress(job.id).find(value => value.id === authorization.egressEventId && value.attemptId === attemptId);
+    if (!record) return undefined;
+    return structuredClone({ sessionScope: record.scope, retrievalComplete: record.retrievalComplete, observed: record.fetched });
   }
 
   recordOutcome(attemptId: string, outcome: string) {
@@ -294,7 +304,7 @@ export class ConsentSessionService implements JobConsentAuthority {
     this.db.transaction(() => {
       const authorization = this.authorizationRow(attemptId);
       if (!authorization) return;
-      if (authorization.outcome === 'accepted') return;
+      if (authorization.outcome === 'accepted' || authorization.outcome === 'unformatted') return;
       const now = new Date().toISOString();
       this.db.prepare('UPDATE consent_attempt_authorizations SET outcome=? WHERE attemptId=?').run(outcome, attemptId);
       this.db.prepare('UPDATE egress_events SET outcome=?,updatedAt=? WHERE id=?').run(outcome, now, authorization.egressEventId);
@@ -353,7 +363,7 @@ export class ConsentSessionService implements JobConsentAuthority {
 
   private dispatchEligibility(job: Readonly<JobSnapshot>, attemptId: string) {
     validateJobBinding(job, attemptId);
-    const site = siteFor(job.context.sourceUrl), scope = scopeForIntent(job.context.intent);
+    const site = siteFor(job.context.sourceUrl), scope = job.context.readerSkill && job.context.intent === 'unsure' && validReaderSkill(job.context.readerSkill, true) ? 'open-session' : scopeForIntent(job.context.intent);
     if (this.excluded(site)) throw new ConsentDeniedError('This site is excluded. Nothing was sent.');
     const grant = this.grantRow(job.grantId);
     if (!grant || grant.revokedAt || grant.site !== site || grant.scope !== scope || grant.decision === 'deny-site') {

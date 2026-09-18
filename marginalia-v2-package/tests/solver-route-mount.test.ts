@@ -12,6 +12,7 @@ import { commitSucceededReplyWithSolverBindings } from '../daemon/jobs/solver-bi
 import type { FrozenJobContext, JobConsentAuthority, StartJobInput } from '../contracts/jobs.ts';
 import type { ProviderHandle } from '../contracts/job-runner.ts';
 import { PROBE_SENTINEL_PREFIX, type SolverCommandTransport } from '../daemon/solver/index.ts';
+import { writeSolverManifest } from './solver-fixture.ts';
 
 const ORIGIN = 'chrome-extension://' + 'a'.repeat(32);
 const OTHER_ORIGIN = 'chrome-extension://' + 'b'.repeat(32);
@@ -114,6 +115,7 @@ test('the mounted collector surfaces a loopback confinement falsification and no
   await mkdir(probeRoot);
   const source = 'process.stdout.write(JSON.stringify({schema:"marginalia.solver-output.v1",values:{answer:2}}));\n';
   await writeFile(join(workspace, 'solver', 'main.js'), source, 'utf8');
+  await writeSolverManifest(workspace, source, [{ name: 'x', min: 0, max: 2, default: 1, unit: '' }], ['answer']);
   const stream = (text: string) => ({ text, bytes: Buffer.byteLength(text), capReached: false, hostBoundReached: false });
   const transport: SolverCommandTransport = {
     enforces: { timeout: true, outputBytes: true, memoryBytes: false, maxTimeoutMs: 10_000 },

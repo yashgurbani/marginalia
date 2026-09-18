@@ -27,7 +27,7 @@ function inputOfType(root: TestElement, type: string, index = 0): TestElement {
 function setNumericInput(input: TestElement, value: number) {
   input.value = String(value);
   Object.assign(input, { valueAsNumber: value });
-  input.fire('input');
+  input.fire(input.type === 'range' ? 'input' : 'change');
 }
 
 test('number and range changes recompute locally without sending or requesting recomputation', async t => {

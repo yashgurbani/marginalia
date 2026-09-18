@@ -4,6 +4,8 @@ import { boundaries, storage, asHost } from './t05-harness.ts';
 import { dom, button, until, settle, deferred, replaceGlobals } from './t05-dom.ts';
 import { ReaderJournal, type JournalState } from '../ui/journal.ts';
 import type { SourceCapture, Thread } from '../contracts/reader.ts';
+import { startServer } from '../daemon/server.ts';
+const nativeHttpFetch = globalThis.fetch;
 const { mountMargin, sectionMapState, marginItemSize, egressMeasurements } = await import('../ui/margin.ts');
 const { localPersistence, documentJournal } = await import('../ui/persistence.ts');
 const capture: SourceCapture = { url: 'https://example.org/a', title: 'Original source', pageType: 'article', text: 'First passage. Second passage. Third passage.', capturedAt: '2026-09-17T00:00:00Z', extractionVersion: 'test', sections: [{ title: 'First', start: 0, end: 15 }, { title: 'Second', start: 15, end: 31 }, { title: 'Third', start: 31, end: 45 }] };
@@ -21,6 +23,90 @@ function cached(thread: Thread, intent = 'define', replyId = 'reply') {
     view: { replyVersionId: replyId, parameters: { x: 1 }, view: {}, revision: 1, updatedAt: capture.capturedAt } } as any;
 }
 
+test('related margin reads saved overlaps locally, opens saved sources and refreshes only after saving', async t => {
+  const nativeFetch = globalThis.fetch, e = env(t); let providerRequests = 0, opened: Thread | undefined;
+  const helper = await startServer({ database: ':memory:', port: 0, diagnostics: () => { providerRequests++; return {}; } });
+  t.after(() => helper.close());
+  const origin = 'chrome-extension://' + 'a'.repeat(32), token = helper.pairing.exchange(helper.challenge, origin);
+  e.data(e.namespace).set('pairing', { origin: helper.origin, token });
+  const requests: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string, init: RequestInit) => {
+    assert.equal(new URL(url).origin, helper.origin);
+    requests.push(new URL(url).pathname);
+    return nativeFetch(url, { ...init, headers: { ...init.headers, Origin: origin } });
+  } });
+  const save = (id: string, source: SourceCapture) => helper.store.apply({ id: 'save-' + id, kind: 'keep', threadId: id, capture: source,
+    anchor: { exact: source.text, prefix: '', suffix: '', start: 0, end: source.text.length } });
+  save('current', capture);
+  const source = e.document.createElement('article'); source.textContent = capture.text; e.document.body.append(source);
+  const api = await mountMargin(asHost(e.root), { capture, sourceRoot: asHost(source), storageName: e.namespace, helperOrigin: helper.origin, readPosition: async () => undefined,
+    onLibrary: thread => { opened = thread; } });
+  await api.drain();
+  const footer = e.root.querySelector('.m-related')!;
+  const toggle = button(e.root, 'Related');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false'); assert.equal(footer.hidden, true); assert.equal(footer.textContent, ''); assert.deepEqual(requests, []);
+  const beforeSelection = requests.length;
+  api.select(anchor()); await api.drain(); assert.equal(requests.length, beforeSelection);
+  toggle.click(); await api.drain();
+  assert.equal(footer.textContent, 'No related saved passages were found.'); const emptyReads = requests.length;
+  for (let index = 0; index < 4; index++) save('other-' + index, { ...capture, sections: undefined, url: `https://example.org/other-${index}`, title: `Other source ${index}`, text: `First passage shared with source ${index}. ` + 'Saved context. '.repeat(100) });
+  button(e.root, 'Keep').click(); await api.drain();
+  assert.equal(requests.length, emptyReads); toggle.click(); toggle.click(); await api.drain();
+  assert.ok(requests.length > emptyReads);
+  assert.equal(footer.querySelectorAll('blockquote').length, 3);
+  const open = footer.querySelectorAll('button')[0], title = open.textContent;
+  assert.match(title, /^Other source/); open.click(); await api.drain();
+  assert.equal(Boolean(opened), false); button(footer, 'Open in Library').click();
+  assert.equal(opened?.sourceTitle, title); assert.equal(opened?.sourceUrl.startsWith('https://example.org/other-'), true);
+  toggle.click(); const closedReads = requests.length;
+  api.select(anchor(15, 30)); button(e.root, 'Keep').click(); await api.drain(); assert.equal(requests.length, closedReads);
+  toggle.click(); await api.drain(); assert.ok(requests.length > closedReads); assert.equal(footer.querySelectorAll('blockquote').length, 3);
+  const beforeReselect = requests.length; api.select(anchor(15, 30)); await api.drain();
+  assert.equal(requests.length, beforeReselect);
+  assert.equal(source.textContent, capture.text);
+  assert.ok(requests.every(path => ['/api/read/threads', '/api/read/library-related', '/api/read/export'].includes(path)));
+  assert.equal(providerRequests, 0); assert.equal(helper.jobs.list().length, 0);
+  assert.equal(helper.store.db.prepare('SELECT COUNT(*) FROM egress_events').pluck().get(), 0);
+  api.destroy(); await api.drain();
+
+  let externalOpens = 0;
+  Object.defineProperty(e.document.defaultView!, 'open', { configurable: true, value: () => { externalOpens++; return null; } });
+  const fallback = await mountMargin(asHost(e.root), { capture, sourceRoot: asHost(source), storageName: e.namespace, helperOrigin: helper.origin, readPosition: async () => undefined });
+  button(e.root, 'Related').click(); await fallback.drain();
+  const fallbackFooter = e.root.querySelector('.m-related')!, fallbackOpen = fallbackFooter.querySelectorAll('button')[0], fallbackTitle = fallbackOpen.textContent;
+  fallbackOpen.click(); await fallback.drain();
+  assert.equal(externalOpens, 0); assert.equal(fallbackFooter.querySelector('h3')!.textContent, fallbackTitle);
+  assert.match(fallbackFooter.textContent, /First passage shared with source/);
+  const close = button(fallbackFooter, 'Close saved source'); close.focus();
+  const preview = fallbackFooter.querySelector('.m-related-excerpt')!;
+  assert.ok(preview.textContent.length <= 602);
+  const previewReads = requests.length;
+  await documentJournal(e.namespace, localPersistence(e.namespace).journal).change({ id: crypto.randomUUID(), kind: 'keep', threadId: crypto.randomUUID(), capture, anchor: anchor(15, 30) });
+  // A real margin mutation must not rebuild the open Related snapshot or move its focus.
+  button(e.root, 'Save page').click(); await fallback.drain();
+  assert.equal(fallbackFooter.querySelector('.m-related-excerpt'), preview);
+  assert.equal(e.document.activeElement, close); assert.equal(requests.length, previewReads);
+  button(fallbackFooter, 'Open in Library').click(); assert.equal(e.root.querySelector('.m-local-library')!.hidden, false);
+  button(e.root, 'Close Library').click(); close.click(); assert.equal(fallbackFooter.querySelector('h3'), null); assert.equal(e.document.activeElement, fallbackOpen);
+  fallback.destroy(); await fallback.drain();
+});
+
+test('related margin reports an unavailable helper quietly and discards late results after closing', async t => {
+  const e = env(t); e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+  replaceGlobals(t, { fetch: async () => { throw new Error('offline'); } });
+  let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, readPosition: async () => undefined });
+  await api.drain(); const firstFooter = e.root.querySelector('.m-related')!; assert.equal(firstFooter.textContent, '');
+  button(e.root, 'Related').click(); await api.drain(); assert.equal(firstFooter.textContent, 'Related passages need the app on this device.');
+  api.destroy(); await api.drain();
+  const pending = deferred<Response>(); replaceGlobals(t, { fetch: async () => pending.promise });
+  api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, readPosition: async () => undefined });
+  const footer = e.root.querySelector('.m-related')!; const toggle = button(e.root, 'Related');
+  assert.equal(footer.textContent, ''); toggle.click(); assert.equal(footer.textContent, 'Looking for related saved passages…'); toggle.click();
+  pending.resolve(Response.json({ threads: [] })); await api.drain();
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false'); assert.equal(footer.textContent, '');
+  api.destroy(); await api.drain();
+});
+
 test('E38 cached correction warning names its ancestor and survives an older helper response with local controls intact', async t => {
   const e = env(t), seeded = await threadFixture(e.namespace, true);
   const reply = cached(seeded.thread);
@@ -33,8 +119,9 @@ test('E38 cached correction warning names its ancestor and survives an older hel
   assert.deepEqual(records[0].local, { parameters: { x: 1 }, view: {} });
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
   await api.drain();
-  assert.match(e.root.textContent, /Earlier calculation.*ancestor.*corrected/);
+  assert.match(e.root.textContent, /Earlier calculation.*was corrected by a later reply/);
   assert.match(e.root.textContent, /Original reader note/);
+  assert.doesNotMatch(e.root.querySelector('.m-saved-replies')!.textContent, /ancestor|2026-09-17T/);
   api.destroy(); await api.drain();
 });
 
@@ -47,7 +134,7 @@ for (const outcome of ['succeeded', 'cancelled', 'failed', 'outcome_unknown', 'c
       hostContext = context;
       return { open(value) { selection = value; }, setVisible() {}, destroy() {} };
     } });
-    button(e.root, 'Ask about this note').click(); button(e.root, 'Review with local helper').click(); await api.drain();
+    button(e.root, 'Ask about this note').click(); await api.drain(); button(e.root, 'Define it here').click(); await api.drain();
     hostContext.retainedQuestion({ ...selection, resumeJobId: 'stored-job' }); await api.drain();
     hostContext.onState({ phase: outcome === 'succeeded' ? 'committed' : outcome === 'outcome_unknown' ? 'unknown' : 'cancelled' });
     assert.equal(e.root.querySelector('.m-activity')!.hidden, false);
@@ -73,16 +160,17 @@ for (const outcome of ['succeeded', 'cancelled', 'failed', 'outcome_unknown', 'c
     const sheet = e.root.querySelector('[aria-label="What was sent"]')!;
     await until(() => sheet.textContent.includes('recorded-model'));
     assert.equal(sheet.hidden, false);
-    for (const text of ['What was sent', 'app-server', 'recorded-model', job.createdAt, job.updatedAt, 'samples, solver', job.preparedPayloadDigest, 'full reviewed text is no longer stored', 'The frozen question <script>', 'Reviewed passage']) assert.ok(sheet.textContent.includes(text), text);
+    for (const text of ['What was sent', 'app-server', 'recorded-model',  'samples, solver', job.preparedPayloadDigest, 'full reviewed text is no longer stored', 'The frozen question <script>', 'Reviewed passage']) assert.ok(sheet.textContent.includes(text), text);
     assert.equal(sheet.querySelectorAll('textarea,input,select,script').length, 0);
     assert.equal(sheet.textContent.includes('Nothing left this machine'), noSend);
-    if (!noSend) assert.match(sheet.textContent, /2026-09-18T09:00:01Z/);
-    assert.match(sheet.textContent, noSend ? /Unknown for this record\. No measurement is backfilled\./ : /9 UTF-8 bytes\. This is reviewed content size, not bytes transmitted\./);
+    assert.doesNotMatch(sheet.textContent, /2026-09-18T/);
+    assert.match(sheet.textContent, /2026/);
+    assert.match(sheet.textContent, noSend ? /Unknown for this record\. No measurement is backfilled\./ : /9 UTF-8 bytes\. The reviewed content size is recorded\. Transmission size is unmeasured\./);
     assert.match(sheet.textContent, noSend ? /No durable provider handoff is recorded\./ : /Provider handoffRecorded in the durable attempt record\./);
-    assert.match(sheet.textContent, /Observed transmissionNot observed\. This record can establish provider handoff, but it does not prove physical transmission\./);
+    assert.match(sheet.textContent, /Observed transmissionNot observed\. This record can establish provider handoff\. Transmission evidence is unavailable\./);
     if (outcome === 'succeeded') assert.match(sheet.textContent, /Ready/);
     if (outcome === 'outcome_unknown') assert.match(sheet.textContent, /Outcome unconfirmed/);
-    assert.deepEqual(requests, [{ path: '/api/jobs/stored-job', method: 'GET', body: undefined }]);
+    assert.deepEqual(requests, [{ path: '/api/read/jobs/stored-job', method: 'POST', body: '{}' }]);
     assert.deepEqual(writes, []);
     sheet.fire('keydown', { key: 'Escape' }); assert.equal(sheet.hidden, true); assert.equal(e.document.activeElement, dot);
     dot.click(); await until(() => sheet.textContent.includes('recorded-model'));
@@ -122,7 +210,7 @@ test('sending status follows the durable record rather than asking-flow state', 
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: (_root, value) => {
     context = value; return { open(current) { selection = current; }, setVisible() {}, destroy() {} };
   } });
-  button(e.root, 'Ask about this note').click(); button(e.root, 'Review with local helper').click(); await api.drain();
+  button(e.root, 'Ask about this note').click(); await api.drain(); button(e.root, 'Define it here').click(); await api.drain();
   context.activity({ phase: 'sending', sending: true });
   assert.equal(e.root.querySelector('.m-activity')!.textContent, 'Working');
   assert.equal(e.root.querySelector('.m-activity')!.dataset.sending, 'false');
@@ -130,7 +218,7 @@ test('sending status follows the durable record rather than asking-flow state', 
   context.activity({ phase: 'sending', sending: true });
   await until(() => e.root.querySelector('.m-activity')!.textContent === 'Request passed to Codex');
   assert.equal(e.root.querySelector('.m-activity')!.dataset.sending, 'false');
-  assert.deepEqual(reads.filter(path => path.startsWith('/api/jobs/')), ['/api/jobs/record-job']);
+  assert.deepEqual(reads.filter(path => path.startsWith('/api/read/jobs/')), ['/api/read/jobs/record-job']);
   assert.deepEqual(egressMeasurements(job as any), { reviewedBytes: 2, handoffRecorded: true, observedSentBytes: null, transmissionObserved: false });
   api.destroy(); await api.drain();
 });
@@ -139,8 +227,8 @@ test('reading-position editor is connected, anchored and single-map across save 
   button(e.root, 'Settings').click(); assert.equal(e.root.querySelectorAll('button').some(node => node.textContent === 'Retry saving'), false, 'clean hydrated settings do not claim recovery is needed'); button(e.root, 'Close settings').click();
   api.setReadingPosition(21); const write = button(e.root, 'Write here\u2026'); write.focus();
   const field = e.root.querySelector('[aria-label="Your note"]')!; field.value = 'Frozen text?'; field.fire('input'); field.setSelectionRange(2, 5); field.scrollTop = 13;
-  const compose = e.root.querySelector('.m-compose')!, before = e.root.querySelectorAll('.m-section-marker');
-  assert.ok(compose.parentElement!.children.indexOf(compose) > compose.parentElement!.children.indexOf(before[1]));
+  const compose = e.root.querySelector('.m-compose')!, before = e.root.querySelector('.m-reading')!;
+  assert.ok(compose.parentElement!.children.indexOf(compose) > compose.parentElement!.children.indexOf(before));
   e.onWrite(async key => { if (key === 'journal') throw new Error('quota'); }); button(e.root, 'Save note').click(); await api.drain();
   assert.equal(e.root.querySelector('[aria-label="Your note"]'), field); assert.equal(e.document.activeElement, field); assert.deepEqual([field.selectionStart, field.selectionEnd, field.scrollTop], [2, 5, 13]);
   const stored = [...e.data(e.namespace)].find(([key]) => key.startsWith('draft:'))![1] as any;
@@ -174,10 +262,13 @@ test('narrow margin stays open through hydration and Escape returns focus to its
   api.destroy(); await api.drain();
 });
 
-test('Library is offered only when its host provides a route', async t => {
+test('Library keeps page work accessible locally and uses the host route when supplied', async t => {
   const e = env(t);
   let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
-  assert.equal(e.root.querySelectorAll('button').some(node => node.textContent === 'Library'), false);
+  button(e.root, 'Library').click();
+  assert.equal(e.root.querySelector('.m-local-library')!.hidden, false);
+  button(e.root, 'Close Library').click();
+  assert.equal(e.document.activeElement, button(e.root, 'Library'));
   api.destroy(); await api.drain();
 
   let opens = 0;
@@ -187,20 +278,22 @@ test('Library is offered only when its host provides a route', async t => {
   api.destroy(); await api.drain();
 });
 
-test('bottom availability keeps local paths actionable and missing related/listening paths inert', async t => {
+test('bottom availability keeps local paths actionable and explains unavailable related passages', async t => {
   const e = env(t), requests: string[] = []; let libraryOpens = 0;
   replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected outbound request'); } });
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, onLibrary: () => { libraryOpens++; } });
   const footer = e.root.querySelector('.m-footer')!;
-  assert.match(footer.textContent, /0 threads on this page/);
-  assert.match(footer.textContent, /Related items · not available in this version\./);
-  assert.match(footer.textContent, /Hear it · not available in this version\./);
-  assert.equal(Array.from(footer.querySelectorAll('button')).some(node => /Related items|Hear it/.test(node.textContent)), false);
+  assert.doesNotMatch(footer.textContent, /0 threads on this page/);
+  assert.doesNotMatch(footer.textContent, /Related passages need the app on this device\./);
+  assert.match(e.root.querySelector('.m-settings')!.textContent, /Hear it needs a local voice\./);
+  assert.equal(footer.querySelector('.m-footer-voice')!.children.length, 0);
+  assert.equal(Array.from(footer.querySelectorAll('button')).some(node => node.textContent === 'Related'), true);
+  button(footer, 'Related').click(); assert.match(footer.textContent, /Related passages need the app on this device\./);
   assert.equal(e.root.querySelectorAll('audio,video').length, 0);
 
   button(e.root, 'Library').click();
   api.select(anchor()); button(e.root, 'Keep').click(); await api.drain();
-  api.select(anchor(15, 30)); button(e.root, 'Park').click(); await api.drain();
+  api.select(anchor(15, 30)); button(e.root, 'Read later').click(); await api.drain();
 
   const state = e.data(e.namespace).get('journal') as JournalState;
   assert.equal(libraryOpens, 1);
@@ -364,7 +457,7 @@ test('equal-revision metadata refresh preserves focused reply controls and resol
   await until(() => e.root.textContent.includes('Canonical same-revision content'));
   assert.equal(e.root.querySelector('[aria-label="Controlled reply input"]'), field); assert.equal(e.document.activeElement, field);
   const paths: string[] = []; replaceGlobals(t, { fetch: async (url: string) => { paths.push(new URL(url).pathname); return Response.json({ source: reply.source, replies: [reply.version], views: [reply.view] }); } });
-  button(e.root, 'Load replies from helper').click(); await api.drain(); assert.deepEqual(paths, ['/api/read/replies']); assert.doesNotMatch(e.root.textContent, /different source version/);
+  button(e.root, 'Sync').click(); await api.drain(); assert.deepEqual(paths, ['/api/read/replies']); assert.doesNotMatch(e.root.textContent, /different source version/);
   api.destroy(); await api.drain(); channel.close();
 });
 test('saved replies receive intent capabilities and solver only at the paired recompute gate', async t => {
@@ -398,8 +491,8 @@ test('embedded margin never reads a pairing credential or exposes management/pri
   const e = env(t), reads: string[] = []; e.onRead(async key => { reads.push(key); }); e.data(e.namespace).set('pairing', { token: 'must-not-read' });
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, helperManagement: true });
   assert.equal(reads.includes('pairing'), false); for (const name of ['Pair', 'Disconnect', 'Show pairing code', 'Refresh browser list']) assert.equal(e.root.querySelectorAll('button').some(n => n.textContent === name), false);
-  api.select(anchor()); button(e.root, 'Ask').click(); const question = e.root.querySelector('[aria-label="Your question"]')!; question.value = 'Why?'; question.fire('input');
-  assert.equal(button(e.root, 'Review with local helper').disabled, true); api.destroy(); await api.drain();
+  api.select(anchor()); button(e.root, 'Ask').click(); await api.drain(); const question = e.root.querySelector('[aria-label="Your question"]')!; question.value = 'Why?'; question.fire('input');
+  button(e.root, 'Define it here').click(); await api.drain(); assert.equal(reads.includes('pairing'), false); api.destroy(); await api.drain();
 });
 test('Keep device version calls real T07 without sending or discarding the corresponding editor draft', async t => {
   const e = env(t), { journal, persistence } = await threadFixture(e.namespace);
@@ -413,38 +506,57 @@ test('Keep device version calls real T07 without sending or discarding the corre
   assert.equal(journal.state.resolutions![0].resolution, 'kept-device'); assert.equal(field.value, mutation.text); assert.equal(field.readOnly, false); assert.match(e.root.textContent, /Nothing was uploaded/);
   api.destroy(); await api.drain();
 });
-test('selection and question typing never send; explicit local context save preserves its stable identity', async t => {
+test('selection and typing send nothing; choosing saves context once and a closed draft stays in history', async t => {
   const e = env(t); let opens = 0;
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: () => ({ open() { opens++; }, setVisible() {}, destroy() {} }) });
-  api.select(anchor()); button(e.root, 'Ask').click(); let q = e.root.querySelector('[aria-label="Your question"]')!; q.value = 'My question'; q.fire('input');
-  button(e.root, 'Close question').click(); api.select(anchor(15, 30)); button(e.root, 'Keep').click(); button(e.root, 'Ask').click(); q = e.root.querySelector('[aria-label="Your question"]')!;
-  assert.equal(q.value, 'My question'); assert.equal(opens, 0);
-  button(e.root, 'Keep this context on this device').click(); await api.drain();
-  const journal = e.data(e.namespace).get('journal') as JournalState; assert.equal(journal.threads[0].anchor.start, 0); assert.equal(journal.pending.length, 1); assert.equal(opens, 0);
-  button(e.root, 'Keep this context on this device').click(); await api.drain(); assert.equal((e.data(e.namespace).get('journal') as JournalState).pending.length, 1);
+  api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
+  const q = e.root.querySelector('[aria-label="Your question"]')!; q.value = 'My question'; q.fire('input'); await api.drain();
+  assert.equal(opens, 0); assert.equal((e.data(e.namespace).get('journal') as JournalState | undefined)?.pending.length ?? 0, 0);
+  button(e.root, 'Define it here').click(); await api.drain();
+  let journal = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(journal.threads[0].anchor.start, 0); assert.equal(journal.pending.length, 1); assert.equal(opens, 0);
+  button(e.root, 'Define it here').click(); await api.drain();
+  journal = e.data(e.namespace).get('journal') as JournalState; assert.equal(journal.pending.length, 1);
+  e.root.querySelector('.m-question')!.fire('keydown', { key: 'Escape' });
+  button(e.root.querySelector('.m-selection')!, 'Ask').click(); await api.drain();
+  const history = [...e.data(e.namespace)].filter(([key]) => key.startsWith('question-history:'));
+  assert.equal(history.length, 1); assert.equal((history[0][1] as any).question, 'Define it here in this passage.');
   api.destroy(); await api.drain();
 });
 
-test('Keep and explicit Highlight preserve selection, source-node identity and reader work through removal', async t => {
+test('Keep closes selection and the kept item Highlight preserves source-node identity and reader work', async t => {
   const e = env(t), source = e.document.createElement('article'), sourceText = e.document.createTextNode(capture.text);
   source.append(sourceText); e.document.body.prepend(source);
-  const projections: { anchor: unknown; highlighted: boolean }[][] = [];
+  const registered = new Map<string, { ranges: unknown[] }>();
+  class TestHighlight { ranges: unknown[]; constructor(...ranges: unknown[]) { this.ranges = ranges; } }
+  (e.document as any).createTreeWalker = () => { let walked = false; return { nextNode: () => walked ? null : (walked = true, sourceText) }; };
+  (e.document as any).createRange = () => ({ setStart() {}, setEnd() {} });
+  replaceGlobals(t, { CSS: { highlights: registered }, NodeFilter: { SHOW_TEXT: 4 }, window: Object.assign(globalThis.window, { Highlight: TestHighlight }) });
+  const projections: { anchor: unknown; highlighted: boolean; highlightColour?: string }[][] = [];
   const api = await mountMargin(asHost(e.root), { capture, sourceRoot: asHost(source), storageName: e.namespace, allowHelper: false, onSavedMarks: marks => { projections.push(marks); } });
   const selected = anchor();
   api.select(selected);
   button(e.root, 'Keep').click(); await api.drain();
   let state = e.data(e.namespace).get('journal') as JournalState;
   assert.equal(state.threads[0].highlighted, false);
-  assert.equal(e.root.querySelector('.m-selection')!.hidden, false);
-  assert.equal(e.root.querySelector('.m-selection')!.querySelector('blockquote')!.textContent.length > 0, true);
+  assert.equal(e.root.querySelector('.m-selection')!.hidden, true);
   assert.equal(source.childNodes[0], sourceText);
 
-  const selectionHighlight = e.root.querySelector('.m-selection')!.querySelectorAll('button').find(node => node.textContent === 'Highlight')!;
+  const selectionHighlight = button(e.root, 'Highlight');
   selectionHighlight.click(); await api.drain();
   state = e.data(e.namespace).get('journal') as JournalState;
   assert.equal(state.threads[0].highlighted, true);
   assert.equal(projections.at(-1)![0].highlighted, true);
-  assert.deepEqual(state.pending.map(change => change.kind), ['keep', 'highlight']);
+  assert.equal(state.threads[0].highlightColour, undefined);
+  assert.equal(registered.get('marginalia-highlighted-yellow')!.ranges.length, 1);
+  assert.equal(registered.get('marginalia-highlighted-green')!.ranges.length, 0);
+  const green = e.root.querySelector('[aria-label="Green"]')!; assert.equal(green.getAttribute('aria-pressed'), 'false');
+  green.click(); await api.drain();
+  state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads[0].highlightColour, 'green');
+  assert.equal(registered.get('marginalia-highlighted-yellow')!.ranges.length, 0);
+  assert.equal(registered.get('marginalia-highlighted-green')!.ranges.length, 1);
+  assert.deepEqual(state.pending.map(change => change.kind), ['keep', 'highlight', 'highlight']);
   assert.equal(source.childNodes[0], sourceText);
 
   button(e.root, 'Remove highlight').click(); await api.drain();
@@ -502,7 +614,7 @@ test('a replacement selection keeps or switches a question draft locally with ex
     asking: () => { askingMounts++; return { open() {}, setVisible() {}, destroy() {} }; } };
   let api = await mountMargin(asHost(e.root), options);
   const original = anchor(), replacement = anchor(15, 30);
-  api.select(original); button(e.root.querySelector('.m-selection')!, 'Ask').click();
+  api.select(original); button(e.root.querySelector('.m-selection')!, 'Ask').click(); await api.drain();
   let question = e.root.querySelector('[aria-label="Your question"]')!, context = e.root.querySelector('[aria-label="Context to attach"]')!;
   question.value = 'Exact retained question?'; question.fire('input'); context.value = 'Exact reader context'; context.fire('input'); await api.drain();
 
@@ -515,7 +627,7 @@ test('a replacement selection keeps or switches a question draft locally with ex
   assert.deepEqual(stored.anchor, original); assert.equal(stored.question, question.value); assert.equal(stored.context, context.value);
 
   api.destroy(); await api.drain(); api = await mountMargin(asHost(e.root), options);
-  button(e.root, 'Return to retained question').click();
+  button(e.root, 'Return to retained question').click(); await api.drain();
   question = e.root.querySelector('[aria-label="Your question"]')!; context = e.root.querySelector('[aria-label="Context to attach"]')!;
   assert.equal(question.value, 'Exact retained question?'); assert.equal(context.value, 'Exact reader context');
   assert.equal(e.root.querySelector('.m-question blockquote')!.textContent, original.exact);
@@ -526,7 +638,7 @@ test('a replacement selection keeps or switches a question draft locally with ex
   assert.equal(e.root.querySelector('.m-question blockquote')!.textContent, replacement.exact);
 
   api.destroy(); await api.drain(); api = await mountMargin(asHost(e.root), options);
-  button(e.root, 'Return to retained question').click();
+  button(e.root, 'Return to retained question').click(); await api.drain();
   assert.equal(e.root.querySelector('.m-question blockquote')!.textContent, replacement.exact);
   assert.equal(e.root.querySelector('[aria-label="Your question"]')!.value, 'Exact retained question?');
   assert.equal(e.root.querySelector('[aria-label="Context to attach"]')!.value, 'Exact reader context');
@@ -539,7 +651,7 @@ test('a failed note Switch keeps the visible B draft, retries explicitly, and re
   e.onWrite(async key => { if (failDraftWrites && key.startsWith('draft:')) throw new Error('draft quota'); });
   let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
   const original = anchor(), replacement = anchor(15, 30);
-  api.select(original); button(e.root, 'Write a note').click();
+  api.select(original); button(e.root, 'Write here\u2026').click();
   let field = e.root.querySelector('[aria-label="Your note"]')!; field.value = 'Exact note after failed switch'; field.fire('input'); await api.drain();
   failDraftWrites = true; api.select(replacement); button(e.root.querySelector('.m-selection')!, 'Switch').click(); await api.drain();
   field = e.root.querySelector('[aria-label="Your note"]')!;
@@ -559,7 +671,7 @@ test('a failed question Switch keeps the visible B draft, retries explicitly, an
   e.onWrite(async key => { if (failQuestionWrites && key.startsWith('question:')) throw new Error('question quota'); });
   let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
   const original = anchor(), replacement = anchor(15, 30);
-  api.select(original); button(e.root, 'Ask').click();
+  api.select(original); button(e.root, 'Ask').click(); await api.drain();
   let question = e.root.querySelector('[aria-label="Your question"]')!, context = e.root.querySelector('[aria-label="Context to attach"]')!;
   question.value = 'Exact question after failed switch?'; question.fire('input'); context.value = 'Exact context after failed switch'; context.fire('input'); await api.drain();
   failQuestionWrites = true; api.select(replacement); button(e.root.querySelector('.m-selection')!, 'Switch').click(); await api.drain();
@@ -572,7 +684,7 @@ test('a failed question Switch keeps the visible B draft, retries explicitly, an
   const stored = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
   assert.deepEqual(stored.anchor, replacement); assert.equal(stored.question, 'Exact question edited after failed switch?'); assert.equal(stored.context, 'Exact context after failed switch');
   api.destroy(); await api.drain(); api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
-  button(e.root, 'Return to retained question').click(); question = e.root.querySelector('[aria-label="Your question"]')!; context = e.root.querySelector('[aria-label="Context to attach"]')!;
+  button(e.root, 'Return to retained question').click(); await api.drain(); question = e.root.querySelector('[aria-label="Your question"]')!; context = e.root.querySelector('[aria-label="Context to attach"]')!;
   assert.equal(question.value, 'Exact question edited after failed switch?'); assert.equal(context.value, 'Exact context after failed switch'); assert.equal(e.root.querySelector('.m-question blockquote')!.textContent, replacement.exact);
   api.destroy(); await api.drain();
 });
@@ -580,12 +692,12 @@ test('explicit helper review invokes injected T08 only for acknowledged context;
   const e = env(t), seeded = await threadFixture(e.namespace, true); e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
   let hostContext: any, selected: any, destroyed = 0;
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: (_root, context) => { hostContext = context; return { open(selection) { selected = selection; context.activity?.({ phase: 'working', sending: false, elapsedSeconds: 31 }); }, setVisible() {}, destroy() { destroyed++; } }; } });
-  button(e.root, 'Ask about this note').click(); const field = e.root.querySelector('[aria-label="Your question"]')!; field.value = 'Explain my note'; field.fire('input');
-  button(e.root, 'Review with local helper').click(); await api.drain(); assert.equal(selected?.answeredNote.text, 'Original reader note'); assert.equal(selected?.sourceVersionId, 'source');
+  button(e.root, 'Ask about this note').click(); await api.drain(); const field = e.root.querySelector('[aria-label="Your question"]')!; field.value = 'Explain my note'; field.fire('input');
+  button(e.root, 'Define it here').click(); await api.drain(); assert.equal(selected?.answeredNote.text, 'Original reader note'); assert.equal(selected?.sourceVersionId, 'source');
   assert.equal(e.root.querySelector('.m-question')!.parentElement!.className, 'm-thread-body');
   assert.equal(e.root.querySelector('.m-question')!.parentElement!.children[0].className, 'm-thread-content', 'reader notes remain above the asking/reply surface');
   assert.equal(e.root.querySelector('.m-activity')!.dataset.sending, 'false'); assert.match(e.root.querySelector('.m-activity')!.getAttribute('aria-label')!, /31 seconds/);
-  hostContext.retainedQuestion({ ...selected, question: 'More precise retained question' }); button(e.root, 'Close question').click(); await api.drain(); assert.equal(destroyed, 1);
+  hostContext.retainedQuestion({ ...selected, question: 'More precise retained question' }); e.root.querySelector('.m-question')!.fire('keydown', { key: 'Escape' }); await api.drain(); assert.equal(destroyed, 1);
   api.destroy(); await api.drain(); assert.equal(seeded.journal.state.pending.length, 0);
 });
 test('removing a note hides only the note and undo restores it without disturbing its thread or replies', async t => {
@@ -602,6 +714,7 @@ test('removing a note hides only the note and undo restores it without disturbin
   assert.match(e.root.textContent, /Note removed\.Undo/);
   button(e.root, 'Undo').click(); await api.drain();
   assert.match(e.root.textContent, /Original reader note/);
+  assert.doesNotMatch(e.root.querySelector('.m-saved-replies')!.textContent, /ancestor|2026-09-17T/);
   assert.equal(e.root.querySelector('[data-thread="thread"]') !== null, true);
   assert.equal(e.root.querySelector('[aria-label="Controlled reply input"]'), replyControl);
   api.destroy(); await api.drain();
@@ -641,7 +754,7 @@ test('opening a thread collapses the previous one and restores only on the same 
 test('end-of-page actions prepare explicit drafts and cannot replace an existing question or send', async t => {
   const e = env(t); let opened = 0;
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: () => ({ open() { opened++; }, setVisible() {}, destroy() {} }) });
-  button(e.root, 'Go further').click(); const field = e.root.querySelector('[aria-label="Your question"]')!; assert.match(field.value, /further reading/);
+  api.setReadingPosition(capture.text.length); button(e.root, 'Go further').click(); await api.drain(); const field = e.root.querySelector('[aria-label="Your question"]')!; assert.match(field.value, /further reading/);
   field.value = 'Keep my exact question'; field.fire('input'); button(e.root, 'Think with it').click(); assert.equal(e.root.querySelector('[aria-label="Your question"]')!.value, field.value); assert.equal(opened, 0);
   api.destroy(); await api.drain();
 });
@@ -668,18 +781,18 @@ test('actual reply-cache failures retain unsaved inputs and competing sessions r
 });
 
 for (const [label, intent, question] of [
-  ['See it', 'simulate', 'Help me see how this passage works.'],
-  ['What supports this', 'evidence', 'What supports this passage?'],
-  ['Show me an example', 'instantiate', 'Show a worked example of this passage.'],
-  ['Explain step by step', 'derive', 'Explain this passage step by step.'],
-  ['diagram', 'diagram', 'Diagram this passage, tying its parts to the source.'],
+  ['Simulate it', 'simulate', 'Simulate this passage.'],
+  ['Check this claim', 'evidence', 'Check this claim in this passage.'],
+  ['Give an example', 'instantiate', 'Give an example in this passage.'],
+  ['Show the steps', 'derive', 'Show the steps in this passage.'],
+  ['See it', 'diagram', 'See it in this passage.'],
 ] as const) {
   test(`${label} saves a selection draft without opening asking or sending`, async t => {
     const e = env(t), requests: string[] = []; let opened = 0;
     replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected outbound request'); } });
     const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace,
       asking: () => ({ open() { opened++; }, setVisible() {}, destroy() {} }) });
-    api.select(anchor()); button(e.root, 'Ask').click(); button(e.root, label).click(); await api.drain();
+    api.select(anchor()); button(e.root, 'Ask').click(); await api.drain(); button(e.root, label).click(); await api.drain();
     const draft = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
     assert.equal(draft.intent, intent); assert.deepEqual(draft.anchor, anchor());
     assert.equal(draft.question, e.root.querySelector('[aria-label="Your question"]')!.value);
@@ -707,4 +820,206 @@ test('saved reply follow-up retains the saved thread and current inputs as a dra
   await followup!({ text: 'Do not replace my draft', parameters: {}, view: {} }); await api.drain();
   assert.equal(e.root.querySelector('[aria-label="Your question"]')!.value, draft.question);
   assert.equal(opened, 0); assert.deepEqual(requests, []); api.destroy(); await api.drain();
+});
+
+test('whole-page Save and Read later persist once and restore the local reading cue without requests', async t => {
+  const e = env(t), requests: string[] = [], navigated: unknown[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected request'); } });
+  let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  api.setReadingPosition(21);
+  const footer = e.root.querySelector('.m-footer')!;
+  button(footer, 'Save page').click(); button(footer, 'Save page').click(); await api.drain();
+  let state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads.length, 1); assert.equal(state.threads[0].anchor.kind, 'whole-page'); assert.equal(state.threads[0].anchor.exact, ''); assert.equal(state.threads[0].state, 'open');
+  button(footer, 'Read page later').click(); button(footer, 'Read page later').click(); await api.drain();
+  state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads.length, 1); assert.equal(state.threads[0].state, 'parked');
+  assert.ok(button(footer, 'Export')); assert.deepEqual(requests, []);
+  api.destroy(); await api.drain();
+  const { mountLibrary } = await import('../ui/library/index.ts');
+  const library = mountLibrary(asHost(e.root), { listThreads: async () => structuredClone(state.threads), exportThread: async () => { throw new Error('Export is separate'); }, onOpenThread() {}, onClose() {} });
+  await until(() => e.root.textContent.includes('Saved threads')); await settle();
+  button(e.root, 'Read later').click(); assert.match(e.root.textContent, /Original source/); library.destroy();
+  api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, onSource: value => navigated.push(value) });
+  await api.drain(); assert.ok(button(e.root, 'You were here')); assert.equal(api.restoredPosition, true);
+  assert.equal((navigated[0] as { start: number }).start, 21); assert.deepEqual(requests, []);
+  api.destroy(); await api.drain();
+});
+
+test('removed whole-page threads do not resurrect a parked checkpoint; explicit Save creates a new entry', async t => {
+  const e = env(t); let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  api.setReadingPosition(21); button(e.root, 'Read page later').click(); await api.drain(); api.destroy(); await api.drain();
+  const persistence = localPersistence(e.namespace), journal = documentJournal(e.namespace, persistence.journal);
+  const thread = journal.state.threads[0]; await journal.change({ id: 'remove-parked', kind: 'remove', removed: true, threadId: thread.id, expectedRevision: thread.revision });
+  api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  await api.drain(); assert.equal(e.root.querySelectorAll('.m-resume').length, 0);
+  button(e.root, 'Save page').click(); await api.drain();
+  const state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads.filter(value => !value.deletedAt).length, 1);
+  assert.notEqual(state.threads.find(value => !value.deletedAt)!.id, thread.id);
+  api.destroy(); await api.drain();
+});
+
+test('Read page later at the top retains its explicit return cue; a changed capture saves a new immutable page', async t => {
+  const e = env(t); let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  button(e.root, 'Read page later').click(); await api.drain(); api.destroy(); await api.drain();
+  api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  assert.ok(button(e.root, 'You were here')); api.destroy(); await api.drain();
+  const changed = { ...capture, text: 'A replacement page.', sections: undefined };
+  api = await mountMargin(asHost(e.root), { capture: changed, storageName: e.namespace, allowHelper: false });
+  assert.equal(e.root.querySelectorAll('.m-resume').length, 0); button(e.root, 'Save page').click(); await api.drain();
+  const state = e.data(e.namespace).get('journal') as JournalState;
+  const keeps = state.pending.filter(value => value.kind === 'keep');
+  assert.equal(keeps.length, 2); assert.equal(keeps[0].capture.text, capture.text); assert.equal(keeps[1].capture.text, changed.text);
+  api.destroy(); await api.drain();
+});
+
+test('page save and checkpoint storage failures stay visible and retry without duplicate threads', async t => {
+  const e = env(t); const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  e.onWrite(async key => { if (String(key).startsWith('saved-page:')) throw new Error('Page record storage failed.'); });
+  button(e.root, 'Save page').click(); await api.drain();
+  assert.equal((e.data(e.namespace).get('journal') as JournalState | undefined)?.threads.length ?? 0, 0);
+  assert.match(e.root.textContent, /Page record storage failed/);
+  e.onWrite(async () => {}); button(e.root, 'Save page').click(); await api.drain();
+  e.onWrite(async key => { if (String(key).startsWith('parked-page-position:')) throw new Error('Checkpoint storage failed.'); });
+  button(e.root, 'Read page later').click(); await api.drain(); assert.match(e.root.textContent, /Checkpoint storage failed/);
+  e.onWrite(async () => {}); button(e.root, 'Read page later').click(); await api.drain();
+  const state = e.data(e.namespace).get('journal') as JournalState; assert.equal(state.threads.length, 1); assert.equal(state.threads[0].state, 'parked');
+  api.destroy(); await api.drain();
+});
+
+test('explicit helper synchronization places Read page later in the actual library adapter without provider work', async t => {
+  const nativeFetch = nativeHttpFetch, e = env(t), requests: string[] = []; let diagnosticsChecks = 0;
+  const helper = await startServer({ database: ':memory:', port: 0, diagnostics: () => { diagnosticsChecks++; return {}; } });
+  t.after(() => helper.close());
+  const origin = 'chrome-extension://' + 'a'.repeat(32), token = helper.pairing.exchange(helper.challenge, origin);
+  e.data(e.namespace).set('pairing', { origin: helper.origin, token });
+  replaceGlobals(t, { fetch: async (url: string, init: RequestInit) => {
+    requests.push(new URL(url).pathname); return nativeFetch(url, { ...init, headers: { ...init.headers, Origin: origin } });
+  } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperOrigin: helper.origin, readPosition: async () => undefined });
+  button(e.root, 'Read page later').click(); await api.drain(); assert.equal(requests.length, 0);
+  button(e.root, 'Settings').click(); button(e.root, 'Save queued changes').click(); await api.drain();
+  const client = api.connection(); api.destroy(); await api.drain();
+  const { libraryAdapters } = await import('../ui/helper.ts'); const { mountLibrary } = await import('../ui/library/index.ts');
+  const library = mountLibrary(asHost(e.root), libraryAdapters(() => client, async () => { throw new Error('Restore is separate'); }, { onOpenThread() {}, onClose() {} }));
+  await until(() => requests.includes('/api/read/threads')); await settle(); await settle();
+  button(e.root, 'Read later').click();
+  for (let attempt = 0; attempt < 200 && !e.root.textContent.includes('Original source'); attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.match(e.root.textContent, /Original source/);
+  assert.equal(diagnosticsChecks, 1, 'opening Settings checks readiness once'); assert.equal(requests.some(path => path.startsWith('/api/jobs')), false);
+  library.destroy();
+});
+
+test('page save identity retains capture time for unchanged content and preserves new supplied metadata separately', async t => {
+  const e = env(t);
+  const versions = [capture, { ...capture, capturedAt: '2026-09-18T00:00:00Z' }, { ...capture, author: 'Reader-provided author' }, { ...capture, publicationDate: '2026-09-01' }, { ...capture, venue: 'Captured venue' }];
+  const totals = [1, 1, 2, 3, 4];
+  for (const [index, version] of versions.entries()) {
+    const api = await mountMargin(asHost(e.root), { capture: version, storageName: e.namespace, allowHelper: false });
+    button(e.root, 'Save page').click(); await api.drain(); api.destroy(); await api.drain();
+    const state = e.data(e.namespace).get('journal') as JournalState; assert.equal(state.threads.length, totals[index]);
+  }
+  const state = e.data(e.namespace).get('journal') as JournalState;
+  const keeps = state.pending.filter(value => value.kind === 'keep'); assert.equal(keeps[0].capture.capturedAt, capture.capturedAt);
+  assert.equal(keeps[1].capture.author, 'Reader-provided author'); assert.equal(keeps[2].capture.publicationDate, '2026-09-01'); assert.equal(keeps[3].capture.venue, 'Captured venue');
+});
+
+test('R4 rerender keeps focus on a named action when its label changes', async t => {
+  const e = env(t); await threadFixture(e.namespace);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  const highlight = button(e.root, 'Highlight'); highlight.focus(); highlight.click(); await api.drain();
+  const replacement = button(e.root, 'Remove highlight');
+  assert.notEqual(replacement, highlight); assert.equal(e.document.activeElement, replacement);
+  button(e.root, 'Settings').click();
+  const preview = button(e.root, 'Block question previews here'); preview.focus(); preview.click(); await api.drain();
+  assert.equal(e.document.activeElement, button(e.root, 'Allow question previews here'));
+  assert.deepEqual(e.root.querySelector('.m-footer')!.children.map(node => node.className),
+    ['m-notice', 'm-footer-related', 'm-footer-actions', 'm-footer-voice']);
+  api.destroy(); await api.drain();
+});
+
+
+test('R4 section markers mount only beside saved work and the current title appears once', async t => {
+  const e = env(t);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  assert.equal(e.root.querySelectorAll('.m-section-marker').length, 0);
+  api.select(anchor()); button(e.root, 'Keep').click(); await api.drain();
+  assert.equal(e.root.querySelectorAll('.m-section-marker').length, 0);
+  button(e.root, 'Follow reading').click(); api.setReadingPosition(21);
+  const markers = e.root.querySelectorAll('.m-section-marker');
+  assert.deepEqual(markers.map(node => node.textContent), ['First']);
+  assert.equal(e.root.querySelector('.m-reading h2')!.textContent, 'Second');
+  api.destroy(); await api.drain();
+});
+
+
+test('R4 coloured map belongs only to the collapsed rail', async t => {
+  const e = env(t); await threadFixture(e.namespace);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  const panel = e.root.querySelector('.m-panel')!, rail = e.root.querySelector('.m-rail')!;
+  assert.equal(panel.querySelector('.m-map'), null); assert.equal(panel.querySelector('.m-density'), null);
+  const map = rail.querySelector('.m-map')!; assert.ok(map);
+  button(e.root, 'Collapse').click(); assert.equal(rail.querySelector('.m-map'), map);
+  button(e.root, 'Open margin').click(); assert.equal(rail.querySelector('.m-map'), map);
+  assert.equal(panel.querySelector('.m-map'), null);
+  api.destroy(); await api.drain();
+});
+
+test('R4b notices announce without moving focus, pause on hover and focus, and errors require dismissal', async t => {
+  const e = env(t);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  await api.drain();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const notice = e.root.querySelector('.m-notice')!;
+  assert.equal(notice.hidden, true);
+  assert.equal(e.root.querySelector('.m-status')!.getAttribute('aria-live'), 'polite');
+  const settings = button(e.root, 'Settings'); settings.focus();
+  api.select(anchor()); button(e.root, 'Keep').click(); await api.drain();
+  assert.match(e.root.querySelector('.m-status')!.textContent, /Passage kept/);
+  assert.equal(e.document.activeElement, settings);
+  notice.fire('mouseenter'); t.mock.timers.tick(4100); assert.equal(notice.hidden, false);
+  notice.fire('mouseleave'); notice.focus(); t.mock.timers.tick(4100); assert.equal(notice.hidden, false);
+  settings.focus(); notice.fire('focusout'); await settle();
+  t.mock.timers.tick(4100); assert.equal(notice.hidden, true);
+  e.onWrite(async () => { throw new Error('Test save failure'); });
+  button(e.root, 'Save page').click(); await api.drain();
+  assert.equal(notice.hidden, false); t.mock.timers.tick(5000); assert.equal(notice.hidden, false);
+  assert.match(notice.textContent, /Test save failure/);
+  button(notice, 'Dismiss').click(); assert.equal(notice.hidden, true);
+  api.destroy(); await api.drain();
+});
+
+
+test('R4b empty resting margin has five controls, count disclosure and end offers appear only in context', async t => {
+  const e = env(t);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, onLibrary() {} });
+  await api.drain();
+  assert.deepEqual(Object.keys(api).sort(), ['replaceQuestionExposure', 'sourceUrl', 'connection', 'exportWork', 'drain', 'restoredPosition', 'flushReadingPosition', 'getThread', 'focusThread', 'select', 'setReadingPosition', 'suspend', 'resume', 'openThread', 'destroy'].sort());
+  const panel = e.root.querySelector('.m-panel')!;
+  const visible = panel.querySelectorAll('button,input,textarea,select,summary').filter(node => {
+    for (let at = node; at; at = at.parentElement!) {
+      if (at.hidden) return false;
+      if (at.tagName === 'DETAILS' && !at.open && node !== at.children[0]) return false;
+    }
+    return true;
+  });
+  assert.deepEqual(visible.map(node => node.textContent), ['Library', 'Settings', 'Collapse', 'Write here\u2026', 'Save page']);
+  assert.equal(panel.querySelector('.m-empty')!.textContent, 'Keep a passage or write a note.');
+  assert.equal(panel.querySelector('.m-section-marker'), null);
+  assert.equal(panel.querySelector('.m-map'), null);
+  assert.ok(e.root.querySelector('.m-rail .m-map'));
+  assert.equal(panel.querySelector('.m-end-offers'), null);
+  api.setReadingPosition(capture.text.length);
+  const offers = panel.querySelector('.m-end-offers')!;
+  assert.deepEqual(offers.children.map(node => node.textContent), ['Think with it', 'Go further']);
+  assert.equal(offers.parentElement, panel.querySelector('.m-scroll'));
+  api.setReadingPosition(0); assert.equal(panel.querySelector('.m-end-offers'), null);
+  button(e.root, 'Save page').click(); await api.drain();
+  const disclosure = e.root.querySelector('.m-page-actions')!;
+  assert.equal(disclosure.hidden, false); assert.equal(disclosure.open, false);
+  assert.equal(disclosure.querySelector('summary')!.textContent, '1 thread on this page');
+  assert.deepEqual(disclosure.querySelectorAll('button').map(node => node.textContent), ['Related', 'Read page later', 'Export']);
+  assert.equal(e.root.querySelector('.m-footer-history')!.closest('.m-local-library')!.hidden, true);
+  api.destroy(); await api.drain();
 });

@@ -9,6 +9,8 @@ export const isId = (value: unknown): value is string => typeof value === 'strin
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const date = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const text = (value: unknown, max: number, empty = false): value is string => typeof value === 'string' && (empty || value.length > 0) && value.length <= max;
+const readerSkill = (value: unknown, provenance = false): value is { name: string; catalogRevision: string; execution?: 'requested' } =>
+  record(value) && text(value.name, 128) && text(value.catalogRevision, 1000) && (!provenance || value.execution === 'requested');
 export class AskingBindingError extends Error {
   constructor() { super('The response does not match this saved passage, note, and request. Review the current context again.'); this.name = 'AskingBindingError'; }
 }
@@ -125,10 +127,11 @@ export function assertPreparation(p: AskingPreparation, expected: ExpectedReques
   requireMatch(p && p.job && p.preview);
   const j = p.job, v = p.preview, input = expected.input;
   requireMatch(j.id === input.id && j.idempotencyKey === input.idempotencyKey && j.threadId === b.threadId && j.intent === input.intent &&
-    j.question === input.question && j.parentReplyId === input.parentReplyId);
+    j.question === input.question && j.parentReplyId === input.parentReplyId && sameData(j.readerSkill, input.readerSkill));
+  requireMatch(input.readerSkill ? input.intent === 'unsure' && readerSkill(input.readerSkill) : !j.readerSkill);
   const noteExpected = expected.kind === 'initial' || expected.kind === 'note-followup';
   requireMatch(noteExpected ? sameData(j.answeredNote, input.answeredNote) : !j.answeredNote);
-  const allowed = new Set(['id', 'idempotencyKey', 'threadId', 'intent', 'question', 'provider', 'model', 'mode', 'policyKey', 'preparedPayloadDigest', 'answeredNote', 'parentReplyId', 'capabilities']);
+  const allowed = new Set(['id', 'idempotencyKey', 'threadId', 'intent', 'question', 'provider', 'model', 'mode', 'policyKey', 'preparedPayloadDigest', 'answeredNote', 'parentReplyId', 'capabilities', 'readerSkill']);
   requireMatch(Object.keys(j).every(k => allowed.has(k)) && isId(v.id) && Number.isSafeInteger(v.revision) && v.revision > 0 &&
     v.requestId === j.id && isDigest(j.preparedPayloadDigest) && v.bindingDigest === j.preparedPayloadDigest && isDigest(v.payloadDigest) &&
     isDigest(j.policyKey) && v.policyKey === j.policyKey && v.provider === j.provider && ['app-server', 'mcp-server'].includes(j.provider) &&
@@ -162,6 +165,11 @@ export function assertJob(j: JobSnapshot, b: AskingBinding, requestId: string, e
   requireMatch(c.threadId === b.threadId && c.sourceVersionId === b.sourceVersionId && c.sourceHash === b.sourceHash && c.sourceUrl === b.sourceUrl &&
     c.sourceText === b.sourceText && c.sourceTitle === b.sourceTitle && c.sourcePageType === b.sourcePageType && c.sourceCapturedAt === b.sourceCapturedAt &&
     c.preparedPayloadDigest === j.preparedPayloadDigest && text(c.question, 4000) && ['define', 'simulate', 'instantiate', 'derive', 'diagram', 'evidence', 'explore', 'unsure'].includes(c.intent));
+  requireMatch(c.readerSkill === undefined || c.intent === 'unsure' && readerSkill(c.readerSkill, true));
+  if (j.unformatted !== undefined) requireMatch(j.state === 'failed' && !j.replyVersionId && c.readerSkill && readerSkill(j.unformatted.readerSkill, true) &&
+    sameData(j.unformatted.readerSkill, c.readerSkill) && j.unformatted.schema === 'marginalia.skill-output.v1' &&
+    j.unformatted.reason === 'reply-validation-failed' && typeof j.unformatted.text === 'string' &&
+    new TextEncoder().encode(j.unformatted.text).byteLength <= 256 * 1024 && isDigest(j.unformatted.sha256));
   const note = b.answeredNote;
   // noteVersion() may include createdAt. Compare exact content, not incidental metadata keys.
   requireMatch(note ? c.answeredNote && c.answeredNote.noteId === note.noteId && c.answeredNote.revision === note.revision && c.answeredNote.text === note.text : !c.answeredNote);
@@ -177,6 +185,7 @@ export function assertJob(j: JobSnapshot, b: AskingBinding, requestId: string, e
   if (expected) {
     const input = expected.input;
     requireMatch(j.idempotencyKey === input.idempotencyKey && c.intent === input.intent && c.question === input.question && c.parentReplyId === input.parentReplyId);
+    requireMatch(input.readerSkill ? input.intent === 'unsure' && c.readerSkill?.execution === 'requested' && sameData(input.readerSkill, { name: c.readerSkill.name, catalogRevision: c.readerSkill.catalogRevision }) : !c.readerSkill);
     if (expected.kind === 'retry') requireMatch(c.retryOfJobId === expected.retryOfJobId && !c.parentJobId && !c.parentAttemptId);
     if (expected.kind === 'followup') requireMatch(c.parentJobId === expected.parentJobId && (!c.parentAttemptId || c.parentAttemptId === expected.parentAttemptId));
     if (expected.kind === 'note-followup' || expected.kind === 'initial') requireMatch(!c.retryOfJobId && !c.parentJobId && !c.parentAttemptId);
@@ -202,6 +211,7 @@ export function assertSavedReply(saved: SavedAskingReply, j: JobSnapshot, b: Ask
   const n = b.answeredNote;
   requireMatch(n ? r.answeredNote && r.answeredNote.noteId === n.noteId && r.answeredNote.revision === n.revision && r.answeredNote.text === n.text : !r.answeredNote);
   const reply = checkedCandidate(r.reply, b, validate, 'complete');
+  requireMatch(j.context.readerSkill ? sameData(r.readerSkill, j.context.readerSkill) : !r.readerSkill);
   requireMatch(reply.intent === j.context.intent && r.validation?.schema === 'marginalia.host-report.v1' && r.validation.checkVersion === 'host-checks.v1' &&
     isDigest(r.validation.replyDigest) && r.validation.replyDigest === r.hash && isDigest(r.validation.parameterDigest) && Array.isArray(r.validation.results) && r.validation.results.length <= 64);
   // Check the report's transport shape, not the scientific truth or headline authority it reports.

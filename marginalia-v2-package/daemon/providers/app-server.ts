@@ -1,3 +1,4 @@
+import { captureSkillFinal } from '../reader-skills.ts';
 import { ProviderNotSentError } from '../../contracts/job-runner.ts';
 import type { AuditedPolicy, JobRunner, ProviderAudit, ProviderHandle, ProviderHooks, ProviderRequest } from '../../contracts/job-runner.ts';
 import type { RpcTransport } from './stdio.ts';
@@ -7,7 +8,8 @@ import { randomUUID } from 'node:crypto';
 
 export function checkPolicy(request: ProviderRequest, policy: AuditedPolicy): void {
   if (policy.policyKey !== request.policyKey || policy.workspace !== request.workspace) throw new Error('policy-binding-mismatch');
-  if (policy.thread.approvalPolicy !== 'never' || policy.turn.approvalPolicy !== 'never') throw new Error('approval-policy-required');
+  const ordinary = 'ordinarySetup' in policy && policy.ordinarySetup === true;
+  if (!ordinary && (policy.thread.approvalPolicy !== 'never' || policy.turn.approvalPolicy !== 'never')) throw new Error('approval-policy-required');
   if (policy.thread.cwd !== request.workspace || policy.turn.cwd !== request.workspace) throw new Error('policy-cwd-mismatch');
 }
 
@@ -21,6 +23,7 @@ export class AppServerRunner implements JobRunner {
   private requests = new Map<string, ProviderRequest>();
   private cancelIntents = new Set<string>();
   private instanceId = randomUUID();
+  private alive = true;
   private successorByAttempt = new Map<string, string>();
   private tail: Promise<unknown> = Promise.resolve();
   constructor(rpc: RpcTransport, audit: ProviderAudit, hooks: ProviderHooks) {
@@ -32,7 +35,7 @@ export class AppServerRunner implements JobRunner {
         if (h) await this.observe(h, params.turn);
       }).catch(() => { /* Failed persistence never publishes success; inspect can recover. */ });
     });
-    rpc.onDisconnect(() => { void this.serial(async () => {
+    rpc.onDisconnect(() => { this.alive = false; void this.serial(async () => {
       for (const h of this.handles.values()) if (['starting', 'running', 'cancel_requested'].includes(h.state)) {
         await this.save({ ...h, state: 'outcome_unknown', reason: 'transport-disconnected' });
       }
@@ -42,7 +45,7 @@ export class AppServerRunner implements JobRunner {
     const next = this.tail.then(fn, fn); this.tail = next.catch(() => {}); return next;
   }
   private fenced(h: ProviderHandle): ProviderHandle {
-    return this.cancelIntents.has(h.jobId) ? { ...h, tombstone: true, output: undefined,
+    return this.cancelIntents.has(h.jobId) ? { ...h, tombstone: true, output: undefined, rawFinalOutput: undefined,
       state: ['completed', 'failed', 'cancelled'].includes(h.state) ? 'cancelled' : h.state === 'outcome_unknown' ? 'outcome_unknown' : 'cancel_requested' } : h;
   }
   private stage(h: ProviderHandle): ProviderHandle {
@@ -61,7 +64,7 @@ export class AppServerRunner implements JobRunner {
     if (fenced.tombstone && !h.tombstone) {
       const cancelled = await this.hooks.checkpoint({ ...fenced });
       if (cancelled && (!cancelled.tombstone || cancelled.jobId !== h.jobId)) throw new Error('cancel-checkpoint-rejected');
-      if (cancelled) Object.assign(fenced, cancelled, { tombstone: true, output: undefined });
+      if (cancelled) Object.assign(fenced, cancelled, { tombstone: true, output: undefined, rawFinalOutput: undefined });
     }
     this.handles.set(h.jobId, { ...fenced }); return { ...fenced };
   }
@@ -112,9 +115,9 @@ export class AppServerRunner implements JobRunner {
     }
   }); }
   private async observe(h: ProviderHandle, turn: any): Promise<ProviderHandle> {
-    if (h.tombstone) return this.save({ ...h, state: turn.status === 'inProgress' ? 'cancel_requested' : 'cancelled', output: undefined });
+    if (h.tombstone) return this.save({ ...h, state: turn.status === 'inProgress' ? 'cancel_requested' : 'cancelled', output: undefined, rawFinalOutput: undefined });
     if (turn.status === 'inProgress') return this.save({ ...h, state: 'running' });
-    if (turn.status === 'interrupted') return this.save({ ...h, state: 'cancelled', tombstone: true, output: undefined });
+    if (turn.status === 'interrupted') return this.save({ ...h, state: 'cancelled', tombstone: true, output: undefined, rawFinalOutput: undefined });
     if (turn.status !== 'completed') return this.save({ ...h, state: 'failed', reason: 'provider-turn-failed' });
     if (h.mode === 'workspace-files') return this.save({ ...h, state: 'completed' });
     const items = await pages(this.rpc, 'thread/items/list', { threadId: h.threadId, turnId: h.turnId, sortDirection: 'asc' });
@@ -127,13 +130,17 @@ export class AppServerRunner implements JobRunner {
     if (typeof text === 'string' && Buffer.byteLength(text) <= 1024 * 1024) {
       try { JSON.parse(text); valid = await this.hooks.validateOutput(text, h, this.requests.get(h.jobId)); } catch { /* refusal / malformed data */ }
     }
-    return this.save(valid ? { ...h, state: 'completed', output: text, reason: undefined }
-      : { ...h, state: 'failed', output: undefined, reason: 'invalid-or-missing-final-output' });
+    const rawFinalOutput = captureSkillFinal(this.hooks, text, h);
+    return this.save(valid ? { ...h, state: 'completed', output: text, rawFinalOutput, reason: undefined }
+      : { ...h, state: 'failed', output: undefined, rawFinalOutput, reason: 'invalid-or-missing-final-output' });
   }
   private async recover(handle: ProviderHandle, resume: boolean): Promise<ProviderHandle> {
     const h = this.current(handle);
     if (h.workspace !== this.audit.workspace) throw new Error('provider-process-cwd-mismatch');
-    await this.hooks.authorizeRecovery(h, this.audit);
+    const resident = this.alive && this.handles.has(h.jobId) && h.providerInstanceId === this.instanceId;
+    if (!resident) {
+      await this.hooks.authorizeRecovery(h, this.audit);
+    }
     if (resume && (h.state !== 'completed' || h.tombstone || !h.threadId || !h.turnId)) throw new Error('followup-requires-confirmed-completion');
     if (!h.turnId && ['failed', 'cancelled'].includes(h.state)) return h;
     if (!h.threadId || !h.turnId) return this.save({ ...h, state: 'outcome_unknown', reason: 'missing-provider-identifiers' });
@@ -173,7 +180,7 @@ export class AppServerRunner implements JobRunner {
     catch (error) { throw new ProviderNotSentError('app-server', followup.jobId, error); }
     if (followup.mode === 'structured-final' && !followup.outputSchema) throw new Error('output-schema-required');
     let next = this.stage({ ...recovered, revision: undefined, providerInstanceId: this.instanceId, auditScope: policy.auditScope, jobId: followup.jobId, mode: followup.mode, turnId: undefined,
-      output: undefined, state: 'starting', reason: 'turn-dispatch-pending' });
+      output: undefined, rawFinalOutput: undefined, state: 'starting', reason: 'turn-dispatch-pending' });
     this.requests.set(next.jobId, followup);
     let dispatched = false;
     try {
@@ -201,9 +208,9 @@ export class AppServerRunner implements JobRunner {
     let h = this.current(handle);
     if (h.workspace !== this.audit.workspace) throw new Error('provider-process-cwd-mismatch');
     if (h.providerInstanceId !== this.instanceId) await this.hooks.authorizeRecovery(h, this.audit);
-    if (this.staged.has(h.jobId)) return this.stage({ ...h, tombstone: true, state: 'cancelled', output: undefined });
+    if (this.staged.has(h.jobId)) return this.stage({ ...h, tombstone: true, state: 'cancelled', output: undefined, rawFinalOutput: undefined });
     if (['completed', 'failed', 'cancelled'].includes(h.state)) return { ...h };
-    h = await this.save({ ...h, tombstone: true, state: 'cancel_requested', output: undefined });
+    h = await this.save({ ...h, tombstone: true, state: 'cancel_requested', output: undefined, rawFinalOutput: undefined });
     if (!h.threadId || !h.turnId) return this.save({ ...h, state: 'outcome_unknown', reason: 'cancel-fenced-missing-identifiers' });
     try { await this.rpc.request('turn/interrupt', { threadId: h.threadId, turnId: h.turnId }); }
     catch { return this.save({ ...h, state: 'outcome_unknown', reason: 'interrupt-unconfirmed' }); }

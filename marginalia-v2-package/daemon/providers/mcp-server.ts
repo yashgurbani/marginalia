@@ -1,3 +1,4 @@
+import { captureSkillFinal } from '../reader-skills.ts';
 import { ProviderNotSentError } from '../../contracts/job-runner.ts';
 import type { AuditedPolicy, JobRunner, ProviderAudit, ProviderHandle, ProviderHooks, ProviderRequest } from '../../contracts/job-runner.ts';
 import type { RpcTransport } from './stdio.ts';
@@ -8,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { formatMcpPrompt } from './prompt.ts';
 
 export async function initializeMcp(rpc: RpcTransport): Promise<any[]> {
-  const info = await rpc.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'marginalia', version: '0.2.0' } });
+  const info = await rpc.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'marginalia', version: '1.1.0' } });
   if (info.serverInfo?.version !== PINNED_CODEX_VERSION) throw new Error('codex-version-mismatch');
   rpc.notify('notifications/initialized');
   const tools = await pages(rpc, 'tools/list', {}, 'tools');
@@ -39,7 +40,7 @@ export class McpServerRunner implements JobRunner {
   }
   private serial<T>(fn: () => Promise<T>): Promise<T> { const next = this.tail.then(fn, fn); this.tail = next.catch(() => {}); return next; }
   private fenced(h: ProviderHandle): ProviderHandle {
-    return this.cancelIntents.has(h.jobId) ? { ...h, tombstone: true, state: 'cancelled', output: undefined, reason: 'abandoned-process-stop-unconfirmed' } : h;
+    return this.cancelIntents.has(h.jobId) ? { ...h, tombstone: true, state: 'cancelled', output: undefined, rawFinalOutput: undefined, reason: 'abandoned-process-stop-unconfirmed' } : h;
   }
   private stage(h: ProviderHandle): ProviderHandle {
     const value = this.fenced(h); this.staged.add(h.jobId); this.handles.set(h.jobId, value); return { ...value };
@@ -57,7 +58,7 @@ export class McpServerRunner implements JobRunner {
     if (fenced.tombstone && !h.tombstone) {
       const cancelled = await this.hooks.checkpoint({ ...fenced });
       if (cancelled && (!cancelled.tombstone || cancelled.jobId !== h.jobId)) throw new Error('cancel-checkpoint-rejected');
-      if (cancelled) Object.assign(fenced, cancelled, { tombstone: true, output: undefined });
+      if (cancelled) Object.assign(fenced, cancelled, { tombstone: true, output: undefined, rawFinalOutput: undefined });
     }
     this.handles.set(h.jobId, { ...fenced }); return { ...fenced };
   }
@@ -117,16 +118,18 @@ export class McpServerRunner implements JobRunner {
         }
         this.latestByThread.set(structured.threadId, h.jobId);
         let output: string | undefined;
+        let rawFinalOutput: string | undefined;
         if (request.mode === 'structured-final') {
           const text = structured.content;
           let valid = false;
           if (typeof text === 'string' && Buffer.byteLength(text) <= 1024 * 1024) {
             try { JSON.parse(text); valid = await this.hooks.validateOutput(text, now, request); } catch { /* Refusal / malformed data. */ }
           }
-          if (!valid) { await this.save({ ...now, threadId: structured.threadId, state: 'failed', reason: 'invalid-or-missing-final-output' }); return; }
-          output = text;
+          rawFinalOutput = captureSkillFinal(this.hooks, text, now);
+          if (!valid) { await this.save({ ...now, threadId: structured.threadId, state: 'failed', output: undefined, rawFinalOutput, reason: 'invalid-or-missing-final-output' }); return; }
+          output = valid ? text : undefined;
         }
-        await this.save({ ...now, threadId: structured.threadId, state: 'completed', output });
+        await this.save({ ...now, threadId: structured.threadId, state: 'completed', output, rawFinalOutput });
       }), () => this.serial(async () => {
         const now = this.current(h);
         if (!now.tombstone) await this.save({ ...now, state: 'outcome_unknown', reason: 'mcp-call-outcome-unknown' });
@@ -139,11 +142,11 @@ export class McpServerRunner implements JobRunner {
     if (!['completed', 'failed', 'cancelled'].includes(before.state)) this.cancelIntents.add(handle.jobId);
     return this.serial(async () => {
     const h = this.current(handle);
-    if (this.staged.has(h.jobId)) return this.stage({ ...h, tombstone: true, state: 'cancelled', output: undefined });
+    if (this.staged.has(h.jobId)) return this.stage({ ...h, tombstone: true, state: 'cancelled', output: undefined, rawFinalOutput: undefined });
     const ownedHere = this.ownedAttempts.has(h.jobId) && h.providerInstanceId === this.instanceId;
     if (['completed', 'failed', 'cancelled'].includes(h.state) && !this.cancelIntents.has(h.jobId)) return h;
     // This closes this adapter's dedicated transport, not proof that the server-side work stopped.
-    const cancelled = await this.save({ ...h, tombstone: true, state: 'cancelled', output: undefined, reason: 'abandoned-process-stop-unconfirmed' });
+    const cancelled = await this.save({ ...h, tombstone: true, state: 'cancelled', output: undefined, rawFinalOutput: undefined, reason: 'abandoned-process-stop-unconfirmed' });
     if (!ownedHere) return cancelled; // Fence imported work without closing another attempt's worker.
     const requestId = this.requestIds.get(h.jobId);
     if (requestId !== undefined) {
@@ -165,7 +168,7 @@ export class McpServerRunner implements JobRunner {
       try { policy = await this.hooks.authorize(followup, this.audit, 'dispatch'); checkPolicy(followup, policy); }
       catch (error) { throw new ProviderNotSentError('mcp-server', followup.jobId, error); }
       if (followup.mode === 'structured-final' && !followup.outputSchema) throw new Error('output-schema-required');
-      const next = this.stage({ ...h, revision: undefined, auditScope: policy.auditScope, providerInstanceId: this.instanceId, jobId: followup.jobId, mode: followup.mode, state: 'starting', output: undefined, reason: undefined });
+      const next = this.stage({ ...h, revision: undefined, auditScope: policy.auditScope, providerInstanceId: this.instanceId, jobId: followup.jobId, mode: followup.mode, state: 'starting', output: undefined, rawFinalOutput: undefined, reason: undefined });
       // codex-reply cannot accept changed policy/model: the host's identity must be unchanged.
       return this.dispatch(next, followup, 'codex-reply', { threadId: h.threadId });
     }

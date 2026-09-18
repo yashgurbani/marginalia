@@ -48,3 +48,16 @@ for a partial result) in the assigned workspace, as the host instructs. Reading 
 host-supplied packet.json and reply.schema.json is allowed if needed. Do not inspect
 other files or execute computations. In structured-final mode, return the object
 through the supplied response channel. Delivery never makes a candidate a saved reply.
+
+## Answer first and correspondence
+
+The summary and first visible text block state the relationship the selected passage supports.
+Name the source terms and the direction of the relationship before showing the diagram. The
+diagram follows as a compact explanation, not as a puzzle the reader must decode to find the
+answer. If the source does not state a relationship, say that in the answer and use an
+illustration only when it makes the missing mechanism clearer.
+
+For source correspondence, every node and edge has a binding to exact captured wording and a
+matching page origin. For an illustration, set the illustration flag, state its purpose, and
+give invented nodes and edges authored or analogy origins. Keep labels short, keep the graph
+small, and use stable identifiers. A diagram never verifies a causal claim.

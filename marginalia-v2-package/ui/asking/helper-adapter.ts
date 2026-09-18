@@ -1,4 +1,4 @@
-import type { AskingHost, AskingPreparation, SavedAskingReply } from './types.ts';
+import type { AskingDisclosure, AskingHost, AskingPreparation, SavedAskingReply } from './types.ts';
 import type { ConsentGrant } from '../../contracts/consent.ts';
 import type { JobSnapshot } from '../../contracts/jobs.ts';
 import type { ReplyVersion, ReplyViewState, SourceVersion } from '../../contracts/reader.ts';
@@ -14,6 +14,12 @@ export type AskingTransport = {
 };
 function requireObject(value: unknown): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('The local helper returned an unreadable response.');
+}
+function disclosure(value: Record<string, unknown>): AskingDisclosure {
+  if (!Array.isArray(value.unverified) || !value.unverified.every(item => typeof item === 'string') ||
+      !(value.disclosureVersion === null || typeof value.disclosureVersion === 'string' && value.disclosureVersion.length > 0))
+    throw new Error('The local helper returned unreadable disclosure information.');
+  return { unverified: [...value.unverified], disclosureVersion: value.disclosureVersion };
 }
 const route = (id: string) => {
   if (!isId(id)) throw new Error('Invalid saved work identifier.');
@@ -36,14 +42,14 @@ export function createAskingHost(transport: AskingTransport): AskingHost {
   }
   async function prepare(path: string, input: unknown, signal: AbortSignal): Promise<AskingPreparation> {
     const value = await post(path, input, signal); requireObject(value.job); requireObject(value.preview);
-    return value as unknown as AskingPreparation;
+    return { ...value, ...disclosure(value) } as unknown as AskingPreparation;
   }
   return {
     availability: async signal => {
       const value = await get('/api/jobs', signal);
       if (typeof value.configured !== 'boolean' || typeof value.available !== 'boolean' || value.available && !value.configured)
         throw new Error('Execution availability could not be confirmed.');
-      return { configured: value.configured, available: value.available,
+      return { configured: value.configured, available: value.available, ...disclosure(value),
         ...(typeof value.unavailableReason === 'string' ? { unavailableReason: value.unavailableReason.slice(0, 1000) } : {}) };
     },
     prepare: (input, signal) => prepare('/api/jobs/prepare', input, signal),

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const css = readFileSync(new URL('../ui/tokens.css', import.meta.url), 'utf8');
 const marginCss = readFileSync(new URL('../ui/margin.css', import.meta.url), 'utf8');
+const autoAssistCss = readFileSync(new URL('../ui/auto-assist/auto-assist.css', import.meta.url), 'utf8');
 function luminance(l: number, c: number, h: number) {
   const a = c * Math.cos(h * Math.PI / 180), b = c * Math.sin(h * Math.PI / 180);
   const x = (l + .3963377774 * a + .2158037573 * b) ** 3;
@@ -20,6 +21,11 @@ for (const theme of ['light', 'dark']) test(`${theme} note, metadata, and contro
     const ratio = (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
     assert.ok(ratio >= minimum, `${ink}/${background}: ${ratio.toFixed(2)} needs ${minimum}`);
   }
+  for (const colour of ['yellow', 'green', 'blue', 'rose']) {
+    const ink = values.get('ink')!, background = values.get('highlight-' + colour)!;
+    const ratio = (Math.max(ink, background) + .05) / (Math.min(ink, background) + .05);
+    assert.ok(ratio >= 4.5, `ink/highlight-${colour}: ${ratio.toFixed(2)} needs 4.5`);
+  }
 });
 
 test('collapsed rail dots keep a 24px target and visible keyboard focus', () => {
@@ -27,4 +33,11 @@ test('collapsed rail dots keep a 24px target and visible keyboard focus', () => 
   assert.match(target, /min-width:\s*24px/);
   assert.match(target, /min-height:\s*24px/);
   assert.match(marginCss, /\.m-rail :is\(\.m-rail-thread, \.m-activity\):focus-visible\s*\{[^}]*outline:/);
+});
+
+test('auto assist stays visually junior and honors reduced motion', () => {
+  assert.match(marginCss, /@import '\.\/auto-assist\/auto-assist\.css'/);
+  assert.match(autoAssistCss, /\.m-auto-assist-ready\s*\{[^}]*border-inline-start:\s*1px solid var\(--m-rule-strong\)/s);
+  assert.match(autoAssistCss, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.doesNotMatch(autoAssistCss, /background:\s*var\(--m-accent/);
 });

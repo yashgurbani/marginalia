@@ -1,14 +1,21 @@
+import { validReaderSkill, skillReplyAllowed } from './reader-skills.ts';
+import type { ReaderSkillProvenance } from '../contracts/reader-skills.ts';
+import { assessShelf, prepareOpen, type OpenShelfItemRequest } from '../contracts/explore.ts';
+import { readJournal } from './reading-journal.ts';
+import { reconcileEvidence } from './transforms/evidence/reconcile.ts';
+import type { EvidenceRetrieval, BoundSourceVersion } from '../contracts/evidence.ts';
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { attachQuote, validateQuoteAnchor, validateReaderMutation, validateSourceCapture, type JsonValue, type ReaderMutation, type Thread, type Note, type QuoteAnchor, type SourceCapture, type SourceVersion, type SourceSection, type AttachmentRecord, type NoteVersionRef, type NoteVersion, type ReplyVersion, type ReplyViewState } from '../contracts/reader.ts';
+import { attachQuote, isHighlightColour, validateQuoteAnchor, validateReaderMutation, validateSourceCapture, type JsonValue, type ReaderMutation, type Thread, type Note, type QuoteAnchor, type SourceCapture, type SourceVersion, type SourceSection, type AttachmentRecord, type NoteVersionRef, type NoteVersion, type ReplyVersion, type ReplyViewState } from '../contracts/reader.ts';
 import { canonicalReplyData, validateReply, type CandidateReply, type ReplyCapability } from '../contracts/reply.ts';
 import { digestReply, runHostChecks } from '../contracts/host-checks.ts';
 import { isDigest } from '../contracts/digest.ts';
 
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export class ConflictError extends Error { override name = 'Conflict'; }
+const HIGHLIGHT_COLOUR_PREFIX = 'highlight-colour:';
 export class ReaderStore {
   db: Database.Database;
   private readonly listStatements = new Map<string, Database.Statement>();
@@ -36,6 +43,7 @@ export class ReaderStore {
           if (this.db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Source migration would leave invalid references.');
         }).immediate();
       }
+      this.db.exec('CREATE TABLE IF NOT EXISTS reply_reader_skills(replyId TEXT PRIMARY KEY REFERENCES reply_versions(id), json TEXT NOT NULL)');
       this.db.pragma('foreign_keys = ON');
       this.db.pragma('synchronous = FULL');
       this.db.pragma('journal_mode = WAL');
@@ -58,6 +66,51 @@ export class ReaderStore {
   }
 
   private migrate() {
+    this.db.exec(`CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY);`);
+    if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=18001').get()) {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS instant_usage(
+        requestId TEXT PRIMARY KEY, pageKeyHash TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('prepare','selection')),
+        periodStart TEXT NOT NULL, timezone TEXT NOT NULL, model TEXT NOT NULL,
+        inputTokens INTEGER, cachedInputTokens INTEGER, outputTokens INTEGER, totalTokens INTEGER,
+        reservedTokens INTEGER NOT NULL CHECK(reservedTokens>=0), state TEXT NOT NULL CHECK(state IN ('reserved','settled')),
+        createdAt TEXT NOT NULL, settledAt TEXT,
+        CHECK(inputTokens IS NULL OR inputTokens>=0), CHECK(outputTokens IS NULL OR outputTokens>=0),
+        CHECK(totalTokens IS NULL OR totalTokens>=0),
+        CHECK(cachedInputTokens IS NULL OR (inputTokens IS NOT NULL AND cachedInputTokens>=0 AND cachedInputTokens<=inputTokens))
+      );
+      CREATE INDEX IF NOT EXISTS instant_usage_period ON instant_usage(periodStart,timezone);
+      INSERT INTO migrations(version) VALUES(18001);`);
+    }
+    if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=18002').get()) {
+      this.db.exec(`
+        CREATE TABLE instant_usage_v2(
+          requestId TEXT PRIMARY KEY, pageKeyHash TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('prepare','selection','auto-definition')),
+          periodStart TEXT NOT NULL, timezone TEXT NOT NULL, model TEXT NOT NULL,
+          inputTokens INTEGER, cachedInputTokens INTEGER, outputTokens INTEGER, totalTokens INTEGER,
+          reservedTokens INTEGER NOT NULL CHECK(reservedTokens>=0), state TEXT NOT NULL CHECK(state IN ('reserved','settled')),
+          createdAt TEXT NOT NULL, settledAt TEXT,
+          CHECK(inputTokens IS NULL OR inputTokens>=0), CHECK(outputTokens IS NULL OR outputTokens>=0),
+          CHECK(totalTokens IS NULL OR totalTokens>=0),
+          CHECK(cachedInputTokens IS NULL OR (inputTokens IS NOT NULL AND cachedInputTokens>=0 AND cachedInputTokens<=inputTokens))
+        );
+        INSERT INTO instant_usage_v2 SELECT * FROM instant_usage;
+        DROP TABLE instant_usage;
+        ALTER TABLE instant_usage_v2 RENAME TO instant_usage;
+        CREATE INDEX instant_usage_period ON instant_usage(periodStart,timezone);
+        CREATE TABLE auto_assist_events(
+          eventId TEXT PRIMARY KEY, candidateId TEXT NOT NULL, pageKeyHash TEXT NOT NULL,
+          scorerMethod TEXT NOT NULL CHECK(scorerMethod IN ('frequency-page-v0','causal-lm-v1')), scorerVersion TEXT NOT NULL,
+          scoreBand INTEGER NOT NULL CHECK(scoreBand BETWEEN 0 AND 3), rankInBand INTEGER NOT NULL CHECK(rankInBand>=0),
+          reasonBits INTEGER NOT NULL CHECK(reasonBits>=0), posture TEXT NOT NULL CHECK(posture IN ('flow','balanced','learning')),
+          bandIndex INTEGER NOT NULL CHECK(bandIndex>=0),
+          event TEXT NOT NULL CHECK(event IN ('nominated','shown','definition-ready','definition-opened','dismissed-familiar','kept','asked')),
+          elapsedBucket TEXT CHECK(elapsedBucket IN ('<2s','2-10s','10-60s','>60s')), createdAt TEXT NOT NULL
+        );
+        CREATE INDEX auto_assist_events_candidate ON auto_assist_events(candidateId,createdAt,eventId);
+        CREATE INDEX auto_assist_events_created ON auto_assist_events(createdAt,eventId);
+        INSERT INTO migrations(version) VALUES(18002);
+      `);
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, url TEXT UNIQUE NOT NULL, title TEXT NOT NULL, pageType TEXT NOT NULL);
@@ -184,6 +237,7 @@ export class ReaderStore {
     }
   }
   close() { this.db.close(); }
+  readingJournal(timeZone: string) { return readJournal(this, timeZone); }
   private event(kind: string, value: unknown) {
     this.db.prepare('INSERT INTO events(kind,payload,createdAt) VALUES(?,?,?)').run(kind, JSON.stringify(value), new Date().toISOString());
   }
@@ -224,6 +278,8 @@ export class ReaderStore {
           if (thread.revision !== mutation.expectedRevision) throw new ConflictError('This thread changed elsewhere. Review the saved version before applying your change.');
           if (mutation.highlighted && !thread.highlighted) this.db.prepare('INSERT INTO highlights VALUES(?,?,?,NULL)').run(randomUUID(), mutation.threadId, now);
           if (!mutation.highlighted && thread.highlighted) this.db.prepare('UPDATE highlights SET deletedAt=? WHERE threadId=? AND deletedAt IS NULL').run(now, mutation.threadId);
+          if (mutation.highlighted && mutation.highlightColour !== undefined) this.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(HIGHLIGHT_COLOUR_PREFIX + mutation.threadId, mutation.highlightColour);
+          if (!mutation.highlighted) this.db.prepare('DELETE FROM settings WHERE key=?').run(HIGHLIGHT_COLOUR_PREFIX + mutation.threadId);
         } else {
           if (thread.revision !== mutation.expectedRevision) throw new ConflictError('This thread changed elsewhere. Review the saved version before applying your change.');
           if (mutation.kind === 'thread-state') this.db.prepare('UPDATE threads SET state=? WHERE id=?').run(mutation.state, mutation.threadId);
@@ -322,7 +378,10 @@ export class ReaderStore {
     const row = this.db.prepare(`SELECT t.*, a.sourceVersionId, a.json, s.url as sourceUrl, COALESCE(v.title,s.title) as sourceTitle FROM threads t JOIN anchors a ON a.id=t.anchorId JOIN source_versions v ON v.id=a.sourceVersionId JOIN sources s ON s.id=v.sourceId WHERE t.id=?`).get(id) as (Omit<Thread, 'anchor' | 'notes' | 'highlighted'> & { json: string }) | undefined;
     if (!row) return;
     const { json, ...thread } = row;
-    return { ...thread, anchor: JSON.parse(json) as QuoteAnchor, notes: this.db.prepare('SELECT * FROM notes WHERE threadId=? ORDER BY createdAt,id').all(id) as Note[], highlighted: !!this.db.prepare('SELECT 1 FROM highlights WHERE threadId=? AND deletedAt IS NULL').get(id) };
+    const highlighted = !!this.db.prepare('SELECT 1 FROM highlights WHERE threadId=? AND deletedAt IS NULL').get(id);
+    const savedColour = highlighted ? (this.db.prepare('SELECT value FROM settings WHERE key=?').get(HIGHLIGHT_COLOUR_PREFIX + id) as { value: string } | undefined)?.value : undefined;
+    if (savedColour !== undefined && !isHighlightColour(savedColour)) throw new Error('Saved highlight colour is invalid.');
+    return { ...thread, anchor: JSON.parse(json) as QuoteAnchor, notes: this.db.prepare('SELECT * FROM notes WHERE threadId=? ORDER BY createdAt,id').all(id) as Note[], highlighted, ...(savedColour !== undefined ? { highlightColour: savedColour } : {}) };
   }
   list(url?: string, includeRemoved = false): Thread[] {
     const key = `${url ? 'url' : 'all'}:${includeRemoved ? 'removed' : 'active'}`;
@@ -360,8 +419,9 @@ export class ReaderStore {
     return rows.map(row => ({ ...row, candidates: JSON.parse(row.candidates), targetAvailable: !!row.targetAvailable }));
   }
   /** Host-only commit seam. Provider candidates cannot supply their own validation report. */
-  commitReply(input: { id: string; threadId: string; reply: CandidateReply; parentId?: string; supersedes?: string; answeredNote?: NoteVersionRef }, capabilities: readonly ReplyCapability[] = []): ReplyVersion {
+  commitReply(input: { id: string; threadId: string; reply: CandidateReply; parentId?: string; supersedes?: string; answeredNote?: NoteVersionRef; readerSkill?: ReaderSkillProvenance }, capabilities: readonly ReplyCapability[] = [], evidence?: EvidenceRetrieval & { boundSourceVersion: BoundSourceVersion }): ReplyVersion {
     validateId(input.id); validateId(input.threadId);
+    if (input.readerSkill && (!validReaderSkill(input.readerSkill, true) || !skillReplyAllowed(input.reply))) throw new Error('Invalid reader skill provenance or reply.');
     return this.db.transaction(() => {
       const thread = this.get(input.threadId);
       if (!thread) throw new Error('This thread is unavailable.');
@@ -376,7 +436,7 @@ export class ReaderStore {
       }
       const previous = this.reply(input.id);
       if (previous) {
-        if (previous.threadId !== input.threadId || previous.hash !== digestReply(reply) || previous.parentId !== (input.parentId ?? null) || previous.supersedes !== (input.supersedes ?? null) || canonicalReplyData(previous.answeredNote) !== canonicalReplyData(answeredNote)) throw new ConflictError('This reply identifier already contains a different version.');
+        if (previous.threadId !== input.threadId || previous.hash !== digestReply(reply) || previous.parentId !== (input.parentId ?? null) || previous.supersedes !== (input.supersedes ?? null) || canonicalReplyData(previous.answeredNote) !== canonicalReplyData(answeredNote) || canonicalReplyData(previous.readerSkill ?? null) !== canonicalReplyData(input.readerSkill ?? null)) throw new ConflictError('This reply identifier already contains a different version.');
         return previous;
       }
       if (thread.deletedAt) throw new ConflictError('Restore the thread before adding a reply.');
@@ -385,9 +445,29 @@ export class ReaderStore {
       }
       const parameters = Object.fromEntries(reply.parameters.map(p => [p.name, p.default]));
       const validation = runHostChecks(reply, parameters);
+      if (evidence && ['evidence', 'explore'].includes(reply.intent)) {
+        const source = this.sourceVersion(thread.sourceVersionId)!;
+        if (evidence.boundSourceVersion.id !== source.id || evidence.boundSourceVersion.hash !== source.hash) throw new ConflictError('The source differs from the frozen request.');
+      }
+      if (reply.intent === 'evidence') {
+        const source = this.sourceVersion(thread.sourceVersionId)!;
+        const boundSourceVersion = { id: source.id, hash: source.hash, capturedAt: source.capturedAt };
+        validation.evidence = reconcileEvidence(reply, {
+          sessionScope: evidence?.sessionScope ?? 'open-session', retrievalComplete: evidence?.retrievalComplete ?? false,
+          observed: evidence?.observed ?? [], boundSourceVersion, boundSourceText: source.text, boundSourceUrl: thread.sourceUrl,
+        });
+      }
+      if (reply.intent === 'explore') {
+        const source = this.sourceVersion(thread.sourceVersionId)!;
+        validation.explore = assessShelf(reply, { sessionScope: evidence?.sessionScope ?? 'open-session', returnTo: {
+          threadId: thread.id, sourceVersionId: source.id, sourceHash: source.hash, sourceUrl: thread.sourceUrl,
+          anchor: structuredClone(thread.anchor),
+        } });
+      }
       const now = new Date().toISOString();
       this.db.prepare('INSERT INTO reply_versions(id,threadId,parentId,supersedes,json,hash,validation,answeredNote,createdAt) VALUES(?,?,?,?,?,?,?,?,?)')
         .run(input.id, thread.id, input.parentId ?? null, input.supersedes ?? null, canonicalReplyData(reply), digestReply(reply), JSON.stringify(validation), answeredNote ? JSON.stringify(answeredNote) : null, now);
+      if (input.readerSkill) this.db.prepare('INSERT INTO reply_reader_skills(replyId,json) VALUES(?,?)').run(input.id, JSON.stringify(input.readerSkill));
       this.db.prepare('INSERT INTO reply_views VALUES(?,?,?,?,?)').run(input.id, JSON.stringify(parameters), '{}', 1, now);
       this.db.prepare('INSERT INTO search(entityId,kind,content) VALUES(?,?,?)').run(input.id, 'reply', [reply.title, reply.summary, reply.staticFallback].join('\n'));
       this.event('reply-committed', { threadId: thread.id, replyVersionId: input.id });
@@ -398,6 +478,9 @@ export class ReaderStore {
     const row = this.db.prepare('SELECT * FROM reply_versions WHERE id=?').get(id) as (Omit<ReplyVersion, 'reply' | 'validation' | 'answeredNote'> & { json: string; validation: string; answeredNote: string | null }) | undefined;
     if (!row) return;
     const { json, validation, answeredNote, ...record } = row;
+    const skillRow = this.db.prepare('SELECT json FROM reply_reader_skills WHERE replyId=?').get(id) as { json: string } | undefined;
+    const readerSkill = skillRow ? JSON.parse(skillRow.json) : undefined;
+    if (readerSkill !== undefined && !validReaderSkill(readerSkill, true)) throw new Error('Invalid saved reader skill provenance.');
     // UNION deduplicates shared ancestry and terminates even for damaged cyclic data.
     // Superseding a descendant does not prove that its inherited dependencies were repaired.
     const corrections = this.db.prepare(`WITH RECURSIVE lineage(id) AS (
@@ -410,7 +493,7 @@ export class ReaderStore {
       FROM lineage JOIN reply_versions ancestor ON ancestor.id=lineage.id
       JOIN reply_versions correction ON correction.supersedes=ancestor.id
       ORDER BY correction.createdAt,correction.id,ancestor.id`).all(id) as NonNullable<ReplyVersion['corrections']>;
-    return { ...record, reply: JSON.parse(json), validation: JSON.parse(validation), answeredNote: answeredNote ? JSON.parse(answeredNote) : null, corrections };
+    return { ...record, ...(readerSkill ? { readerSkill } : {}), reply: JSON.parse(json), validation: JSON.parse(validation), answeredNote: answeredNote ? JSON.parse(answeredNote) : null, corrections };
   }
   replies(threadId: string, includeRemoved = false): ReplyVersion[] {
     const rows = this.db.prepare('SELECT id FROM reply_versions WHERE threadId=? ORDER BY createdAt,id').all(threadId) as { id: string }[];
@@ -449,6 +532,36 @@ export class ReaderStore {
       return this.replyView(reply.id)!;
     });
   }
+  /** Records navigation intent only. The caller opens the URL after this durable commit. */
+  openShelfItem(change: { id: string; threadId: string; replyVersionId: string; blockId: string; itemId: string }): OpenShelfItemRequest {
+    for (const value of Object.values(change)) validateId(value);
+    return this.db.transaction(() => {
+      const reply = this.reply(change.replyVersionId), thread = this.get(change.threadId);
+      if (!reply || !thread || reply.threadId !== thread.id || reply.deletedAt || thread.deletedAt || reply.reply.status !== 'complete' || reply.reply.intent !== 'explore') throw new ConflictError('This saved reading is unavailable.');
+      const assessment = reply.validation.explore, source = this.sourceVersion(thread.sourceVersionId);
+      if (!assessment || !source || assessment.returnTo.threadId !== thread.id || assessment.returnTo.sourceVersionId !== source.id ||
+        assessment.returnTo.sourceHash !== source.hash || reply.validation.replyDigest !== digestReply(reply.reply) ||
+        canonicalReplyData(assessment.returnTo.anchor) !== canonicalReplyData(thread.anchor)) throw new ConflictError('This saved shelf needs its original source record.');
+      const result = prepareOpen(assessment, change.itemId, undefined, change.blockId);
+      if (!result.ok) throw new ConflictError(result.error);
+      const authored = reply.reply.blocks.find(block => block.type === 'shelf' && block.id === change.blockId);
+      if (authored?.type !== 'shelf' || !authored.items.some(item => item.id === change.itemId && item.url === result.open.url)) throw new ConflictError('This link differs from its saved shelf.');
+      return this.recordChange('shelf-open', change, () => {
+        this.event('shelf-opened', { ...change, open: result.open });
+        return result.open;
+      });
+    })();
+  }
+  shelfReturns(threadId: string): { id: string; replyVersionId: string; blockId: string; itemId: string; open: OpenShelfItemRequest; recordedAt: string }[] {
+    const thread = this.get(threadId);
+    if (!thread || thread.deletedAt) return [];
+    const rows = this.db.prepare("SELECT payload,createdAt FROM events WHERE kind='shelf-opened' AND json_extract(payload,'$.threadId')=? ORDER BY seq DESC LIMIT 100").all(threadId) as { payload: string; createdAt: string }[];
+    return rows.flatMap(row => {
+      const value = JSON.parse(row.payload);
+      const reply = this.reply(value.replyVersionId);
+      return reply && !reply.deletedAt && reply.threadId === threadId ? [{ id: value.id, replyVersionId: value.replyVersionId, blockId: value.blockId, itemId: value.itemId, open: value.open, recordedAt: row.createdAt }] : [];
+    });
+  }
   private recordChange<T>(kind: string, change: { id: string }, write: () => T): T {
     const fingerprint = digest(canonicalReplyData({ kind, change }));
     return this.db.transaction(() => {
@@ -473,7 +586,7 @@ export class ReaderStore {
       const targetVersions = [...new Set(attachments.map(a => a.targetVersionId))].map(version => this.sourceVersion(version)).filter(version => version !== undefined);
       const replies = this.replies(id, true);
       return { schema: 'marginalia.thread.v1', thread, source, noteVersions, attachments, targetVersions, replies,
-        replyViews: replies.map(reply => this.replyView(reply.id)).filter(view => view !== undefined), execution: this.exportExecution(id) };
+        replyViews: replies.map(reply => this.replyView(reply.id)).filter(view => view !== undefined), shelfReturns: this.shelfReturns(id), execution: this.exportExecution(id) };
     })();
   }
   private exportExecution(threadId: string) {
@@ -592,7 +705,7 @@ function normalizeHistoricalVocabularyTerm(value: string): string {
 }
 function vocabularyTermKey(value: string): string { return value.normalize('NFC').trim().replace(/\s+/gu, ' '); }
 
-const READER_MIGRATIONS = [1, 2, 4, 7001, 7002, 7004, 22001, 33001] as const;
+const READER_MIGRATIONS = [1, 2, 4, 7001, 7002, 7004, 18001, 18002, 22001, 33001] as const;
 const KNOWN_MIGRATIONS = new Set<number>([...READER_MIGRATIONS, 3, 13]);
 type ReaderSchema = { versions: number[]; hasSchema: boolean; vocabularyV2: boolean };
 type BackupManifest = { schema: 'marginalia.reader-backup.v1'; createdAt: string; versions: number[]; sha256: string };
@@ -634,6 +747,19 @@ function inspectReaderSchema(db: Database.Database): ReaderSchema {
   const vocabularyV2 = objects.some(object => object.name === 'vocabulary' && object.type === 'table')
     && (db.prepare('PRAGMA table_info(vocabulary)').all() as { name: string }[]).some(column => column.name === 'termKey');
   if (versions.includes(22001) && !vocabularyV2) throw new UnsupportedReaderSchemaError('The vocabulary migration marker does not match its schema. Nothing was migrated.');
+  if (versions.includes(18001)) {
+    const columns = (db.prepare('PRAGMA table_info(instant_usage)').all() as { name: string }[]).map(column => column.name);
+    if (!['requestId', 'pageKeyHash', 'kind', 'periodStart', 'timezone', 'model', 'inputTokens', 'cachedInputTokens', 'outputTokens', 'totalTokens', 'reservedTokens', 'state', 'createdAt', 'settledAt'].every(name => columns.includes(name))) {
+      throw new UnsupportedReaderSchemaError('The instant usage migration marker does not match its schema. Nothing was migrated.');
+    }
+  }
+  if (versions.includes(18002)) {
+    const instantSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='instant_usage'").get() as { sql: string } | undefined)?.sql ?? '';
+    const columns = (db.prepare('PRAGMA table_info(auto_assist_events)').all() as { name: string }[]).map(column => column.name);
+    if (!instantSql.includes("'auto-definition'") || !['eventId', 'candidateId', 'pageKeyHash', 'scorerMethod', 'scorerVersion', 'scoreBand', 'rankInBand', 'reasonBits', 'posture', 'bandIndex', 'event', 'elapsedBucket', 'createdAt'].every(name => columns.includes(name))) {
+      throw new UnsupportedReaderSchemaError('The auto assist migration marker does not match its schema. Nothing was migrated.');
+    }
+  }
   return { versions, hasSchema, vocabularyV2 };
 }
 function needsReaderMigration(schema: ReaderSchema) {

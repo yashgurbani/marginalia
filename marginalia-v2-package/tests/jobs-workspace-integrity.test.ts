@@ -2,15 +2,49 @@ import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { AsyncLocalStorage, createHook } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, link, symlink, rename, readdir, unlink, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { archiveWorkspace, assertInside, directoryIdentity, readWorkspaceBytes } from '../daemon/jobs/workspace-integrity.ts';
-import { prepareWorkspace } from '../daemon/jobs/workspace.ts';
+import { prepareContinuationWorkspace, prepareWorkspace, verifyContinuationWorkspace, type ContinuationSolverAuthority } from '../daemon/jobs/workspace.ts';
+import { SOLVER_MANIFEST_SCHEMA } from '../contracts/solver.ts';
+import type { CandidateReply } from '../contracts/reply.ts';
+import { withFixtureOrigins } from './origins-fixture.ts';
 
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 't06-files-')), workspace = join(root, 'job'); await mkdir(workspace);
   t.after(() => rm(root, { recursive: true, force: true })); return { root, workspace };
+}
+const SOLVER_SOURCE = 'process.stdout.write(JSON.stringify({answer:2}));\n';
+const continuationPacket = (question = 'Question') => ({ schema: 'marginalia.job-packet.v1' as const, intent: 'simulate' as const, question,
+  source: { url: 'https://example.org', title: 'Example', pageType: null, capturedAt: null, sourceHash: 'hash', sourceVersionId: 'source' },
+  selection: { exact: 'Start', prefix: '', suffix: '', start: 0, end: 5, originalEnd: 5, omittedCharacters: 0 },
+  adjacentContext: { before: '', after: '', basis: 'bounded-character-context' as const }, availableCapabilities: ['solver' as const], omissions: [] });
+function solverReply(): CandidateReply {
+  return withFixtureOrigins({ schema: 'marginalia.reply.v1', intent: 'simulate', status: 'complete', title: 'Saved computation', summary: 'Saved computation.',
+    sourceBindings: [], parameters: [{ name: 'x', label: 'Input', default: 1, min: 0, max: 10, unit: '' }],
+    assumptions: [], limitations: [], requiredCapabilities: ['solver'], blocks: [
+      { id: 'answer', type: 'derived', name: 'answer', expression: 'x + 1', unit: '', label: 'Answer' },
+      { id: 'solver-1', type: 'solver', path: 'solver/main.js', inputNames: ['x'], outputBlocks: ['answer'] },
+    ], checks: [], staticFallback: 'Saved computation.' });
+}
+async function solverContinuationFixture(t: TestContext) {
+  const root = await mkdtemp(join(tmpdir(), 'p05-continuation-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const schema = '{}', packet = continuationPacket(), workspace = await prepareWorkspace(root, 'job', packet, schema);
+  await mkdir(join(workspace, 'solver'));
+  await writeFile(join(workspace, 'solver', 'main.js'), SOLVER_SOURCE);
+  const solverSha256 = createHash('sha256').update(SOLVER_SOURCE).digest('hex');
+  await writeFile(join(workspace, 'solver', 'manifest.json'), JSON.stringify({ schema: SOLVER_MANIFEST_SCHEMA,
+    files: [{ path: 'solver/main.js', sha256: solverSha256 }],
+    inputs: [{ name: 'x', min: 0, max: 10, default: 1, unit: '' }], outputs: ['answer'] }));
+  await writeFile(join(workspace, 'reply.json'), JSON.stringify(solverReply()));
+  const identity = await directoryIdentity(workspace);
+  const authority: ContinuationSolverAuthority = { jobId: 'parent-job', attemptId: 'parent-attempt', reply: solverReply(),
+    bindings: [{ solverId: 'solver-1', binding: { jobId: 'parent-job', attemptId: 'parent-attempt', workspace,
+      workspaceGeneration: `directory:${identity.dev}:${identity.ino}`, solverRelativePath: 'solver/main.js', solverSha256,
+      runtimeExecutable: process.execPath, runtimeIdentity: process.release.name, runtimeVersion: process.version } }] };
+  return { root, workspace, schema, packet, authority, solverSha256 };
 }
 async function boundedRead(read: Promise<Buffer | undefined>) {
   let timer: NodeJS.Timeout;
@@ -122,4 +156,49 @@ test('a directory swapped onto a reply path is rejected after open without block
   );
   assert.notEqual(result.kind, 'blocked');
   if (result.kind === 'settled') assert.equal(result.value, undefined);
+});
+
+test('an unchanged host-pinned solver survives continuation workspace preparation', async t => {
+  const f = await solverContinuationFixture(t);
+  await prepareContinuationWorkspace(f.workspace, 'parent-attempt', continuationPacket('Follow up'), f.schema, f.authority);
+  assert.equal(await readFile(join(f.workspace, 'solver', 'main.js'), 'utf8'), SOLVER_SOURCE);
+  assert.equal(createHash('sha256').update(await readFile(join(f.workspace, 'solver', 'main.js'))).digest('hex'), f.solverSha256);
+  assert.equal((await readFile(join(f.workspace, 'packet.json'), 'utf8')).includes('Follow up'), true);
+  assert.equal((await readFile(join(f.root, '.history', 'job', 'parent-attempt', 'reply.json'), 'utf8')).includes('Saved computation'), true);
+});
+
+for (const scenario of ['replaced solver and manifest', 'unlisted file', 'unlisted directory', 'hard link'] as const) {
+  test(`continuation refuses ${scenario} before workspace mutation`, async t => {
+    const f = await solverContinuationFixture(t), solver = join(f.workspace, 'solver', 'main.js');
+    if (scenario === 'replaced solver and manifest') {
+      const changed = 'process.stdout.write(JSON.stringify({answer:999}));\n';
+      await writeFile(solver, changed);
+      const manifest = JSON.parse(await readFile(join(f.workspace, 'solver', 'manifest.json'), 'utf8'));
+      manifest.files[0].sha256 = createHash('sha256').update(changed).digest('hex');
+      await writeFile(join(f.workspace, 'solver', 'manifest.json'), JSON.stringify(manifest));
+    }
+    if (scenario === 'unlisted file') await writeFile(join(f.workspace, 'extra.js'), 'extra');
+    if (scenario === 'unlisted directory') await mkdir(join(f.workspace, 'extra'));
+    if (scenario === 'hard link') await link(solver, join(f.root, 'solver-link'));
+    const packetBefore = await readFile(join(f.workspace, 'packet.json'), 'utf8');
+    const replyBefore = await readFile(join(f.workspace, 'reply.json'), 'utf8');
+    await assert.rejects(prepareContinuationWorkspace(f.workspace, 'parent-attempt', continuationPacket('Follow up'), f.schema, f.authority));
+    assert.equal(await readFile(join(f.workspace, 'packet.json'), 'utf8'), packetBefore);
+    assert.equal(await readFile(join(f.workspace, 'reply.json'), 'utf8'), replyBefore);
+    assert.equal((await readdir(f.root)).includes('.history'), false);
+  });
+}
+
+test('continuation refuses a special solver file before workspace mutation', { skip: process.platform === 'win32' && 'POSIX FIFO only' }, async t => {
+  const f = await solverContinuationFixture(t), solver = join(f.workspace, 'solver', 'main.js');
+  await unlink(solver); execFileSync('mkfifo', ['-m', '600', solver]);
+  const packetBefore = await readFile(join(f.workspace, 'packet.json'), 'utf8');
+  await assert.rejects(prepareContinuationWorkspace(f.workspace, 'parent-attempt', continuationPacket('Follow up'), f.schema, f.authority));
+  assert.equal(await readFile(join(f.workspace, 'packet.json'), 'utf8'), packetBefore);
+  assert.equal((await readdir(f.root)).includes('.history'), false);
+});
+
+test('a mutable solver manifest never relaxes the deny-all continuation default', async t => {
+  const f = await solverContinuationFixture(t);
+  await assert.rejects(verifyContinuationWorkspace(f.workspace, f.schema), /Undeclared continuation artifact: solver/);
 });

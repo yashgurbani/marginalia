@@ -1,5 +1,6 @@
 import type { CandidateReply } from './reply.ts';
 import type { HostCheckReport } from './host-checks.ts';
+import type { ReaderSkillProvenance } from './reader-skills.ts';
 
 // Missing kind means a legacy quote. Whole-page anchors deliberately contain no quote.
 export type QuoteAnchor = { kind?: 'quote' | 'section' | 'whole-page'; exact: string; prefix: string; suffix: string; start: number; end: number };
@@ -12,21 +13,29 @@ export type NoteVersionRef = { noteId: string; revision: number };
 export type NoteVersion = NoteVersionRef & { text: string; createdAt: string };
 export type ReplyCorrection = { ancestorId: string; ancestorTitle: string; correctionId: string; correctedAt: string };
 // Derived from immutable lineage, including removed versions. Missing on legacy caches.
-export type ReplyVersion = { id: string; threadId: string; parentId: string | null; supersedes: string | null; reply: CandidateReply; hash: string; validation: HostCheckReport; answeredNote: NoteVersion | null; createdAt: string; deletedAt: string | null; revision: number; corrections?: ReplyCorrection[] };
+export type ReplyVersion = { id: string; threadId: string; parentId: string | null; supersedes: string | null; reply: CandidateReply; hash: string; validation: HostCheckReport; answeredNote: NoteVersion | null; createdAt: string; deletedAt: string | null; revision: number; corrections?: ReplyCorrection[]; readerSkill?: ReaderSkillProvenance };
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 // The authored reply is immutable; these reader controls are stored independently.
 export type ReplyViewState = { replyVersionId: string; parameters: Record<string, number>; view: { [key: string]: JsonValue }; revision: number; updatedAt: string };
 export type ReplyRemovalChange = { id: string; threadId: string; replyVersionId: string; removed: boolean; expectedRevision: number };
 export type ThreadState = 'open' | 'parked' | 'done' | 'archived';
+export const HIGHLIGHT_COLOURS = ['yellow', 'green', 'blue', 'rose'] as const;
+export type HighlightColour = typeof HIGHLIGHT_COLOURS[number];
+export const isHighlightColour = (value: unknown): value is HighlightColour => HIGHLIGHT_COLOURS.includes(value as HighlightColour);
+export const highlightColour = (value: unknown): HighlightColour => {
+  if (value === undefined) return 'yellow';
+  if (isHighlightColour(value)) return value;
+  throw new InvalidReaderMutationError('Invalid highlight colour.');
+};
 export type ReaderMutation =
   | { id: string; kind: 'keep'; threadId: string; capture: SourceCapture; anchor: QuoteAnchor; note?: string }
   | { id: string; kind: 'note'; threadId: string; noteId: string; text: string; expectedRevision: number }
   | { id: string; kind: 'note-remove'; threadId: string; noteId: string; removed: boolean; expectedRevision: number }
-  | { id: string; kind: 'highlight'; threadId: string; highlighted: boolean; expectedRevision: number }
+  | { id: string; kind: 'highlight'; threadId: string; highlighted: boolean; highlightColour?: HighlightColour; expectedRevision: number }
   | { id: string; kind: 'thread-state'; threadId: string; state: ThreadState; expectedRevision: number }
   | { id: string; kind: 'remove'; threadId: string; removed: boolean; expectedRevision: number };
 export type Note = { id: string; threadId: string; text: string; revision: number; createdAt: string; deletedAt: string | null };
-export type Thread = { id: string; anchorId: string; state: ThreadState; revision: number; createdAt: string; updatedAt: string; deletedAt: string | null; sourceVersionId: string; sourceUrl: string; sourceTitle: string; anchor: QuoteAnchor; notes: Note[]; highlighted: boolean };
+export type Thread = { id: string; anchorId: string; state: ThreadState; revision: number; createdAt: string; updatedAt: string; deletedAt: string | null; sourceVersionId: string; sourceUrl: string; sourceTitle: string; anchor: QuoteAnchor; notes: Note[]; highlighted: boolean; highlightColour?: HighlightColour };
 export type Attachment = { state: 'exact' | 'moved' | 'unsure' | 'lost'; candidates: { start: number; end: number }[] };
 export type AttachmentRecord = Attachment & { id: string; anchorId: string; targetVersionId: string; tabCapture: string; recordedAt: string | null; targetAvailable: boolean };
 /** The explicit, local-only observation request made when a reader chooses to
@@ -82,6 +91,7 @@ export function validateReaderMutation(value: unknown): asserts value is ReaderM
       if (!readerId(m.noteId) || typeof m.removed !== 'boolean') invalidReaderMutation('Invalid note removal.');
     } else if (m.kind === 'highlight') {
       if (typeof m.highlighted !== 'boolean') invalidReaderMutation('Invalid highlight change.');
+      if (m.highlightColour !== undefined && (!m.highlighted || !isHighlightColour(m.highlightColour))) invalidReaderMutation('Invalid highlight colour.');
     } else if (m.kind === 'thread-state') {
       if (!['open', 'parked', 'done', 'archived'].includes(m.state)) invalidReaderMutation('Invalid thread state.');
     } else if (m.kind === 'remove') {

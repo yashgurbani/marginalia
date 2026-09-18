@@ -3,8 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>A personalized, agentic margin for the web.</title>
-<meta name="description" content="A personalized, agentic margin for the web.">
+<title>Marginalia: privacy and what leaves your machine</title>
+<meta name="description" content="What Marginalia keeps on your disk, what leaves your machine, and the controls you hold over both.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Marginalia">
+<meta property="og:title" content="Marginalia: privacy and what leaves your machine">
+<meta property="og:description" content="What Marginalia keeps on your disk, what leaves your machine, and the controls you hold over both.">
+<meta property="og:url" content="https://yashgurbani.github.io/marginalia/site/privacy.html">
+<meta property="og:image" content="https://yashgurbani.github.io/marginalia/site/media/og-navier-stokes.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Navier-Stokes post with the Marginalia margin open, showing a slider and a curve beside the highlighted passage.">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='none'/%3E%3Cpath d='M11.5 1.5v13' stroke='%23566' stroke-width='1'/%3E%3Cpath d='M2 4h7M2 6.5h7M2 9h7M2 11.5h5' stroke='%23334' stroke-width='1.2'/%3E%3C/svg%3E">
 <style>
@@ -113,7 +123,7 @@ ul.plain li { margin-bottom: 0.5rem; }
 
   <main id="main">
 <section class="band hero" aria-labelledby="t-hero">
-<h1 id="t-hero">A personalized, agentic margin for the web.</h1>
+<h1 id="t-hero">The web, annotated for the agentic era.</h1>
 <p class="lede">Privacy and data handling. Last updated 18 September 2026.</p>
 <p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
 </p>
@@ -123,38 +133,38 @@ ul.plain li { margin-bottom: 0.5rem; }
 </section>
 <section class="band" id="read-now" aria-labelledby="t-read-now">
 <h2 id="t-read-now">Read now</h2>
-<p>Selecting a passage, keeping a highlight and writing a note do not request model inference. Your note remains separate from the source page. Remember vocabulary records what you choose to keep.</p>
+<p>Keeping a highlight, writing a note and selecting text are local. Nothing about them leaves your machine. Your note remains separate from the source page, and the page is never rewritten.</p>
 </section>
 <section class="band" id="read-later" aria-labelledby="t-read-later">
 <h2 id="t-read-later">Read it later</h2>
-<p>Parked threads, saved marks and resume information are local reading data. The helper retains source, note and reply versions in SQLite. Browser IndexedDB also holds pending work, saved replies and recovery history.</p>
+<p>Threads you keep to read later, saved marks and resume information are local reading data. The helper retains source, note and reply versions in SQLite. Browser IndexedDB also holds pending work, saved replies and recovery history.</p>
 <p>Removing a thread is a logical removal. It does not erase retained versions, browser caches, backups or downloaded exports. Uninstalling the helper keeps reading data.</p>
 </section>
 <section class="band" id="knowledge" aria-labelledby="t-knowledge">
 <h2 id="t-knowledge">Your knowledge base</h2>
 <p>The library stores source attribution with your passages, notes and replies. Exports create plain files in a location you choose. You manage those downloaded copies. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/RETAINED-LOCAL-COPIES.md">Read the retained-copy inventory</a>.</p>
-<p>The helper listens on <code>127.0.0.1:43120</code>. Pairing connects the extension to it; pairing does not approve a model request. Provider credentials stay out of the browser.</p>
+<p>The helper listens on <code>127.0.0.1:43120</code>. Pairing connects the extension to it; pairing does not approve a model request. By default, the helper uses your ordinary Codex setup, including its settings and tools. It needs no Marginalia environment variables or second sign-in. No Codex credential is stored in the browser. The extension holds only its pairing token.</p>
 </section>
 <section class="band" id="ask" aria-labelledby="t-ask">
 <h2 id="t-ask">How Ask works and what leaves</h2>
-<p>Ask is optional and requires a reader-authorized Codex runtime. Before dispatch, review the exact outgoing text, actual recipient and permission scope. The request can include the selected passage, your chosen note, page facts and bounded surrounding context. A changed request needs a new review.</p>
-<p>You can grant this send, allow the site, or refuse the site. A site grant does not itself start a request. Model inference happens on the provider’s service. The helper records dispatch and outcome; an unknown outcome stays labelled unknown.</p>
+<p>For a full Ask you review the exact outgoing text, recipient and permission scope before it goes. The request can include the selected passage, your chosen note, page facts and bounded surrounding context. A changed request needs a new review.</p>
+<p>Instant help is on by default. It sends each allowed open page to Codex so quick definitions and simple explanations are ready when you select text, using your own Codex subscription. Onboarding offers to turn it off, and Settings lets you turn it off later. You can also exclude sites. Excluded sites never send anything, and on an excluded site the margin shows no Ask controls at all.</p>
+<p>On a new site, you can grant one send, allow the site, or exclude the site. A site grant does not start a request by itself. Model inference happens on the provider’s service. The helper records dispatch and outcome. An unknown outcome stays labelled unknown.</p>
 <p>Requested tool and network restrictions are not observed confinement. The runtime’s evidence gaps mean this policy cannot promise that every action of the external runtime is confined to the preview. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions before enabling real asks</a>.</p>
 <p>Library search and “Related saved passages” are available in the local library page. Code and automated tests support this claim; native browser acceptance has not been recorded.</p>
 </section>
 <section class="band" id="next" aria-labelledby="t-next">
 <h2 id="t-next">Next</h2>
-<p>PDF reading and listening (“Hear it”) are next. Topics and reading paths across papers, sharing, connectors and Firefox are also planned.</p>
+<p>Topics and reading paths across papers, sharing, connectors and Firefox are planned.</p>
 </section>
 <section class="band" id="limits" aria-labelledby="t-limits">
 <h2 id="t-limits">Honest limits</h2>
-<p>Real asks use a reader-authorized mode where solver confinement is requested but not observed. The mode is off by default. No recorded real run is in the evidence folder yet. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
-<p>Windows install is proven. macOS and Linux have command-level CI evidence. PDF is not supported yet.</p>
+<p>This is an alpha built by one developer. It works in Chrome and needs Codex installed and signed in.</p>
+<p>Nothing goes out for a full Ask until you approve the exact text, the first time on each site. You choose this time, always here, or never here, and you can change that in Settings. Instant help is on by default and can be turned off during onboarding or in Settings. Proof of runtime confinement is still pending. Windows installation has been tested. macOS and Linux have command-level CI evidence. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
 </section>
 <section class="band" id="built" aria-labelledby="t-built">
 <h2 id="t-built">The Astra build</h2>
-<p>Marginalia is built by Yash Gurbani, a team of one, with GPT-6 Astra via Codex and ChatGPT Pro. Claude Code supports integration and review. The Astra Challenge build used bounded tasks and review against the code; passing tests do not close the real-run or confinement gates.</p>
-<p>The suite result is 961 tests: 955 pass, 0 fail, 6 skipped.</p>
+<p>Yash Gurbani builds Marginalia as a team of one for the Product Hunt Astra 6 Challenge. Automated checks do not close the live-run or confinement gates.</p>
 </section>
 <section class="band" id="research" aria-labelledby="t-research">
 <h2 id="t-research">Research and credits</h2>

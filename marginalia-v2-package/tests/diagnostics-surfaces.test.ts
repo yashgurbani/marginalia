@@ -62,7 +62,7 @@ test('options uses extension read transport, drops late address results, and sup
   assert.equal(sent.init.method, 'POST'); assert.equal(sent.init.body, '{}');
   changed({ helperOrigin: { newValue: 'http://127.0.0.1:43200' } }, 'local');
   pending.resolve(Response.json({ ...data, dataDirectory: '/STALE' }));
-  await until(() => root.textContent.includes('Not paired'));
+  await until(() => root.textContent.includes('Pairing is absent'));
   assert.doesNotMatch(root.textContent, /STALE/);
   const before = calls.length; mockWindow.top = {};
   changed({ helperOrigin: { newValue: origin } }, 'local');

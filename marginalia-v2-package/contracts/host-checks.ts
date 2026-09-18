@@ -1,3 +1,5 @@
+import type { ExploreAssessment } from './explore.ts';
+import type { EvidenceAssessment } from './evidence.ts';
 import { createHash } from 'node:crypto';
 import {
   canonicalReplyData,
@@ -19,6 +21,9 @@ export type HostCheckReport = {
   replyDigest: string;
   parameterDigest: string;
   results: HostCheckResult[];
+  /** Durable host reconciliation, absent on older saved replies. */
+  evidence?: EvidenceAssessment;
+  explore?: ExploreAssessment;
 };
 
 export type ClassificationView = {

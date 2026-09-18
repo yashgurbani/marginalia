@@ -1,23 +1,27 @@
 import { validateSourceCapture, type ReaderMutation, type ReattachRequest, type ReattachResponse, type Thread, type ReplyVersion, type ReplyViewState, type SourceVersion, type ReplyRemovalChange } from '../contracts/reader.ts';
 import type { HostCheckReport } from '../contracts/host-checks.ts';
 import type { ConsentGrant, SiteExclusion } from '../contracts/consent.ts';
-import type { LibrarySearchResult, ModelSettings, VocabularyEntry, VocabularyObservation, VocabularyObservationResult } from '../contracts/library.ts';
+import type { LibrarySearchResult, ModelSettings, VocabularyEntry, VocabularyObservation, VocabularyObservationResult, VocabularyGatheringSettings } from '../contracts/library.ts';
 import type { SolverExecuteRequest, SolverOutcome, SolverPlanOutcome, SolverPlanRequest } from '../contracts/solver.ts';
 import type { ReplyViewChange } from './persistence.ts';
+import type { ReadingJournal } from '../contracts/journal.ts';
+import type { ReaderSkillsCatalog } from '../contracts/reader-skills.ts';
 
 const readRoutes = new Map([
   ['/api/threads', '/api/read/threads'],
+  ['/api/export', '/api/read/export'],
   ['/api/replies', '/api/read/replies'],
   ['/api/reply-view', '/api/read/reply-view'],
   ['/api/library-search', '/api/read/library-search'],
   ['/api/library-related', '/api/read/library-related'],
+  ['/api/library-journal', '/api/read/library-journal'],
 ]);
 
 export class HelperTransportError extends Error {
   kind: 'network' | 'timeout' | 'response-unknown';
   constructor(kind: HelperTransportError['kind']) {
     const detail = kind === 'timeout' ? 'The local helper did not reply in time.'
-      : kind === 'response-unknown' ? 'The local helper’s reply could not be read.'
+      : kind === 'response-unknown' ? 'The local helperâ€™s reply could not be read.'
       : 'The local helper could not be reached.';
     super(`${detail} Check that it is running. The result of this request is unconfirmed.`);
     this.name = 'HelperTransportError'; this.kind = kind;
@@ -45,6 +49,18 @@ class HelperConnectionChangedError extends Error {
 const attachmentStates = new Set(['exact', 'moved', 'unsure', 'lost']);
 const readerId = (value: unknown): value is string => typeof value === 'string' && /^[\w-]{1,100}$/.test(value);
 function invalidAttachmentResponse(): never { throw new HelperTransportError('response-unknown'); }
+
+function readerSkillsCatalog(value: unknown): ReaderSkillsCatalog {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new HelperTransportError('response-unknown');
+  const catalog = value as Record<string, unknown>;
+  if (catalog.schema !== 'marginalia.reader-skills.v1' || !['ready', 'unavailable'].includes(String(catalog.status)) ||
+      !(catalog.revision === null || typeof catalog.revision === 'string') || !Array.isArray(catalog.skills) || catalog.skills.length > 200 ||
+      catalog.skills.some(skill => !skill || typeof skill !== 'object' || Array.isArray(skill) ||
+        typeof skill.name !== 'string' || !skill.name || skill.name.length > 128 || typeof skill.description !== 'string' || skill.description.length > 2000) ||
+      catalog.status === 'unavailable' && (catalog.revision !== null || catalog.skills.length !== 0) ||
+      catalog.status === 'ready' && typeof catalog.revision !== 'string') throw new HelperTransportError('response-unknown');
+  return catalog as unknown as ReaderSkillsCatalog;
+}
 
 /** Hash only the captured text for local observation-cache keys. The source
  * URL and source-document generation are kept as separate identity fields. */
@@ -102,6 +118,14 @@ export class HelperClient {
   }
   async request(path: string, body?: unknown, externalSignal?: AbortSignal) {
     if (!path.startsWith('/') || path.startsWith('//') || new URL(path, this.origin).origin !== this.origin) throw new Error('Use a local helper path.');
+    // Extension GET requests can omit Origin. Keep reviewed reads on authenticated POST aliases.
+    // An explicit body remains a mutation and must never enter this read-only mapping.
+    if (body === undefined && /^\/api\/jobs(?:\/[\w-]{1,100})?(?:\?|$)/.test(path)) {
+      path = path.replace('/api/jobs', '/api/read/jobs'); body = {};
+    }
+    if (body === undefined && /^\/api\/solver\/result(?:\?|$)/.test(path)) {
+      path = path.replace('/api/solver/result', '/api/read/solver/result'); body = {};
+    }
     if (this.disconnecting !== undefined && path !== '/pair') throw new HelperConnectionChangedError();
     const epoch = this.epoch;
     const signal = AbortSignal.any([this.connection.signal, AbortSignal.timeout(8000), ...(externalSignal ? [externalSignal] : [])]);
@@ -173,12 +197,19 @@ export class HelperClient {
   async list(): Promise<Thread[]> { return (await this.read('/api/threads?removed=true')).threads; }
   async searchLibrary(query: string): Promise<LibrarySearchResult[]> { return (await this.read('/api/library-search?q=' + encodeURIComponent(query))).results; }
   async relatedLibrary(threadId: string): Promise<LibrarySearchResult[]> { return (await this.read('/api/library-related?thread=' + encodeURIComponent(threadId))).results; }
+  async readingJournal(timeZone: string): Promise<ReadingJournal> { return (await this.read('/api/library-journal?timeZone=' + encodeURIComponent(timeZone))).journal; }
+  async readerSkills(): Promise<ReaderSkillsCatalog> { return readerSkillsCatalog(await this.request('/api/read/skills', {})); }
+  async saveJourneys(change: import('../contracts/journeys.ts').JourneyEditChange): Promise<void> { await this.request('/api/journeys', change); }
   async exportThread(id: string): Promise<{ thread: Thread; source: SourceVersion; replies: ReplyVersion[]; replyViews: ReplyViewState[]; [key: string]: unknown }> {
-    return this.request('/api/export?thread=' + encodeURIComponent(id));
+    return this.read('/api/export?thread=' + encodeURIComponent(id));
   }
   async models(): Promise<ModelSettings> { return (await this.request('/api/settings/models')).models; }
   async saveModels(change: { fast: string; deep: string; expectedRevision: number }): Promise<ModelSettings> { return (await this.request('/api/settings/models', change)).models; }
   async vocabulary(): Promise<VocabularyEntry[]> { return (await this.request('/api/vocabulary')).vocabulary; }
+  async vocabularyGathering(): Promise<VocabularyGatheringSettings> { return (await this.request('/api/settings/vocabulary-gathering')).gathering; }
+  async saveVocabularyGathering(change: { enabled: boolean; expectedRevision: number }): Promise<VocabularyGatheringSettings> {
+    return (await this.request('/api/settings/vocabulary-gathering', change)).gathering;
+  }
   async observeVocabulary(observation: VocabularyObservation): Promise<VocabularyObservationResult> { return this.request('/api/vocabulary/observe', observation); }
   async deleteVocabulary(term: string): Promise<void> { await this.request('/api/vocabulary/delete', { term }); }
   async permissions(signal: AbortSignal): Promise<{ grants: ConsentGrant[]; exclusions: SiteExclusion[] }> { return this.request('/api/consent/settings', undefined, signal); }
@@ -199,6 +230,9 @@ export class HelperClient {
   }
   async setReplyRemoved(change: ReplyRemovalChange): Promise<ReplyVersion> {
     return (await this.request('/api/reply-removal', change)).reply;
+  }
+  async openShelfItem(threadId: string, replyVersionId: string, item: { blockId: string; itemId: string }): Promise<import('../contracts/explore.ts').OpenShelfItemRequest> {
+    return (await this.request('/api/shelf-open', { id: crypto.randomUUID(), threadId, replyVersionId, ...item })).open;
   }
   async checkReply(threadId: string, replyVersionId: string, parameters: Readonly<Record<string, number>>): Promise<HostCheckReport> {
     return (await this.request('/api/reply-check', { threadId, replyVersionId, parameters })).report;
@@ -234,6 +268,8 @@ export function libraryAdapters(
     listThreads: () => connection().list(),
     search: query => connection().searchLibrary(query),
     related: threadId => connection().relatedLibrary(threadId),
+    readJournal: timeZone => connection().readingJournal(timeZone),
+    saveJourneys: change => connection().saveJourneys(change),
     exportThread: id => connection().exportThread(id),
     restoreThread: thread => restore(connection(), thread),
     loadModels: () => connection().models(),

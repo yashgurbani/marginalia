@@ -29,17 +29,17 @@ test('definition display and note save are inert; explicit Remember alone writes
   api.select(anchor);
   assert.match(environment.root.textContent, /Entropy is a measure used in this passage/);
   assert.equal(observations.length, 0, 'showing a successful local definition is not Remember');
-  button(environment.root, 'Write a note').click();
+  button(environment.root, 'Write here\u2026').click();
   const note = environment.root.querySelector('[aria-label="Your note"]')!;
   note.value = 'Entropy belongs in this saved note.'; note.fire('input'); button(environment.root, 'Save note').click(); await api.drain();
   assert.equal(observations.length, 0, 'saving a note does not create vocabulary');
   assert.equal(environment.root.querySelectorAll('button').some(control => control.textContent === 'Skip'), false, 'no Skip path invents a vocabulary write');
 
-  api.select(anchor); button(environment.root, 'Remember').click(); await api.drain();
+  api.select(anchor); button(environment.root, 'Remember this term').click(); await api.drain();
   assert.equal(observations.length, 1);
   assert.deepEqual({ term: observations[0].term, origin: observations[0].origin, source: observations[0].source }, { term: 'Entropy', origin: 'stated', source: { kind: 'reader' } });
   assert.deepEqual({ modelCalls, retrievalCalls, executionCalls }, { modelCalls: 0, retrievalCalls: 0, executionCalls: 0 });
-  assert.match(environment.root.textContent, /records your choice, not what you know/);
+  assert.match(environment.root.textContent, /records your choice about the term\. It stays separate from claims about your knowledge/);
 
   const reloaded = new LibrarySettingsService(reader), [entry] = reloaded.vocabulary();
   assert.equal(entry.origins?.[0].origin, 'stated');
@@ -48,7 +48,7 @@ test('definition display and note save are inert; explicit Remember alone writes
     loadModels: async () => ({ fast: 'luna', deep: 'astra', revision: 0, updatedAt: null, compatibilityKey: 'a'.repeat(64) }),
     listVocabulary: async () => reloaded.vocabulary(), deleteVocabulary: async term => { reloaded.deleteVocabulary(term); } });
   button(libraryHost, 'Settings').click(); await settle();
-  assert.match(libraryHost.textContent, /You chose Remember/);
+  assert.match(libraryHost.textContent, /You said this was familiar/);
 
   reader.apply({ id: 'saved-note', kind: 'keep', threadId: 'saved-note-thread', note: 'Entropy belongs in this saved note.', capture,
     anchor });

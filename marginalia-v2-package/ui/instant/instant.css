@@ -1,0 +1,20 @@
+.m-instant-settings, .m-instant-definition, .m-instant-onboarding { color: var(--m-ink); font: var(--m-w-regular) var(--m-t0)/var(--m-lh) var(--m-font); }
+.m-instant-settings { border-top: 1px solid var(--m-rule); padding: var(--m-s5) 0; }
+.m-instant-settings h3 { font-size: var(--m-t1); line-height: var(--m-lh-tight); margin: 0; }
+.m-instant-settings__description { color: var(--m-ink-2); margin: var(--m-s1) 0 0; max-width: 65ch; }
+.m-instant-settings__form { align-items: end; display: grid; gap: var(--m-s3); grid-template-columns: repeat(3, minmax(8rem, 1fr)); margin-top: var(--m-s4); }
+.m-instant-settings__switch, .m-instant-settings__usage, .m-instant-settings__status { grid-column: 1 / -1; }
+.m-instant-settings__switch { align-items: center; display: flex; gap: var(--m-s2); font-weight: var(--m-w-strong); }
+.m-instant-settings__switch input { accent-color: var(--m-accent); block-size: 1.1rem; inline-size: 1.1rem; }
+.m-instant-settings__field { color: var(--m-ink-2); display: grid; font-size: var(--m-t-1); gap: var(--m-s1); }
+.m-instant-settings__field input { background: var(--m-surface); border: 1px solid var(--m-edge); border-radius: var(--m-radius-s); box-sizing: border-box; color: var(--m-ink); font: var(--m-w-regular) var(--m-t0)/var(--m-lh) var(--m-font); min-height: 2rem; padding: var(--m-s1) var(--m-s2); width: 100%; }
+.m-instant-settings button, .m-instant-onboarding button { background: transparent; border: 1px solid var(--m-edge); border-radius: var(--m-radius-s); color: inherit; cursor: pointer; font: inherit; min-height: var(--m-target); padding: var(--m-s1) var(--m-s2); }
+.m-instant-settings button { justify-self: start; }
+.m-instant-settings__usage, .m-instant-settings__status, .m-instant-settings__muted { color: var(--m-ink-2); margin: 0; }
+.m-instant-definition { border-inline-start: 2px solid var(--m-rule-strong); margin-block: var(--m-s2); padding-inline-start: var(--m-s3); white-space: pre-wrap; }
+.m-instant-definition:empty { display: none; }
+.m-instant-definition--working, .m-instant-definition--unavailable, .m-instant-definition--paused { color: var(--m-ink-2); }
+.m-instant-onboarding { align-items: center; border-bottom: 1px solid var(--m-rule); display: flex; gap: var(--m-s2); padding-block: var(--m-s2); }
+.m-instant-onboarding p { color: var(--m-ink-2); flex: 1; margin: 0; }
+@media (max-width: 42rem) { .m-instant-settings__form { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .m-instant-settings, .m-instant-definition, .m-instant-onboarding { scroll-behavior: auto; } }

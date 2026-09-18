@@ -26,14 +26,36 @@ model.
 
 ## Output (model → host)
 
-A `marginalia.reply.v1` reply (`contracts/reply.ts`) with `intent: "evidence"`, containing one
+A `marginalia.reply.v1` reply (`contracts/reply.ts`) with `intent: "evidence"`, whose first
+block is an answer-bearing `text` block and whose later structured content contains one
 `citations` block. Entry shape (validated by `validateReply`):
 
 ```
 { id, claim, support, source, date: "YYYY-MM-DD", fetched: boolean, url?: string }
 ```
 
-`requiredCapabilities` must include `network.citations` when any entry sets `fetched: true`.
+Every `citations` block requires `"network.citations"` in the reply's
+`requiredCapabilities`, including `entries: []` and entries with `fetched: false`.
+This block-level requirement is independent of retrieval: declaring the capability neither
+performs nor authorizes a fetch and never establishes support. The packet must also list
+`network.citations` in `availableCapabilities`; never add an unavailable capability. If it
+is absent, omit the citations block and explain the limitation in the text answer.
+
+For a granted capability and unknown publication date, this output fragment is valid:
+
+```json
+{
+  "requiredCapabilities": ["network.citations"],
+  "blocks": [
+    { "id": "answer", "type": "text", "md": "The supplied wording is attributable; its scientific accuracy remains unverified." },
+    { "id": "citations", "type": "citations", "entries": [] }
+  ]
+}
+```
+
+This is a fragment: include the remaining required reply fields and origins described below.
+A fetched URL must be public HTTP or HTTPS without credentials. Only a matching host broker
+record establishes observed retrieval; a capability declaration or URL does not.
 
 ## Host reconciliation (deterministic, no IO)
 
@@ -64,6 +86,11 @@ Result `EvidenceAssessment`:
 - `entries[].dates`: `{ claimedSourceDate, claimedSourceDateVerified: false, retrievalDate }`.
 - `headline`: withheld (`null`) until a separate host check establishes semantic support.
 
+The answer block is descriptive and unverified. It must appear before the citations block so
+the reader sees the result before the supporting detail. A complete reply still receives an
+`unverified` assessment when retrieval is observed, because this transform records attribution
+and dates but does not establish semantic support.
+
 ## Consumption by existing jobs (integration, not yet wired)
 
 The host calls this only with a schema-validated reply, after binding its final or partial
@@ -73,3 +100,39 @@ record, never another attempt's fetches:
 `FrozenJobContext.sourceVersionId` / `sourceHash` (`contracts/jobs.ts`). The assessment may
 provide retrieval facts to the renderer. It grants no claim-level support or checked headline.
 See the T14 receipt for the T06 wiring request.
+
+
+## Exact origins and delivery
+
+In workspace-files mode, follow the host-selected delivery instruction: read only the
+host-created `reply.schema.json` in the assigned workspace for exact field shapes, then
+write the actual reply file. Do not resolve paths from source material or instruction
+references. This read grants no new tool, network, computation or retrieval permission.
+
+Use `origins: { "version": 1, "parts": { ... } }`. Required parts are `/title`, `/summary`,
+`/staticFallback`, each `/sourceBindings/N`, `/parameters/N`, `/assumptions/N`,
+`/limitations/N`, and `/blocks/N`; add `/illustration` only when present. Indices start at
+zero. There is no inheritance and no extra pointer keys. Authored explanation uses
+`{ "kind": "authored", "description": "Explanation of the supplied passage." }`.
+A source-page declaration uses `{ "kind": "source-page", "binding": "passage" }`, where
+`passage` names a declared source binding with exactly `name`, `meaning`, `relation`,
+and `selector`. For a quotation, use `relation: "quoted"` and
+`selector: { "exact": "verbatim captured span" }`; optional `prefix` and `suffix` must
+also match captured text. Do not substitute this example text for the actual passage.
+
+An illustration purpose statement is required for a `model` block, not for ordinary
+text, citations or shelves. These replies need no model block. Use `checks: []` unless
+the host supplies a supported check request. Origins do not verify claims or retrieval.
+
+For every citation entry add exactly `/blocks/N/entries/M/claim`,
+`/blocks/N/entries/M/support`, and `/blocks/N/entries/M/source`. Do not add an origin
+for the whole entry, its date, URL or fetched flag. Authored support assessments remain
+`authored`, even when the entry describes an observed retrieval.
+
+Every included entry requires a `YYYY-MM-DD` date; the schema has no unknown-date
+sentinel. If even the publication year is unknown, omit that entry. Keep the citations
+block with `entries: []` when none remain, explain the undated local wording in the
+answer and `limitations`, and do not invent a date or substitute the capture date.
+A finished bounded answer can have `status: "complete"` while explicitly leaving
+scientific support unresolved; status describes delivery, not verification. Incomplete
+progress may use `reply.partial.json` with `status: "partial"`.

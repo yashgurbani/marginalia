@@ -76,7 +76,7 @@ test('mounted Remove reply hides only the middle reply and the Undo toast restor
   const e = env(t), seeded = await seed(e.namespace); boundaries.replyMounts.length = 0;
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
   await until(() => e.root.querySelectorAll('.m-saved-reply').length === 3);
-  button(e.root, 'Ask about this note').click();
+  button(e.root, 'Ask about this note').click(); await api.drain();
   const question = e.root.querySelector('[aria-label="Your question"]')!; question.value = 'Why does this follow?'; question.fire('input'); await api.drain();
   const middle = e.root.querySelector('[data-reply-version="middle"]')!;
   button(middle, 'Remove reply').click(); await api.drain();
@@ -104,6 +104,10 @@ for (const outcome of ['acknowledged', 'committed-response-lost', 'not-committed
     const path = new URL(url).pathname, body = init?.body ? JSON.parse(String(init.body)) : undefined;
     calls.push({ path, body });
     if (path === '/api/position') return Response.json({ anchor: null });
+    if (path === '/api/read/replies') {
+      const replies = seeded.versions.map(version => [...receipts.values()].reverse().find(receipt => receipt.reply.id === version.id)?.reply ?? version);
+      return Response.json({ source, replies, views: replies.map(version => ({ replyVersionId: version.id, parameters: { x: 1 }, view: {}, revision: 1, updatedAt: capture.capturedAt })) });
+    }
     if (path === '/api/reply-removal') {
       if (outcome === 'not-committed' && calls.filter(call => call.path === path).length === 1) throw new Error('Request never arrived');
       const receipt = receipts.get(body.id);
@@ -132,7 +136,7 @@ for (const outcome of ['acknowledged', 'committed-response-lost', 'not-committed
   api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperOrigin: e.document.location.origin });
   await until(() => /Removed replies \(1\)/.test(e.root.textContent));
   assert.equal(calls.filter(call => call.path === '/api/reply-removal').length, 0, 'reconnect/remount does not drain removal intent');
-  button(e.root, 'Save reply changes to helper').click(); await api.drain();
+  button(e.root, 'Sync').click(); await api.drain();
   const removal = calls.filter(call => call.path === '/api/reply-removal');
   assert.equal(removal.length, 1); assert.equal(removal[0].body.removed, true); assert.equal(removal[0].body.expectedRevision, 1);
   assert.deepEqual(Object.keys(removal[0].body).sort(), ['expectedRevision', 'id', 'removed', 'replyVersionId', 'threadId']);
@@ -154,7 +158,7 @@ for (const outcome of ['acknowledged', 'committed-response-lost', 'not-committed
   assert.equal(calls.filter(call => call.path === '/api/reply-removal').length, 1, 'reopening local Undo sends nothing');
   assert.match(e.root.textContent, /Reader question stays\./);
   assert.equal(seeded.journal.state.threads[0].highlighted, false);
-  button(e.root, 'Save reply changes to helper').click(); await api.drain();
+  button(e.root, 'Sync').click(); await api.drain();
   const operations = calls.filter(call => call.path === '/api/reply-removal');
   assert.equal(operations.length, lostAck ? 3 : 2);
   if (lostAck) assert.deepEqual(operations[1].body, operations[0].body);

@@ -18,6 +18,8 @@ export interface ProviderHandle {
   tombstone: boolean;
   /** Only structured-final mode returns text; file mode is watched/validated by T06. */
   output?: string;
+  /** Reader-skill runs only: the final authored text, kept apart from validated output. */
+  rawFinalOutput?: string;
   reason?: string;
 }
 export interface ProviderRequest {
@@ -109,4 +111,6 @@ export interface ProviderHooks {
   verifyThread(handle: ProviderHandle, response: unknown, audit: ProviderAudit): Promise<void>;
   /** Required for structured-final; schema + bounds + host validation belongs to caller. */
   validateOutput(text: string, handle: ProviderHandle, request: ProviderRequest | undefined): Promise<boolean>;
+  /** Reader-skill runs only: bound and retain the authored final text. Never changes validateOutput. */
+  captureFinalOutput?(text: string, handle: ProviderHandle): string | undefined;
 }

@@ -97,22 +97,42 @@ test('consent bridge collects evidence and keeps current dispatch authorization 
   await assert.rejects(enabled.authorize(current, request, audit, 'dispatch'), /policy-catalog-veto/);
 });
 
-test('runtime factory refuses absent acknowledgement and invalid dedicated identity without filesystem probes', t => {
-  const keys = ['MARGINALIA_READER_AUTHORIZED_UNCONFINED', 'MARGINALIA_CODEX_EXECUTABLE', 'MARGINALIA_CODEX_HOME'] as const;
+test('runtime factory refuses missing or invalid dedicated identity independently of old acknowledgement', t => {
+  const keys = ['MARGINALIA_READER_AUTHORIZED_UNCONFINED', 'MARGINALIA_CODEX_EXECUTABLE', 'MARGINALIA_CODEX_HOME', 'PATH', 'Path'] as const;
   const saved = keys.map(key => process.env[key]);
   t.after(() => keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; }));
   const store = new ReaderStore(':memory:'); t.after(() => store.close());
   const input = { dataDir: process.cwd(), store, consent: new ConsentSessionService(store) };
+  process.env.PATH = ''; process.env.Path = '';
   delete process.env.MARGINALIA_READER_AUTHORIZED_UNCONFINED;
-  assert.throws(() => createAuthorizedRuntime(input), /I-UNDERSTAND/);
+  delete process.env.MARGINALIA_CODEX_EXECUTABLE; delete process.env.MARGINALIA_CODEX_HOME;
+  assert.throws(() => createAuthorizedRuntime(input), /valid Codex executable/);
   process.env.MARGINALIA_READER_AUTHORIZED_UNCONFINED = 'I-UNDERSTAND';
   delete process.env.MARGINALIA_CODEX_EXECUTABLE; delete process.env.MARGINALIA_CODEX_HOME;
-  assert.throws(() => createAuthorizedRuntime(input), /valid dedicated/);
+  assert.throws(() => createAuthorizedRuntime(input), /valid Codex executable/);
   process.env.MARGINALIA_CODEX_EXECUTABLE = 'relative.exe'; process.env.MARGINALIA_CODEX_HOME = 'relative-home';
-  assert.throws(() => createAuthorizedRuntime(input), /valid dedicated/);
+  assert.throws(() => createAuthorizedRuntime(input), /valid Codex executable/);
 });
 
 test('dedicated evidence readiness remains false with all seven gaps', () => {
   const state = createDedicatedHostEvidenceSource().readiness();
   assert.equal(state.ready, false); assert.equal(state.reasons.length, 7);
+});
+
+test('D15 ordinary policy inherits settings and permits configured tools without certifying confinement', t => {
+  t.mock.method(console, 'error', () => {});
+  const ordinary = createCodexPolicy({ version: PINNED_CODEX_VERSION, platform: 'win32', adapter: 'app-server',
+    operation: 'generation', model: 'model', workspace: policy.workspace, codexHome: policy.codexHome, auditId: 'ordinary', homeMode: 'ordinary' });
+  const ordinaryKey = policyFingerprint(ordinary);
+  assert.notEqual(ordinaryKey, policyKey);
+  assert.deepEqual(ordinary.configOverrides, {});
+  const inherited: PolicyEvidence = { catalog: { ...veto.catalog!, scope: ordinary.evidenceScope } };
+  const admitted = authorizePolicy(ordinary, { ...request, policyKey: ordinaryKey }, audit, inherited,
+    { ...authorization, policyKey: ordinaryKey }, 'dispatch', optIn);
+  assert.equal(admitted.thread.approvalPolicy, undefined); assert.equal(admitted.thread.sandbox, undefined);
+  assert.equal(admitted.turn.sandboxPolicy, undefined); assert.deepEqual(admitted.thread.config, {});
+  assert.throws(() => authorizePolicy(ordinary, { ...request, policyKey: ordinaryKey }, audit, inherited,
+    { ...authorization, policyKey: ordinaryKey, dispatchedAt: undefined }, 'dispatch', optIn), /current-attempt/);
+  assert.throws(() => authorizePolicy(ordinary, { ...request, policyKey: ordinaryKey }, audit, inherited,
+    { ...authorization, policyKey: ordinaryKey }, 'dispatch'), /policy-evidence-rejected/);
 });

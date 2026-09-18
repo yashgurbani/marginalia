@@ -40,14 +40,43 @@ rate, and no events. It gives the exact temperature at the declared horizon in m
 
 Return only one candidate object conforming to the current host-supplied
 `marginalia.reply.v1` schema with `intent: "simulate"`. The simulate-allowed block subset is
-documented in `IO.md`. Keep a useful `staticFallback`. Do not add tools, executable files,
-provenance records, retrieval reports, or host verdicts.
+documented in `IO.md`. Keep a useful `staticFallback`. Do not add tools,
+provenance records, retrieval reports, or host verdicts. The default request is declarative
+and forbids executable files. Only the host-selected solver authoring mode below permits a solver file.
+
+## Host-selected solver authoring
+
+Solver authoring requires workspace-files mode and `solver` in the host packet's
+`availableCapabilities`. Follow the complete solver inventory, manifest, digest,
+input/output and non-execution rules in the included IO.md. Without that grant,
+return declarative data and create no solver files.
 
 ## Host-selected delivery
 
-In workspace-files mode, use the host-provided file tool only to write the candidate
-JSON to a temporary file and atomically rename it to reply.json (or reply.partial.json
-for a partial result) in the assigned workspace, as the host instructs. Reading the
-host-supplied packet.json and reply.schema.json is allowed if needed. Do not inspect
-other files or execute computations. In structured-final mode, return the object
-through the supplied response channel. Delivery never makes a candidate a saved reply.
+Follow the host-selected delivery mode and the complete delivery rules in the included
+IO.md. Delivery does not make a candidate a saved reply.
+
+## Make Simulate it useful
+
+Answer the passage's question with a small runnable model and plot before explanatory text.
+The summary names a control to move and what to watch. Prefer one model, plot and result
+with useful controls. Text alone does not satisfy a request to try a supported model.
+
+Use the packaged kernel first; declarative models need no solver capability or executable
+files. Link `plot.from` to the model ID, use `t` for an ODE x-axis and state names in `plot.y`.
+Use finite informative ranges and a short horizon. Never extend a curve beyond a singularity.
+
+Attach `sourceBinding` directly to source-derived parameters; top-level bindings alone do
+not connect controls. Quote exact packet words, use `relation: "interpreted"` for analogies,
+and omit bindings without matching words. Never invent a source phrase. Include a meaningful
+editable numeric assumption with a `binding`. Sliders and bound assumptions stay local;
+structural changes use the explicit Ask again path.
+
+Use installed checks only for their exact equations and units. Put the linked classification
+near the plot; the host calculates its result sentence. Do not repeat unchecked numerical
+conclusions in title or summary. With no applicable check, retain the model and plot and
+state that its conclusion is unchecked. An analogy never reproduces the source's result.
+
+For Navier-Stokes, a relevant growth/damping analogy does not solve the fluid equations,
+establish regularity or reproduce a proof. If actual fluid computation is unsupported,
+state what is missing; never silently substitute a scalar model.

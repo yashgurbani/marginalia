@@ -1,3 +1,5 @@
+import { runtimeDisclosureReceipt } from './persistence.ts';
+import type { AskingDisclosure } from './asking/types.ts';
 import type { ConsentChoice, ConsentGrant, ConsentPreview, SiteExclusion } from '../contracts/consent.ts';
 import type { ReplyCapability } from '../contracts/reply.ts';
 
@@ -12,6 +14,7 @@ export type ConsentReviewedPlan = {
 
 export type ConsentSheetOptions = {
   preview: ConsentPreview;
+  disclosure?: AskingDisclosure;
   /** Display-only projection of the already prepared host plan. It grants no authority. */
   reviewedPlan?: ConsentReviewedPlan;
   canAuthorize: boolean;
@@ -27,7 +30,7 @@ export type ConsentSheetOptions = {
   returnFocus?: HTMLElement;
 };
 
-export type ConsentSheet = { update(preview: ConsentPreview): void; destroy(): void };
+export type ConsentSheet = { updateDisclosure?(disclosure: AskingDisclosure): void; update(preview: ConsentPreview): void; destroy(): void };
 
 /** A modular browser-owned consent surface. Page-embedded margins pass canAuthorize:false. */
 export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOptions): ConsentSheet {
@@ -39,22 +42,51 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
   let preview = structuredClone(options.preview), busy = false, destroyed = false, generation = 0;
   let pendingDecision: AbortController | undefined;
   const root = document.createElement('section');
-  // Escape/Not now exits; the page remains interactive, so do not claim modality.
+  // Escape/Cancel exits; the page remains interactive, so do not claim modality.
   root.className = 'm-consent'; root.dataset.surface = surface; root.tabIndex = -1;
   root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'false');
   root.setAttribute('aria-labelledby', `m-consent-title-${safeId(preview.id)}`);
   const live = document.createElement('p'); live.className = 'm-consent__status'; live.setAttribute('role', 'status'); live.setAttribute('aria-live', 'polite');
   host.replaceChildren(root);
 
+  let disclosure = options.disclosure, shownHere: string | null = null;
+  const disclosureLine = element('p', undefined, 'm-consent__disclosure');
+  function renderDisclosure() {
+    const version = disclosure?.disclosureVersion;
+    const show = !!disclosure?.unverified.length && !!version &&
+      (shownHere === version || runtimeDisclosureReceipt.read() !== version);
+    const ownSetup = 'Marginalia uses your own Codex setup, including its settings and tools.';
+    disclosureLine.textContent = show
+      ? disclosure?.unverified.includes(ownSetup) ? ownSetup : 'Marginalia cannot yet confirm the limits Codex runs under on this device: where sign-in came from, inherited settings, and access to files, tools and the network.'
+      : '';
+    disclosureLine.hidden = !show;
+    if (show) { shownHere = version; runtimeDisclosureReceipt.shown(version); }
+  }
   const render = () => {
-    const title = element('h2', 'Review what will be sent', 'm-consent__title'); title.id = `m-consent-title-${safeId(preview.id)}`; title.tabIndex = -1;
+    const title = element('h2', 'Send this passage to Codex', 'm-consent__title'); title.id = `m-consent-title-${safeId(preview.id)}`; title.tabIndex = -1;
     const summary = element('dl', undefined, 'm-consent__summary');
     const scopeLabel = preview.scope === 'open-session' ? 'Codex for this site; web checks are not available yet' : preview.scopeLabel;
     summary.append(element('dt', 'Recipient'), element('dd', preview.recipientLabel), element('dt', 'Permission'), element('dd', scopeLabel));
-    const exact = element('div', undefined, 'm-consent__outgoing');
+    const reading = element('div', undefined, 'm-consent__reading');
+    for (const part of preview.outgoing) {
+      if (part.label !== 'Bounded reading packet') continue;
+      try {
+        const packet: unknown = JSON.parse(part.text);
+        if (!packet || typeof packet !== 'object' || !('selection' in packet)) continue;
+        const selection = packet.selection;
+        if (selection && typeof selection === 'object' && 'exact' in selection && typeof selection.exact === 'string')
+          reading.append(element('h3', 'The passage'), element('blockquote', selection.exact));
+        if ('answeredNote' in packet && packet.answeredNote && typeof packet.answeredNote === 'object' &&
+            'text' in packet.answeredNote && typeof packet.answeredNote.text === 'string')
+          reading.append(element('h3', 'Your note'), element('p', packet.answeredNote.text));
+        if ('question' in packet && typeof packet.question === 'string') reading.append(element('h3', 'Your question'), element('p', packet.question));
+      } catch { /* Exact outgoing bytes remain available even without a readable projection. */ }
+    }
+    const exact = element('details', undefined, 'm-consent__outgoing');
+    exact.append(element('summary', 'What is sent'));
     for (const part of preview.outgoing) {
       const item = element('section', undefined, 'm-consent__part');
-      const heading = element('h3', part.label); heading.id = `m-consent-part-${safeId(preview.id)}-${exact.children.length}`;
+      const heading = element('h3', outgoingLabel(part.label)); heading.id = `m-consent-part-${safeId(preview.id)}-${exact.children.length}`;
       const outgoing = element('pre', part.text); outgoing.tabIndex = 0; outgoing.setAttribute('aria-labelledby', heading.id);
       item.append(heading, outgoing); exact.append(item);
     }
@@ -68,7 +100,7 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
       : undefined;
     const explanation = preview.scope === 'open-session'
       ? element('p', 'Web checks are not available yet. Nothing will be looked up.', 'm-consent__note')
-      : element('p', 'Your question is sent to Codex. Other internet access has not been established as blocked on this device.', 'm-consent__note');
+      : element('p', 'Your question goes to Codex through the app on this device.', 'm-consent__note');
     const unavailable = preview.state !== 'ready' || !canAuthorize
       ? element('p', 'This action is unavailable here. Nothing was sent.', 'm-consent__note')
       : undefined;
@@ -86,8 +118,9 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
         action(`Never on ${preview.site}`, () => choose('never-site'), 'm-consent__never-site'),
       );
     }
-    const dismiss = action('Not now', notNow); dismiss.dataset.dismiss = 'true'; controls.append(dismiss);
-    root.replaceChildren(title, summary, exact, ...(capability ? [capability] : []), explanation, ...(unavailable ? [unavailable] : []), controls, live);
+    const dismiss = action('Cancel', notNow); dismiss.dataset.dismiss = 'true'; controls.append(dismiss);
+    root.replaceChildren(title, reading, summary, explanation, disclosureLine, ...(capability ? [capability] : []), ...(unavailable ? [unavailable] : []), controls, exact, live);
+    renderDisclosure();
     setBusy(busy);
   };
 
@@ -125,13 +158,13 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
     return Array.from(root.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, [tabindex]'))
       .filter(node => node.tabIndex >= 0 && !node.matches(':disabled') && !node.closest('[hidden], [inert]'));
   }
-  function focusEntry() { (root.querySelector<HTMLElement>('button:not([disabled])') ?? focusable()[0] ?? root).focus({ preventScroll: true }); }
+  function focusEntry() { (root.querySelector<HTMLElement>('button:not([disabled])') ?? focusable()[0] ?? root).focus(); }
   function destroy() {
     if (destroyed) return;
     const ownedFocus = root.contains(document.activeElement);
     destroyed = true; generation++; cancelAnimationFrame(initialFocus);
     pendingDecision?.abort(new DOMException('Consent sheet closed.', 'AbortError')); abort.abort(); root.remove();
-    if (ownedFocus && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+    if (ownedFocus && returnFocus?.isConnected) returnFocus.focus();
   }
   function notNow() {
     if (destroyed) return;
@@ -144,6 +177,7 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
   render();
   const initialFocus = requestAnimationFrame(() => { if (!destroyed && root.isConnected) focusEntry(); });
   return {
+    updateDisclosure(next) { if (destroyed) return; disclosure = next; renderDisclosure(); },
     update(next) {
       if (destroyed) return;
       const ownedFocus = root.contains(document.activeElement);
@@ -226,3 +260,11 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, c
   const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node;
 }
 function safeId(value: string) { return value.replace(/[^A-Za-z0-9_-]/g, '-'); }
+
+
+function outgoingLabel(label: string): string {
+  const labels: Record<string, string> = { 'Bounded reading packet': 'The passage and context',
+    'Adapter prompt': 'Instructions for the reply', 'Workspace instructions': 'Instructions for local work',
+    'Reply schema': 'The reply format', 'Reply schema file': 'The reply format', 'Structured output schema': 'The response format' };
+  return labels[label] ?? label;
+}

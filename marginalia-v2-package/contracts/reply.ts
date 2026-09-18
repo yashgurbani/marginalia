@@ -27,8 +27,9 @@ export type ReplyCapability = 'samples' | 'solver' | 'media.audio' | 'media.imag
 
 export type TextSelector = { exact: string; prefix?: string; suffix?: string };
 export type SourceBinding = { name: string; meaning: string; relation: SourceRelation; selector: TextSelector };
-export type Parameter = { name: string; label: string; default: number; min: number; max: number; unit: string };
-export type Assumption = { id: string; text: string; editable: boolean };
+export type Parameter = { name: string; label: string; default: number; min: number; max: number; unit: string; sourceBinding?: SourceBinding };
+export type AssumptionBinding = { parameter: string; min: number; max: number };
+export type Assumption = { id: string; text: string; editable: boolean; binding?: AssumptionBinding };
 export type CandidateCheck = {
   id: string;
   criterion: string;
@@ -304,6 +305,18 @@ function validateSelector(selector: unknown, sourceText: string, path: string, e
   if (!matched) errors.push(`${path}: selector does not match the supplied source text.`);
 }
 
+function validateSourceBinding(value: unknown, sourceText: string, path: string, errors: string[], sourceNames?: Set<string>) {
+  if (!objectValue(value, path, errors)) return;
+  keys(value, ['name', 'meaning', 'relation', 'selector'], path, errors);
+  if (idValue(value.name, `${path}.name`, errors)) {
+    if (sourceNames?.has(value.name)) errors.push(`${path}.name: duplicate source binding.`);
+    sourceNames?.add(value.name);
+  }
+  stringValue(value.meaning, `${path}.meaning`, errors, { max: 512, safeText: true });
+  if (!relations.has(value.relation as SourceRelation)) errors.push(`${path}.relation: invalid source relation.`);
+  validateSelector(value.selector, sourceText, `${path}.selector`, errors);
+}
+
 function validateNamedExpressionMap(value: unknown, state: string[], names: string[], path: string, errors: string[]) {
   if (!objectValue(value, path, errors)) return;
   const stateSet = new Set(state);
@@ -404,6 +417,21 @@ function validateRange(value: unknown, path: string, errors: string[]) {
   if (!arrayValue(value, path, errors, 2, 2)) return;
   const valid = value.map((item, index) => finite(item, `${path}[${index}]`, errors));
   if (value.length === 2 && valid.every(Boolean) && (value[0] as number) >= (value[1] as number)) errors.push(`${path}: lower bound must be below upper bound.`);
+}
+
+function validateAssumptionBinding(value: unknown, parameterNames: readonly string[], parameterBounds: ReadonlyMap<string, { min: number; max: number }>, path: string, errors: string[]) {
+  if (!objectValue(value, path, errors)) return;
+  keys(value, ['parameter', 'min', 'max'], path, errors);
+  const parameter = idValue(value.parameter, `${path}.parameter`, errors) ? value.parameter as string : undefined;
+  if (parameter && !validName(parameter)) errors.push(`${path}.parameter: invalid mathematical name.`);
+  if (parameter && !parameterNames.includes(parameter)) errors.push(`${path}.parameter: unknown parameter.`);
+  const min = finite(value.min, `${path}.min`, errors);
+  const max = finite(value.max, `${path}.max`, errors);
+  if (min && max && (value.min as number) >= (value.max as number)) errors.push(`${path}: min must be below max.`);
+  const declared = parameter ? parameterBounds.get(parameter) : undefined;
+  if (declared && min && max && ((value.min as number) < declared.min || (value.max as number) > declared.max)) {
+    errors.push(`${path}: range must stay within the declared parameter range.`);
+  }
 }
 
 function validateStringMap(value: unknown, path: string, errors: string[], max: number, noPlaceholders = false) {
@@ -539,10 +567,16 @@ function validateReplyData(input: unknown, context: ValidationContext): Validati
     if (objectValue(input.illustration, '$.illustration', errors)) { keys(input.illustration, ['value', 'statement'], '$.illustration', errors); if (typeof input.illustration.value !== 'boolean') errors.push('$.illustration.value: expected a boolean.'); stringValue(input.illustration.statement, '$.illustration.statement', errors, { max: 1024, safeText: true }); }
   }
   const sourceNames = new Set<string>();
-  if (arrayValue(input.sourceBindings, '$.sourceBindings', errors, REPLY_LIMITS.sourceBindings)) input.sourceBindings.forEach((binding, n) => { const p = `$.sourceBindings[${n}]`; if (!objectValue(binding, p, errors)) return; keys(binding, ['name', 'meaning', 'relation', 'selector'], p, errors); if (idValue(binding.name, `${p}.name`, errors)) { if (sourceNames.has(binding.name)) errors.push(`${p}.name: duplicate source binding.`); sourceNames.add(binding.name); } stringValue(binding.meaning, `${p}.meaning`, errors, { max: 512, safeText: true }); if (!relations.has(binding.relation as SourceRelation)) errors.push(`${p}.relation: invalid source relation.`); validateSelector(binding.selector, context.sourceText, `${p}.selector`, errors); });
+  if (arrayValue(input.sourceBindings, '$.sourceBindings', errors, REPLY_LIMITS.sourceBindings)) input.sourceBindings.forEach((binding, n) => validateSourceBinding(binding, context.sourceText, `$.sourceBindings[${n}]`, errors, sourceNames));
   const parameterNames: string[] = [];
-  if (arrayValue(input.parameters, '$.parameters', errors, REPLY_LIMITS.parameters)) input.parameters.forEach((parameter, n) => { const p = `$.parameters[${n}]`; if (!objectValue(parameter, p, errors)) return; keys(parameter, ['name', 'label', 'default', 'min', 'max', 'unit'], p, errors); if (idValue(parameter.name, `${p}.name`, errors) && validName(parameter.name)) { if (parameterNames.includes(parameter.name)) errors.push(`${p}.name: duplicate parameter.`); parameterNames.push(parameter.name); } else if (typeof parameter.name === 'string' && !validName(parameter.name)) errors.push(`${p}.name: invalid mathematical name.`); stringValue(parameter.label, `${p}.label`, errors, { max: 256, safeText: true }); const min = finite(parameter.min, `${p}.min`, errors); const max = finite(parameter.max, `${p}.max`, errors); const def = finite(parameter.default, `${p}.default`, errors); if (min && max && (parameter.min as number) >= (parameter.max as number)) errors.push(`${p}: min must be below max.`); if (min && max && def && ((parameter.default as number) < (parameter.min as number) || (parameter.default as number) > (parameter.max as number))) errors.push(`${p}.default: value is outside parameter bounds.`); stringValue(parameter.unit, `${p}.unit`, errors, { max: 64, empty: true }); });
-  if (arrayValue(input.assumptions, '$.assumptions', errors, REPLY_LIMITS.assumptions)) { const ids = new Set<string>(); input.assumptions.forEach((assumption, n) => { const p = `$.assumptions[${n}]`; if (!objectValue(assumption, p, errors)) return; keys(assumption, ['id', 'text', 'editable'], p, errors); if (idValue(assumption.id, `${p}.id`, errors)) { if (ids.has(assumption.id)) errors.push(`${p}.id: duplicate assumption id.`); ids.add(assumption.id); } stringValue(assumption.text, `${p}.text`, errors, { max: 2048, safeText: true }); if (typeof assumption.editable !== 'boolean') errors.push(`${p}.editable: expected a boolean.`); }); }
+  const parameterBounds = new Map<string, { min: number; max: number }>();
+  if (arrayValue(input.parameters, '$.parameters', errors, REPLY_LIMITS.parameters)) input.parameters.forEach((parameter, n) => { const p = `$.parameters[${n}]`; if (!objectValue(parameter, p, errors)) return; keys(parameter, ['name', 'label', 'default', 'min', 'max', 'unit', 'sourceBinding'], p, errors, ['name', 'label', 'default', 'min', 'max', 'unit']); if (idValue(parameter.name, `${p}.name`, errors) && validName(parameter.name)) { if (parameterNames.includes(parameter.name)) errors.push(`${p}.name: duplicate parameter.`); parameterNames.push(parameter.name); } else if (typeof parameter.name === 'string' && !validName(parameter.name)) errors.push(`${p}.name: invalid mathematical name.`); stringValue(parameter.label, `${p}.label`, errors, { max: 256, safeText: true }); const min = finite(parameter.min, `${p}.min`, errors); const max = finite(parameter.max, `${p}.max`, errors); const def = finite(parameter.default, `${p}.default`, errors); if (min && max && (parameter.min as number) >= (parameter.max as number)) errors.push(`${p}: min must be below max.`); if (min && max && def && ((parameter.default as number) < (parameter.min as number) || (parameter.default as number) > (parameter.max as number))) errors.push(`${p}.default: value is outside parameter bounds.`); stringValue(parameter.unit, `${p}.unit`, errors, { max: 64, empty: true }); if (Object.hasOwn(parameter, 'sourceBinding')) validateSourceBinding(parameter.sourceBinding, context.sourceText, `${p}.sourceBinding`, errors); });
+  if (Array.isArray(input.parameters)) for (const parameter of input.parameters) {
+    if (isRecord(parameter) && typeof parameter.name === 'string' && validName(parameter.name) && typeof parameter.min === 'number' && Number.isFinite(parameter.min) && typeof parameter.max === 'number' && Number.isFinite(parameter.max)) {
+      parameterBounds.set(parameter.name, { min: parameter.min, max: parameter.max });
+    }
+  }
+  if (arrayValue(input.assumptions, '$.assumptions', errors, REPLY_LIMITS.assumptions)) { const ids = new Set<string>(); input.assumptions.forEach((assumption, n) => { const p = `$.assumptions[${n}]`; if (!objectValue(assumption, p, errors)) return; keys(assumption, ['id', 'text', 'editable', 'binding'], p, errors, ['id', 'text', 'editable']); if (idValue(assumption.id, `${p}.id`, errors)) { if (ids.has(assumption.id)) errors.push(`${p}.id: duplicate assumption id.`); ids.add(assumption.id); } stringValue(assumption.text, `${p}.text`, errors, { max: 2048, safeText: true }); if (typeof assumption.editable !== 'boolean') errors.push(`${p}.editable: expected a boolean.`); if (Object.hasOwn(assumption, 'binding')) { if (assumption.editable !== true) errors.push(`${p}.binding: a bound assumption must be editable.`); validateAssumptionBinding(assumption.binding, parameterNames, parameterBounds, `${p}.binding`, errors); } }); }
   if (arrayValue(input.limitations, '$.limitations', errors, REPLY_LIMITS.limitations)) input.limitations.forEach((item, n) => stringValue(item, `$.limitations[${n}]`, errors, { max: 2048, safeText: true }));
   const declaredCapabilities = new Set<ReplyCapability>();
   if (Object.hasOwn(input, 'requiredCapabilities') && arrayValue(input.requiredCapabilities, '$.requiredCapabilities', errors, capabilities.size)) input.requiredCapabilities.forEach((item, n) => { if (!capabilities.has(item as ReplyCapability)) errors.push(`$.requiredCapabilities[${n}]: unknown capability.`); else declaredCapabilities.add(item as ReplyCapability); });

@@ -359,7 +359,7 @@ test('selection captures safe source identity without page mutation or implicit 
     assert.equal(snapshot.document, 'capture-document-1');
     assert.notEqual(snapshot.document, 'browser-document-1');
     assert.equal(snapshot.capture.url, 'https://arxiv.org/html/2303.08774v6');
-    assert.equal(snapshot.capture.pageType, 'Paper');
+    assert.equal(snapshot.capture.pageType, 'paper');
     assert.equal(snapshot.capture.author, 'Ada Reader');
     assert.equal(snapshot.capture.publicationDate, '2026-09-17');
     assert.equal(snapshot.capture.venue, 'Local Journal');

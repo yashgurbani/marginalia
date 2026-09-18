@@ -69,6 +69,7 @@ const rejectionDetail: Record<SolverRejectionCode, string> = {
   'unknown-solver': 'The saved solver, or the reply it belongs to, is no longer the one this result would describe.',
   'artifact-unknown': 'The saved solver, or the reply it belongs to, is no longer the one this result would describe.',
   'artifact-modified': 'The saved solver, or the reply it belongs to, is no longer the one this result would describe.',
+  'manifest-required': 'This saved solver needs a manifest before it can run. Your saved reply remains available to read.',
   'path-unsafe': 'The saved solver, or the reply it belongs to, is no longer the one this result would describe.',
   'generation-drift': 'The saved solver, or the reply it belongs to, is no longer the one this result would describe.',
   'authorization-refused': 'You have not granted this recompute, or the grant has expired. Grant it again to run it.',

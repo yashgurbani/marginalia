@@ -14,6 +14,20 @@
 .m-asking dd { margin-inline-start: 1rem; overflow-wrap: anywhere; }
 .m-asking details { margin-block: .75rem; }
 .m-asking__saved { margin-block: .75rem; padding-inline-start: .5rem; border-inline-start: 1px solid var(--m-rule, currentColor); }
+.m-asking__skill-disclosure, .m-asking__skill-wait, .m-asking__skill-source { color: var(--m-ink-2, inherit); }
+.m-asking__unformatted { margin-block: .75rem; }
+.m-asking__unformatted h3 { margin-block: .5rem; font-size: inherit; }
+.m-asking__unformatted pre { margin-block: .5rem; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.m-asking-draft__use-skill { margin-block-start: var(--m-s2, .5rem); }
+.m-asking-draft__skills { margin-block: var(--m-s2, .5rem); }
+.m-asking-draft__skill + .m-asking-draft__skill { margin-block-start: var(--m-s1, .25rem); }
+.m-asking-draft__skill button { width: 100%; text-align: start; }
+.m-asking-draft__skill-description { display: block; margin-block-start: var(--m-s1, .25rem); color: var(--m-ink-2, inherit); font-size: var(--m-t-1, .875rem); }
 .m-asking__provisional { border-block: 1px dashed var(--m-rule-strong, currentColor); white-space: pre-wrap; overflow-wrap: anywhere; }
+.m-asking__provisional svg { display: block; width: 100%; height: auto; color: inherit; }
+.m-asking__provisional svg text { fill: currentColor; font: 20px system-ui, sans-serif; }
+.m-asking__provisional .mr-gridline { stroke: var(--m-rule, currentColor); stroke-width: .5; }
+.m-asking__provisional .mr-curve { stroke: var(--m-accent, currentColor); }
+.m-asking__provisional .mr-point { fill: var(--m-accent, currentColor); }
 .m-asking[data-presentation=sheet] { max-width: 100%; max-height: 100%; overflow: auto; padding: .75rem; background: var(--m-margin, inherit); }
 /* Both layouts retain every action. No viewport-based hiding, opacity fade, automatic scrolling or animation. */

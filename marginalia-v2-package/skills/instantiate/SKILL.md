@@ -49,3 +49,21 @@ for a partial result) in the assigned workspace, as the host instructs. Reading 
 host-supplied packet.json and reply.schema.json is allowed if needed. Do not inspect
 other files or execute computations. In structured-final mode, return the object
 through the supplied response channel. Delivery never makes a candidate a saved reply.
+
+## Answer first and concrete context
+
+The summary and first visible text block must state what the selected passage means in this
+concrete example, including the main value or outcome when one can be calculated. Follow with
+one equation, steps or table block that shows the work. Do not make the reader inspect the last
+step to find the result. State whether each input came from the page, the reader note or an
+illustration before using it.
+
+Keep one example in scope. Use declared parameters for values a reader may edit, bind page
+facts with exact selectors, and put every chosen illustrative number in assumptions or an
+authored origin. Plausible arithmetic is not a host check, so do not add checks or result
+claims merely because the calculation looks reasonable.
+
+The first block is an answer-bearing text block and the structured work follows it. Every
+visible part needs its own origin. A page origin names a quoted or interpreted binding whose
+selector matches the frozen source. Computed origins describe arithmetic only, and analogy
+origins describe explicitly illustrative cases.

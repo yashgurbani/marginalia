@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Note, QuoteAnchor, Thread } from '../contracts/reader.ts';
-import { wholeLibraryExport } from '../ui/library/export.ts';
+import { wholeLibraryExport, bibtexLibraryExport } from '../ui/library/export.ts';
 import { ReaderStore } from '../daemon/store.ts';
+import { dom, button, until, settle, deferred } from './t05-dom.ts';
+import { asHost } from './t05-harness.ts';
+import { mountLibrary } from '../ui/library/index.ts';
 
 const exportedAt = new Date('2026-09-18T12:00:00.000Z');
 
@@ -30,6 +33,7 @@ test('real store exports all thread states, removed notes and retained versions 
       assert.deepEqual(JSON.parse(item['marginalia:recordJson']), JSON.parse(JSON.stringify(record)));
       assert.equal(record.noteVersions.length, 2);
       assert.deepEqual(item.target.selector[1], { type: 'TextPositionSelector', start: 2, end: 7 });
+      assert.equal(item['marginalia:highlightColour'], undefined);
     }
     assert.equal(JSON.stringify(store.events()), before);
     assert.deepEqual(store.list(undefined, true).map(value => store.exportThread(value.id)), records);
@@ -62,6 +66,7 @@ type ParsedAnnotation = {
   'marginalia:state': Thread['state'];
   'marginalia:revision': number;
   'marginalia:deletedAt': string | null;
+  'marginalia:highlightColour'?: Thread['highlightColour'];
   'marginalia:anchorId': string;
   'marginalia:kind': string;
   'marginalia:recordJson': string;
@@ -126,6 +131,8 @@ test('whole-library export round trips every thread, note, state, and anchor acr
   assert.ok(output.markdown.includes(String.raw`> \# heading? \[link\]\(https://invalid\) — café 🙂`));
   assert.match(output.markdown, /State: removed \(2026-09-18T10:00:00\.000Z\)/);
   assert.match(output.markdown, /> 下一行/);
+  assert.match(output.markdown, /Highlight colour: yellow/);
+  assert.equal(roundTripped.get('thread-a')!['marginalia:highlightColour'], 'yellow');
 });
 
 test('W3C sibling selectors independently select the full quote with emoji before and inside it', () => {
@@ -194,3 +201,62 @@ test('whole-library export rejects duplicate thread identities', () => {
   const value = thread({ id: 'thread-a', anchorId: 'anchor-a', anchor: { exact: 'x', prefix: '', suffix: '', start: 0, end: 1 } });
   assert.throws(() => wholeLibraryExport([{ thread: value }, { thread: value }], exportedAt), /more than once/);
 });
+
+test('BibTeX deduplicates captures, keeps removed sources, and preserves stable unique keys across order changes', () => {
+  const base = thread({ id: 'a', anchorId: 'aa', anchor: { kind: 'whole-page', exact: '', prefix: '', suffix: '', start: 0, end: 0 }, sourceVersionId: 'capture-a' });
+  const records = [{ thread: base, source: { id: 'capture-a', text: 'x', title: 'Captured title' } },
+    { thread: { ...base, id: 'b', deletedAt: '2026-09-18' }, source: { id: 'capture-a', text: 'x', title: 'Captured title' } },
+    { thread: { ...base, id: 'c', sourceVersionId: 'capture-b', deletedAt: '2026-09-18' }, source: { id: 'capture-b', text: 'y', title: 'Earlier retained title' } }];
+  const output = bibtexLibraryExport(records); assert.equal(output.match(/@misc\{/g)?.length, 2);
+  assert.equal(output, bibtexLibraryExport([...records].reverse())); assert.match(output, /Earlier retained title/);
+  const keys = [...output.matchAll(/@misc\{([^,]+)/g)].map(value => value[1]); assert.equal(new Set(keys).size, 2);
+  assert.ok(wholeLibraryExport(records, exportedAt).markdown.includes('removed'));
+});
+
+test('BibTeX uses only captured metadata and escapes syntax without losing Unicode names', () => {
+  const value = thread({ id: 'a', anchorId: 'aa', anchor: { kind: 'whole-page', exact: '', prefix: '', suffix: '', start: 0, end: 0 }, sourceVersionId: 'v' });
+  const output = bibtexLibraryExport([{ thread: value, source: { id: 'v', text: 'x', title: 'A {model} & 10% _x #1 $5 \\ ~ ^', author: 'Élodie Müller', publicationDate: '2026-09-18', venue: 'Captured venue' } }]);
+  assert.ok(output.includes('A \\textbraceleft{}model\\textbraceright{} \\& 10\\% \\_x \\#1 \\$5 \\textbackslash{} \\textasciitilde{} \\textasciicircum{}'));
+  assert.match(output, /author = \{Élodie Müller\}/); assert.match(output, /year = \{2026\}/); assert.match(output, /date = \{2026-09-18\}/);
+  const missing = bibtexLibraryExport([{ thread: value, source: { text: 'x' } }]);
+  assert.doesNotMatch(missing, /title =|author =|year =|date =|howpublished =/); assert.match(missing, /url =/);
+  assert.equal(bibtexLibraryExport([]), '');
+});
+
+test('BibTeX rejects mismatched source identities and conflicting metadata for one immutable capture', () => {
+  const value = thread({ id: 'a', anchorId: 'aa', anchor: { kind: 'whole-page', exact: '', prefix: '', suffix: '', start: 0, end: 0 }, sourceVersionId: 'v' });
+  assert.throws(() => bibtexLibraryExport([{ thread: value, source: { id: 'other', text: 'x' } }]), /differs/);
+  assert.throws(() => bibtexLibraryExport([{ thread: value, source: { text: 'x', title: 'First' } }, { thread: { ...value, id: 'b' }, source: { text: 'x', title: 'Other' } }]), /disagrees/);
+});
+
+test('BibTeX keeps unmatched captured braces outside the bibliography grammar', () => {
+  const value = thread({ id: 'a', anchorId: 'aa', anchor: { kind: 'whole-page', exact: '', prefix: '', suffix: '', start: 0, end: 0 } });
+  for (const title of ['Unclosed {', 'Unopened }', '\\input{hostile}']) {
+    const output = bibtexLibraryExport([{ thread: value, source: { text: '', title } }]);
+    assert.equal([...output].filter(c => c === '{').length, [...output].filter(c => c === '}').length);
+    assert.doesNotMatch(output, /\\input\{/);
+    assert.match(output, /\\textbrace(?:left|right)\{\}/);
+  }
+});
+
+test('BibTeX URL fields preserve queries and existing escapes while encoding grammar-breaking characters', () => {
+  const value = thread({ id: 'a', anchorId: 'aa', sourceUrl: 'https://example.org/a_b%20c?q=x&v={a}\\b#part', anchor: { kind: 'whole-page', exact: '', prefix: '', suffix: '', start: 0, end: 0 } });
+  const output = bibtexLibraryExport([{ thread: value }]);
+  assert.ok(output.includes('url = {https://example.org/a_b%20c?q=x&v=%7Ba%7D%5Cb#part}'));
+  assert.doesNotMatch(output, /%2520|\\_|\\&/);
+});
+
+test('explicit BibTeX action downloads all retained captures once and disposal fences late export', async t => {
+  const e = dom(t), blobs: Blob[] = [], value = thread({ id: 'a', anchorId: 'aa', anchor: { kind: 'whole-page', exact: '', prefix: '', suffix: '', start: 0, end: 0 } });
+  let lists = 0;
+  t.mock.method(URL, 'createObjectURL', (blob: Blob) => { blobs.push(blob); return 'blob:bibtex'; }); t.mock.method(URL, 'revokeObjectURL', () => {});
+  let mounted = mountLibrary(asHost(e.root), { listThreads: async () => { lists++; return [value]; }, exportThread: async () => ({ thread: value, source: { text: '', title: 'Captured' } }), onClose() {}, onOpenThread() {} });
+  await settle(); assert.equal(blobs.length, 0);
+  const action = button(e.root, 'Export BibTeX'); action.click(); action.click(); await until(() => blobs.length === 1); await settle();
+  assert.equal(lists, 2); assert.match(blobs[0].type, /bibtex/); assert.match(await blobs[0].text(), /title = \{Captured\}/); mounted.destroy();
+  const pending = deferred<unknown>();
+  mounted = mountLibrary(asHost(e.root), { listThreads: async () => [value], exportThread: async () => pending.promise, onClose() {}, onOpenThread() {} });
+  await settle(); button(e.root, 'Export BibTeX').click(); await settle(); mounted.destroy();
+  pending.resolve({ thread: value }); await settle(); await settle(); assert.equal(blobs.length, 1);
+});
+

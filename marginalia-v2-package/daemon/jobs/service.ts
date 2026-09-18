@@ -1,4 +1,9 @@
-import { readFile } from 'node:fs/promises';
+import type { ReaderSkillSelection } from '../../contracts/reader-skills.ts';
+import { READER_SKILL_TIMEOUT_MS, unavailableSkills, skillProvenance, validReaderSkill } from '../reader-skills.ts';
+import { authoredSkillText, skillOutputHash, skillReplyAllowed, rejectedSkillOutput } from '../reader-skills.ts';
+import { readRawSkillReply } from './workspace.ts';
+import { structuredReplySchema, structuredReplyText } from './structured-reply.ts';
+import { readFile, mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ProviderNotSentError, type ProviderHandle, type ProviderRequest } from '../../contracts/job-runner.ts';
 import { capabilitiesForIntent, canonicalReplyData, parseAndValidateReply, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
@@ -8,14 +13,15 @@ import type { OutgoingPart, PrepareConsentInput } from '../../contracts/consent.
 import type { ReaderStore } from '../store.ts';
 import type { AuthorizedRuntimeFactory, RunningProvider } from './runtime.ts';
 import { ClarificationLimitError, JobConflictError, JobStore, packetDigest } from './store.ts';
-import { prepareContinuationWorkspace, prepareWorkspace, provisionalForDisplay, readReplyFile, restoreCompletedWorkspace, verifyContinuationWorkspace } from './workspace.ts';
+import { prepareContinuationWorkspace, prepareWorkspace, provisionalForDisplay, readReplyFile, restoreCompletedWorkspace, verifyContinuationWorkspace, type ContinuationSolverAuthority } from './workspace.ts';
+import { samePath } from './workspace-integrity.ts';
 import { buildProviderPrompt, prepareEnvelope } from './envelope.ts';
 import type { LibrarySettingsService } from '../library.ts';
 import { prepareSendCheckpoint } from './send-checkpoint.ts';
 import { fitOutgoingPacket, utf8Prefix } from './outgoing-budget.ts';
 import { frozenFollowup } from './followup-context.ts';
 import { buildProviderPacket } from './packet.ts';
-import { loadHostInstructions } from './host-instructions.ts';
+import { loadHostInstructions, readerSkillInstructions } from './host-instructions.ts';
 import { commitSucceededReplyWithSolverBindings } from './solver-bindings.ts';
 
 const ID = /^[\w-]{1,100}$/;
@@ -27,10 +33,12 @@ export type JobServiceOptions = {
   workspaceRoot: string;
   runtimeFactory?: AuthorizedRuntimeFactory;
   timeoutMs?: number;
-  library: Pick<LibrarySettingsService, 'modelFor' | 'continuationIdentity'>;
+  library: Pick<LibrarySettingsService, 'modelFor' | 'continuationIdentity'> & Partial<Pick<LibrarySettingsService, 'autoAssist'>>;
   defaults?: { provider: StartJobInput['provider']; mode: StartJobInput['mode']; policyKey?: string;
     modeFor?: (intent: StartJobInput['intent']) => StartJobInput['mode'];
     policyFor?: (workspace: string, mode: StartJobInput['mode'], model: string, provider: StartJobInput['provider']) => string;
+    /** Host-owned authoring selection. Request and reply data cannot enable it. */
+    solverAuthoring?: boolean;
     capabilities: ReplyCapability[] };
 };
 
@@ -41,8 +49,9 @@ export class JobService {
   get unavailableReason(): string | undefined {
     return !this.defaults || !this.configured && !!this.factory ? 'No host-owned execution policy is configured.'
       : this.factory?.unavailableReason ?? (!this.factory ? 'No authorized provider runtime is configured.'
-        : !this.available ? 'Dedicated sign-in and runtime policy evidence are not ready.' : undefined);
+        : !this.available ? 'The configured runtime is unavailable.' : undefined);
   }
+  get disclosure() { return { unverified: [...this.factory?.unverified ?? []], disclosureVersion: this.factory?.disclosureVersion ?? null }; }
   private reader: ReaderStore;
   private workspaceRoot: string;
   private factory?: AuthorizedRuntimeFactory;
@@ -72,7 +81,8 @@ export class JobService {
       ['structured-final', 'workspace-files'].includes(defaults.mode) && Array.isArray(defaults.capabilities) &&
       defaults.capabilities.length <= CAPABILITIES.size && defaults.capabilities.every(value => CAPABILITIES.has(value)) &&
       (defaults.modeFor === undefined || typeof defaults.modeFor === 'function') &&
-      (defaults.policyFor === undefined || typeof defaults.policyFor === 'function')
+      (defaults.policyFor === undefined || typeof defaults.policyFor === 'function') &&
+      (defaults.solverAuthoring === undefined || typeof defaults.solverAuthoring === 'boolean')
       ? { ...defaults, capabilities: [...new Set(defaults.capabilities)] } : undefined;
     this.configured = !!options.runtimeFactory && !!this.defaults &&
       (typeof this.defaults.policyFor === 'function' || !!this.defaults.policyKey && isDigest(this.defaults.policyKey));
@@ -106,7 +116,7 @@ export class JobService {
           attempt.handoffMarked ? 'daemon-restarted-after-provider-handoff' : 'daemon-restarted-before-provider-dispatch');
         continue;
       }
-      if (attempt.state === 'validating' && attempt.providerHandle.state === 'completed') {
+      if (attempt.state === 'validating' && (attempt.providerHandle.state === 'completed' || job.context.readerSkill && rejectedSkillOutput(attempt.providerHandle))) {
         if (!this.factory) { this.store.setState(job.id, attempt.id, 'outcome_unknown', 'authorized-runtime-unavailable-after-restart'); continue; }
         try {
           if (job.mode === 'workspace-files') this.workspaces.set(attempt.id,
@@ -138,6 +148,18 @@ export class JobService {
       }
     }
   }
+  async readerSkills() {
+    if (!this.available || !this.factory?.readerSkills) return unavailableSkills();
+    await mkdir(this.workspaceRoot, { recursive: true });
+    try { return await this.factory.readerSkills(this.workspaceRoot); } catch { return unavailableSkills(); }
+  }
+  private async requireReaderSkill(selection: ReaderSkillSelection | undefined) {
+    if (!selection) return;
+    const catalog = await this.readerSkills();
+    if (catalog.status !== 'ready' || catalog.revision !== selection.catalogRevision || !catalog.skills.some(skill => skill.name === selection.name)) {
+      throw new JobConflictError('This installed skill changed or is unavailable. Review the skill request again.');
+    }
+  }
   get(id: string) { return this.store.get(id); }
   list(threadId?: string) { if (threadId !== undefined) requireId(threadId, 'thread'); return this.store.list(threadId); }
   async prepare(raw: PrepareJobInput, admit?: () => boolean): Promise<PreparedJobResult> {
@@ -147,7 +169,7 @@ export class JobService {
     const selection = this.library.modelFor(tier);
     const mode = this.modeFor(draft.intent);
     const input: StartJobInput = { ...draft, provider: this.defaults.provider, mode: mode,
-      capabilities: this.grantedCapabilities(draft.intent), model: selection.model,
+      capabilities: this.grantedCapabilities(draft.intent, mode, draft.readerSkill), model: selection.model,
       policyKey: this.policyFor(draft.id, mode, selection.model), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64) };
     const context = this.freezeContext(input, selection);
     const prepared = await this.prepared(input, context);
@@ -162,10 +184,11 @@ export class JobService {
     if (!previous || !['failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(previous.state)) throw new JobConflictError('Only finished unsuccessful work can be tried again.');
     const selection = this.library.modelFor(previous.context.intent === 'define' ? 'fast' : 'deep');
     const mode = this.modeFor(previous.context.intent);
-    const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: previous.threadId, intent: previous.context.intent,
+    const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: previous.threadId, intent: previous.context.intent, readerSkill: previous.context.readerSkill && { name: previous.context.readerSkill.name, catalogRevision: previous.context.readerSkill.catalogRevision },
       question: previous.context.question, provider: this.defaults.provider, mode: mode,
-      capabilities: this.store.capabilities(previous.id), model: selection.model,
+      capabilities: this.continuationCapabilities(previous, mode), model: selection.model,
       policyKey: this.policyFor(raw.id, mode, selection.model), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64), parentReplyId: previous.context.parentReplyId };
+    this.assertHostPlan(input, previous);
     const context = this.retryContext(previous, input, selection);
     const prepared = await this.prepared(input, context);
     assertAdmission(admit);
@@ -180,10 +203,11 @@ export class JobService {
     if (!parent || parent.state !== 'succeeded' || !parent.replyVersionId || !parent.latestAttemptId) throw new JobConflictError('A follow-up requires a confirmed completed reply.');
     const selection = this.library.modelFor(parent.context.intent === 'define' ? 'fast' : 'deep');
     const mode = this.modeFor(parent.context.intent);
-    const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: parent.threadId, intent: parent.context.intent,
+    const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: parent.threadId, intent: parent.context.intent, readerSkill: parent.context.readerSkill && { name: parent.context.readerSkill.name, catalogRevision: parent.context.readerSkill.catalogRevision },
       question: raw.question.trim(), provider: this.defaults.provider, mode: mode,
-      capabilities: this.store.capabilities(parent.id), model: selection.model,
+      capabilities: this.continuationCapabilities(parent, mode), model: selection.model,
       policyKey: this.policyFor(raw.id, mode, selection.model, parent), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64), parentReplyId: parent.replyVersionId };
+    this.assertHostPlan(input, parent);
     const context = this.followupContext(parent, input, selection);
     const prepared = await this.prepared(input, context);
     assertAdmission(admit);
@@ -220,10 +244,11 @@ export class JobService {
     if (!previous || !['failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(previous.state)) throw new JobConflictError('Only finished unsuccessful work can be tried again.');
     const selection = this.library.modelFor(previous.context.intent === 'define' ? 'fast' : 'deep');
     const mode = this.modeFor(previous.context.intent);
-    const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: previous.threadId, intent: previous.context.intent,
+    const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: previous.threadId, intent: previous.context.intent, readerSkill: previous.context.readerSkill && { name: previous.context.readerSkill.name, catalogRevision: previous.context.readerSkill.catalogRevision },
       question: previous.context.question, provider: this.defaults.provider, model: selection.model, mode: mode, policyKey: this.policyFor(raw.id, mode, selection.model),
       grantId: raw.grantId, preparedPayloadDigest: raw.preparedPayloadDigest, parentReplyId: previous.context.parentReplyId,
-      capabilities: this.store.capabilities(previous.id) };
+      capabilities: this.continuationCapabilities(previous, mode) };
+    this.assertHostPlan(input, previous);
     const context = this.retryContext(previous, input, selection);
     const prepared = await this.prepared(input, context);
     if (prepared.digest !== input.preparedPayloadDigest) throw new JobConflictError('The reviewed outgoing content changed. Review it again.');
@@ -248,16 +273,17 @@ export class JobService {
     if (!parentAttempt?.providerHandle || parentAttempt.providerHandle.state !== 'completed') throw new JobConflictError('The provider completion is not confirmed.');
     const selection = this.library.modelFor(parent.context.intent === 'define' ? 'fast' : 'deep');
     const mode = this.modeFor(parent.context.intent);
-    const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: parent.threadId, intent: parent.context.intent,
+    const input: StartJobInput = { id: raw.id, idempotencyKey: raw.idempotencyKey, threadId: parent.threadId, intent: parent.context.intent, readerSkill: parent.context.readerSkill && { name: parent.context.readerSkill.name, catalogRevision: parent.context.readerSkill.catalogRevision },
       question: raw.question, provider: this.defaults.provider, model: selection.model,
       mode: mode, policyKey: this.policyFor(raw.id, mode, selection.model, parent),
-      grantId: raw.grantId, preparedPayloadDigest: raw.preparedPayloadDigest, parentReplyId: parent.replyVersionId, capabilities: this.store.capabilities(parent.id) };
+      grantId: raw.grantId, preparedPayloadDigest: raw.preparedPayloadDigest, parentReplyId: parent.replyVersionId, capabilities: this.continuationCapabilities(parent, mode) };
     const requestDigest = packetDigest(input);
     const prior = this.store.findByIdempotencyKey(input.idempotencyKey);
     if (prior) {
       if (prior.id !== input.id || prior.requestDigest !== requestDigest) throw new JobConflictError('This request key already identifies different work.');
       return prior;
     }
+    this.assertHostPlan(input, parent);
     const context = this.followupContext(parent, input, selection);
     const prepared = await this.prepared(input, context);
     if (prepared.digest !== input.preparedPayloadDigest) throw new JobConflictError('The reviewed outgoing content changed. Review it again.');
@@ -310,7 +336,7 @@ export class JobService {
         excerpt, omittedBytes: sourceBytes.length - Buffer.byteLength(excerpt), sha256: packetDigest(parent.reply) };
       if (outgoing.parentReply.omittedBytes) outgoing.omissions.push('The accepted parent reply was truncated to a 4,000-byte host-owned excerpt.');
     }
-    return { threadId: thread.id, sourceVersionId: thread.sourceVersionId, sourceUrl: thread.sourceUrl, sourceTitle: thread.sourceTitle,
+    return { ...(input.readerSkill ? { readerSkill: skillProvenance(input.readerSkill) } : {}), threadId: thread.id, sourceVersionId: thread.sourceVersionId, sourceUrl: thread.sourceUrl, sourceTitle: thread.sourceTitle,
       sourcePageType: source.pageType, sourceCapturedAt: source.capturedAt, sourceHash: source.hash,
       sourceText: source.text, passage: structuredClone(thread.anchor), answeredNote, question: input.question, intent: input.intent,
       parentReplyId: input.parentReplyId, preparedPayloadDigest: input.preparedPayloadDigest,
@@ -333,7 +359,7 @@ export class JobService {
     const factory = this.factory;
     if (!factory) throw new JobUnavailableError();
     let job = this.store.get(jobId)!;
-    this.store.setDeadline(jobId, attemptId, new Date(Date.now() + this.timeoutMs).toISOString());
+    this.store.setDeadline(jobId, attemptId, new Date(Date.now() + (job.context.readerSkill ? READER_SKILL_TIMEOUT_MS : this.timeoutMs)).toISOString());
     this.store.markPreparing(jobId, attemptId);
     const persistedAttempt = this.store.get(jobId)!.attempts.find(a => a.id === attemptId)!;
     this.armTimeout(jobId, attemptId, Date.parse(persistedAttempt.deadlineAt!));
@@ -359,11 +385,13 @@ export class JobService {
       this.runtimes.set(attemptId, retained);
     } else retained = undefined;
     const schema = await this.replySchema();
+    let continuationAuthority: ContinuationSolverAuthority | undefined;
     if (predecessor) {
       const parent = job.context.parentJobId && this.store.get(job.context.parentJobId);
       if (!parent) throw new JobConflictError('The continuation predecessor is unavailable.');
+      continuationAuthority = this.continuationSolverAuthority(job, parent, predecessor);
       await restoreCompletedWorkspace(this.workspaceRoot, predecessor.workspace, parent.context.outgoing);
-      await verifyContinuationWorkspace(predecessor.workspace, schema);
+      await verifyContinuationWorkspace(predecessor.workspace, schema, continuationAuthority);
       if (predecessor.provider === 'mcp-server' && !retained?.canResume?.(predecessor)) throw new Error('mcp-session-lost-before-handoff');
     }
     if (!this.active(jobId, attemptId)) { this.store.releaseUndispatchedContinuation(attemptId); await this.releaseRuntime(attemptId); return; }
@@ -371,7 +399,7 @@ export class JobService {
     // Capture the prepared state before the filesystem and provider startup awaits.
     const expectedHandoff = this.store.get(jobId)!;
     const workspace = predecessor
-      ? await prepareContinuationWorkspace(predecessor.workspace, predecessor.jobId, job.context.outgoing, schema)
+      ? await prepareContinuationWorkspace(predecessor.workspace, predecessor.jobId, job.context.outgoing, schema, continuationAuthority)
       : await prepareWorkspace(this.workspaceRoot, job.id, job.context.outgoing, schema);
     this.workspaces.set(attemptId, workspace);
     if (!this.active(jobId, attemptId)) { await this.releaseRuntime(attemptId); return; }
@@ -415,16 +443,22 @@ export class JobService {
         if (owner && canonical.revision !== undefined && PROVIDER_TERMINAL.has(canonical.state)) queueMicrotask(() => this.launch(this.settle(owner.id, handle.jobId, canonical.revision!), owner.id, handle.jobId));
         return canonical;
       },
+      captureFinalOutput: (text: string, handle: ProviderHandle) => {
+        const current = this.store.jobForAttempt(handle.jobId);
+        if (!current?.context.readerSkill || current.cancelRequested || current.latestAttemptId !== handle.jobId) return;
+        return authoredSkillText(text, current.provider);
+      },
       validateOutput: async (text: string, handle: ProviderHandle) => {
         const current = this.store.jobForAttempt(handle.jobId);
         if (!current || current.cancelRequested || current.latestAttemptId !== handle.jobId) return false;
-        return parseAndValidateReply(text, { sourceText: current.context.sourceText, capabilities: this.store.capabilities(current.id), requireOrigins: true }).ok;
+        const parsed = parseAndValidateReply(current.mode === 'structured-final' ? structuredReplyText(text, current.provider) ?? '' : text, { sourceText: current.context.sourceText, capabilities: this.store.capabilities(current.id), requireOrigins: true });
+        return parsed.ok && (!current.context.readerSkill || skillReplyAllowed(parsed.value));
       },
     };
   }
   private providerRequest(job: JobSnapshot, attemptId: string, workspace: string, outputSchema: Record<string, unknown>): ProviderRequest {
     return { jobId: attemptId, workspace, policyKey: job.policyKey, model: job.model, mode: job.mode,
-      prompt: buildProviderPrompt(job.context), ...(job.mode === 'structured-final' ? { outputSchema } : {}) };
+      prompt: buildProviderPrompt(job.context, job.mode, job.provider, outputSchema), ...(job.mode === 'structured-final' ? { outputSchema: structuredReplySchema(job.provider, outputSchema) } : {}) };
   }
   private async settleFromDurable(jobId: string, attemptId: string) {
     const attempt = this.store.get(jobId)?.attempts.find(candidate => candidate.id === attemptId);
@@ -438,25 +472,45 @@ export class JobService {
       if (!before || before.latestAttemptId !== attemptId || ['succeeded', 'timed_out'].includes(before.state)) return;
       const durableAttempt = before.attempts.find(attempt => attempt.id === attemptId);
       if (!durableAttempt?.dispatchClaimed || durableAttempt.revision !== expectedRevision || !durableAttempt.providerHandle) return;
+      if (before.context.readerSkill && durableAttempt.deadlineAt && Date.parse(durableAttempt.deadlineAt) <= Date.now()) { this.store.markTimedOut(jobId, attemptId); return; }
       const handle = durableAttempt.providerHandle;
       if (handle.state === 'outcome_unknown') { this.store.setState(jobId, attemptId, 'outcome_unknown', handle.reason ?? 'provider-outcome-unknown'); this.recordOutcome(attemptId, 'outcome_unknown'); return; }
-      if (handle.state === 'failed') { this.store.setState(jobId, attemptId, 'failed', handle.reason ?? 'provider-failed'); this.recordOutcome(attemptId, 'failed'); return; }
+      if (handle.state === 'failed' && !(before.context.readerSkill && rejectedSkillOutput(handle))) { this.store.setState(jobId, attemptId, 'failed', handle.reason ?? 'provider-failed'); this.recordOutcome(attemptId, 'failed'); return; }
       if (handle.state === 'cancelled' || handle.state === 'cancel_requested' || handle.tombstone) { this.store.setState(jobId, attemptId, 'cancelled', handle.reason ?? 'cancelled'); this.recordOutcome(attemptId, 'cancelled'); return; }
-      if (handle.state !== 'completed') return;
+      if (handle.state !== 'completed' && !(before.context.readerSkill && rejectedSkillOutput(handle))) return;
       if (durableAttempt.state !== 'validating') return;
       let job = this.store.get(jobId)!;
       if (job.cancelRequested) { this.store.setState(jobId, attemptId, 'cancelled', 'late-output-fenced'); this.recordOutcome(attemptId, 'cancelled'); return; }
       const capabilities = this.store.capabilities(jobId);
       let reply: CandidateReply | undefined;
+      let rawSkill = job.context.readerSkill ? this.store.pendingSkillOutput(attemptId) : undefined;
       if (job.mode === 'structured-final' && handle.output) {
-        const parsed = parseAndValidateReply(handle.output, { sourceText: job.context.sourceText, capabilities, requireOrigins: true });
+        const parsed = parseAndValidateReply(structuredReplyText(handle.output, job.provider) ?? '', { sourceText: job.context.sourceText, capabilities, requireOrigins: true });
         if (parsed.ok && parsed.value.status === 'complete') reply = parsed.value;
       } else if (job.mode === 'workspace-files') {
         const workspace = this.workspaces.get(attemptId);
-        if (workspace) reply = await readReplyFile(workspace, 'reply.json', job.context.sourceText, capabilities);
+        if (workspace) {
+          if (job.context.readerSkill) {
+            rawSkill = await readRawSkillReply(workspace);
+            const parsed = parseAndValidateReply(rawSkill ?? '', { sourceText: job.context.sourceText, capabilities, requireOrigins: true });
+            if (parsed.ok && parsed.value.status === 'complete') reply = parsed.value;
+          } else reply = await readReplyFile(workspace, 'reply.json', job.context.sourceText, capabilities);
+        }
       }
       if (!this.currentSettlement(jobId, attemptId, expectedRevision)) return;
-      if (!reply) { this.store.setState(jobId, attemptId, 'failed', 'invalid-or-missing-final-reply'); this.recordOutcome(attemptId, 'invalid-output'); return; }
+      if (reply && job.context.readerSkill && !skillReplyAllowed(reply)) reply = undefined;
+      if (!reply) {
+        if (job.context.readerSkill && rawSkill !== undefined && authoredSkillText(rawSkill, 'raw') !== undefined) {
+          const decision = await this.factory!.consent.revalidate(job, 'commit');
+          if (!this.currentSettlement(jobId, attemptId, expectedRevision)) return;
+          if (decision.grantId !== job.grantId || decision.policyKey !== job.policyKey) throw new Error('consent-revoked-before-commit');
+          const unformatted = { schema: 'marginalia.skill-output.v1' as const, text: rawSkill, sha256: skillOutputHash(rawSkill),
+            readerSkill: job.context.readerSkill, reason: 'reply-validation-failed' as const };
+          this.factory!.consent.withResultAcceptance(job, attemptId, () => this.store.saveUnformatted(jobId, attemptId, expectedRevision, unformatted), 'unformatted');
+          return;
+        } else this.store.setState(jobId, attemptId, 'failed', 'invalid-or-missing-final-reply');
+        this.recordOutcome(attemptId, 'invalid-output'); return;
+      }
       job = this.store.get(jobId)!;
       const decision = await this.factory!.consent.revalidate(job, 'commit');
       if (!this.currentSettlement(jobId, attemptId, expectedRevision)) return;
@@ -472,7 +526,7 @@ export class JobService {
       this.settling.delete(attemptId);
       let final = this.store.get(jobId);
       const latest = final?.attempts.find(a => a.id === attemptId);
-      if (final?.cancelRequested && final.state === 'cancel_requested' && latest?.providerHandle?.state === 'completed') {
+      if (final?.cancelRequested && final.state === 'cancel_requested' && (latest?.providerHandle?.state === 'completed' || rejectedSkillOutput(latest?.providerHandle))) {
         this.store.setState(jobId, attemptId, 'cancelled', 'late-output-fenced'); this.recordOutcome(attemptId, 'cancelled'); final = this.store.get(jobId);
       }
       if (latest && latest.revision !== expectedRevision && this.currentSettlement(jobId, attemptId, latest.revision)) {
@@ -487,7 +541,7 @@ export class JobService {
   private currentSettlement(jobId: string, attemptId: string, revision: number): boolean {
     const job = this.store.get(jobId), attempt = job?.attempts.find(a => a.id === attemptId);
     return !!job && !job.cancelRequested && job.latestAttemptId === attemptId && job.state === 'validating' &&
-      attempt?.state === 'validating' && attempt.revision === revision && attempt.providerHandle?.state === 'completed';
+      attempt?.state === 'validating' && attempt.revision === revision && (attempt.providerHandle?.state === 'completed' || !!job.context.readerSkill && rejectedSkillOutput(attempt.providerHandle));
   }
   private watchWorkspace(jobId: string, attemptId: string, workspace: string, capabilities: readonly ReplyCapability[]) {
     let reading = false;
@@ -498,7 +552,7 @@ export class JobService {
         const job = this.store.get(jobId);
         if (!job || job.latestAttemptId !== attemptId || job.cancelRequested || ['succeeded', 'failed', 'cancelled', 'timed_out', 'outcome_unknown'].includes(job.state)) return;
         const partial = await readReplyFile(workspace, 'reply.partial.json', job.context.sourceText, capabilities);
-        if (partial && !this.closing) this.store.saveProvisional(jobId, attemptId, provisionalForDisplay(partial));
+        if (partial && (!job.context.readerSkill || skillReplyAllowed(partial)) && !this.closing) this.store.saveProvisional(jobId, attemptId, provisionalForDisplay(partial));
       })().catch(async error => {
         if (error instanceof ClarificationLimitError) {
           this.store.setState(jobId, attemptId, 'failed', error.message);
@@ -575,12 +629,13 @@ export class JobService {
     return this.schema ??= await readFile(new URL('../../contracts/reply.schema.json', import.meta.url), 'utf8');
   }
   private async prepared(input: StartJobInput, context: FrozenJobContext) {
+    await this.requireReaderSkill(input.readerSkill);
     const replySchemaText = await this.replySchema();
-    context.hostInstructions = await loadHostInstructions(input.intent);
+    context.hostInstructions = input.readerSkill ? readerSkillInstructions(input.readerSkill) : await loadHostInstructions(input.intent, undefined, this.library.autoAssist?.().posture ?? 'balanced');
     const envelopeInput = { sourceUrl: context.sourceUrl,
-      scope: input.intent === 'evidence' || input.intent === 'explore' ? 'open-session' : 'cloud-inference',
+      scope: input.readerSkill || input.intent === 'evidence' || input.intent === 'explore' ? 'open-session' : 'cloud-inference',
       recipient: 'openai-codex', provider: input.provider, model: input.model, mode: input.mode, policyKey: input.policyKey,
-      context, outputSchema: input.mode === 'structured-final' ? JSON.parse(replySchemaText) as Record<string, unknown> : undefined,
+      context, outputSchema: input.mode === 'structured-final' ? structuredReplySchema(input.provider, JSON.parse(replySchemaText) as Record<string, unknown>) : undefined,
       replySchemaText } as const;
     const fitted = fitOutgoingPacket(context.outgoing, packet => prepareEnvelope({ ...envelopeInput, context: { ...context, outgoing: packet } }));
     context.outgoing = fitted.packet;
@@ -591,12 +646,63 @@ export class JobService {
     if (!['structured-final', 'workspace-files'].includes(mode)) throw new JobConflictError('The host execution mode is unavailable.');
     return mode;
   }
-  private grantedCapabilities(intent: StartJobInput['intent']): ReplyCapability[] {
-    return capabilitiesForIntent(intent).filter(capability => this.defaults!.capabilities.includes(capability));
+  private grantedCapabilities(intent: StartJobInput['intent'], mode: StartJobInput['mode'], skill?: ReaderSkillSelection): ReplyCapability[] {
+    return (skill ? ['samples', 'network.citations', 'network.shelf'] as const : capabilitiesForIntent(intent)).filter(capability => this.defaults!.capabilities.includes(capability) &&
+      (capability !== 'solver' || intent === 'simulate' && mode === 'workspace-files' && this.defaults!.solverAuthoring === true));
   }
-  private assertHostPlan(input: StartJobInput) {
-    if (!this.defaults || input.provider !== this.defaults.provider || input.mode !== this.modeFor(input.intent) || input.policyKey !== this.policyFor(input.id, input.mode, input.model) ||
-      packetDigest(input.capabilities ?? []) !== packetDigest(this.grantedCapabilities(input.intent))) throw new JobConflictError('The requested execution plan is not the current host plan. Review it again.');
+  private continuationCapabilities(previous: JobSnapshot, mode: StartJobInput['mode']): ReplyCapability[] {
+    const allowed = this.grantedCapabilities(previous.context.intent, mode, previous.context.readerSkill);
+    return this.store.capabilities(previous.id).filter(capability => allowed.includes(capability));
+  }
+  private continuationSolverAuthority(job: JobSnapshot, parent: JobSnapshot, predecessor: ProviderHandle): ContinuationSolverAuthority | undefined {
+    if (job.context.parentJobId !== parent.id || job.context.parentReplyId !== parent.replyVersionId ||
+      job.threadId !== parent.threadId || parent.state !== 'succeeded' || !parent.replyVersionId || parent.latestAttemptId !== predecessor.jobId) {
+      throw new JobConflictError('The continuation predecessor is no longer current.');
+    }
+    const thread = this.reader.get(parent.threadId);
+    if (!thread || thread.deletedAt) throw new JobConflictError('The continuation thread is unavailable.');
+
+    let replyId: string | null = parent.replyVersionId;
+    const visited = new Set<string>();
+    while (replyId) {
+      if (visited.has(replyId)) throw new JobConflictError('The accepted reply ancestry is cyclic.');
+      visited.add(replyId);
+      const accepted = this.reader.reply(replyId);
+      if (!accepted || accepted.deletedAt || accepted.threadId !== parent.threadId) throw new JobConflictError('The accepted reply ancestry is unavailable.');
+      const solvers = accepted.reply.blocks.filter((block): block is Extract<CandidateReply['blocks'][number], { type: 'solver' }> => block.type === 'solver');
+      if (solvers.length) {
+        const bindings: ContinuationSolverAuthority['bindings'][number][] = [];
+        for (const solver of solvers) {
+          const binding = this.store.solverArtifactBinding(accepted.id, solver.id);
+          if (!binding) throw new JobConflictError('An accepted solver ancestor has no persisted binding.');
+          const sourceJob = this.store.get(binding.jobId);
+          const sourceAttempt = sourceJob?.attempts.find(attempt => attempt.id === binding.attemptId);
+          const sourceHandle = sourceAttempt?.providerHandle;
+          if (!sourceJob || sourceJob.threadId !== parent.threadId || sourceJob.state !== 'succeeded' || sourceJob.replyVersionId !== accepted.id ||
+            sourceJob.latestAttemptId !== binding.attemptId || sourceHandle?.state !== 'completed' ||
+            !sourceHandle || !samePath(sourceHandle.workspace, binding.workspace)) {
+            throw new JobConflictError('An accepted solver ancestor is unrelated to this thread.');
+          }
+          // The workspace verifier checks the directory generation after format admission here.
+          bindings.push({ solverId: solver.id, binding: { ...structuredClone(binding),
+            workspaceGeneration: binding.workspaceGeneration.replace(/^manifest-v1:/, '') } });
+        }
+        // The nearest valid solver binding for the current predecessor is the
+        // only current artifact authority. Older solver pins describe prior
+        // work, even when they remain in the immutable reply ancestry. The
+        // workspace verifier owns the current generation, manifest and bytes.
+        if (bindings.every(entry => samePath(entry.binding.workspace, predecessor.workspace))) {
+          return { jobId: bindings[0].binding.jobId, attemptId: bindings[0].binding.attemptId,
+            reply: structuredClone(accepted.reply), bindings };
+        }
+      }
+      replyId = accepted.parentId;
+    }
+    return undefined;
+  }
+  private assertHostPlan(input: StartJobInput, previous?: JobSnapshot) {
+    if (!this.defaults || input.provider !== this.defaults.provider || input.mode !== this.modeFor(input.intent) || input.policyKey !== this.policyFor(input.id, input.mode, input.model, previous?.state === 'succeeded' ? previous : undefined) ||
+      packetDigest(input.capabilities ?? []) !== packetDigest(previous ? this.continuationCapabilities(previous, input.mode) : this.grantedCapabilities(input.intent, input.mode, input.readerSkill))) throw new JobConflictError('The requested execution plan is not the current host plan. Review it again.');
   }
   private policyFor(jobId: string, mode: StartJobInput['mode'], model: string, parent?: JobSnapshot): string {
     const defaults = this.defaults;
@@ -607,13 +713,13 @@ export class JobService {
   }
   private canResume(parent: JobSnapshot, mode: StartJobInput['mode'], model: string) {
     const attempt = parent.attempts.find(a => a.id === parent.latestAttemptId), handle = attempt?.providerHandle;
-    return !!handle && handle.state === 'completed' && !handle.tombstone &&
+    return !parent.context.readerSkill && !!handle && handle.state === 'completed' && !handle.tombstone &&
       parent.provider === this.defaults?.provider && parent.mode === mode && parent.model === model &&
       (parent.provider === 'app-server' || (parent.provider === 'mcp-server' && this.runtimes.get(attempt!.id)?.canResume?.(handle) === true));
   }
   private consentInput(input: StartJobInput, context: FrozenJobContext, prepared: { digest: string; outgoing: OutgoingPart[] }): PrepareConsentInput {
     return { requestId: input.id, bindingDigest: prepared.digest, sourceUrl: context.sourceUrl,
-      scope: input.intent === 'evidence' || input.intent === 'explore' ? 'open-session' : 'cloud-inference',
+      scope: input.readerSkill || input.intent === 'evidence' || input.intent === 'explore' ? 'open-session' : 'cloud-inference',
       recipient: 'openai-codex', recipientLabel: 'OpenAI Codex', provider: input.provider, policyKey: input.policyKey, outgoing: prepared.outgoing };
   }
   private preparedResult(input: StartJobInput, context: FrozenJobContext, prepared: { digest: string; outgoing: OutgoingPart[] }): PreparedJobResult {
@@ -644,6 +750,7 @@ function validateStart(value: StartJobInput): StartJobInput {
   for (const [name, item] of [['id', value.id], ['idempotencyKey', value.idempotencyKey], ['threadId', value.threadId], ['policyKey', value.policyKey], ['grantId', value.grantId]] as const) requireId(item, name);
   if (!isDigest(value.preparedPayloadDigest)) throw new Error('Invalid prepared outgoing digest.');
   if (!['define', 'simulate', 'instantiate', 'derive', 'diagram', 'evidence', 'explore', 'unsure'].includes(value.intent)) throw new Error('Invalid help type.');
+  if ('readerSkill' in value && value.readerSkill !== undefined && (value.intent !== 'unsure' || !validReaderSkill(value.readerSkill))) throw new Error('Invalid reader skill selection.');
   if (typeof value.question !== 'string' || !value.question.trim() || value.question.length > 4000) throw new Error('Invalid question.');
   if (!['app-server', 'mcp-server'].includes(value.provider) || !['structured-final', 'workspace-files'].includes(value.mode)) throw new Error('Invalid execution mode.');
   if (typeof value.model !== 'string' || !/^[A-Za-z0-9._-]{1,100}$/.test(value.model)) throw new Error('Invalid model.');
@@ -658,6 +765,7 @@ function validatePrepare(value: PrepareJobInput): PrepareJobInput {
   if (!value || typeof value !== 'object') throw new Error('Invalid work request.');
   for (const [name, item] of [['id', value.id], ['idempotencyKey', value.idempotencyKey], ['threadId', value.threadId]] as const) requireId(item, name);
   if (!['define', 'simulate', 'instantiate', 'derive', 'diagram', 'evidence', 'explore', 'unsure'].includes(value.intent)) throw new Error('Invalid help type.');
+  if ('readerSkill' in value && value.readerSkill !== undefined && (value.intent !== 'unsure' || !validReaderSkill(value.readerSkill))) throw new Error('Invalid reader skill selection.');
   if (typeof value.question !== 'string' || !value.question.trim() || value.question.length > 4000) throw new Error('Invalid question.');
   if (value.parentReplyId !== undefined) requireId(value.parentReplyId, 'parent reply');
   if (value.answeredNote && (!ID.test(value.answeredNote.noteId) || !Number.isSafeInteger(value.answeredNote.revision) || value.answeredNote.revision < 1)) throw new Error('Invalid note version.');

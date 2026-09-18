@@ -1,4 +1,6 @@
 import type { Thread, ThreadState } from './reader.ts';
+export type { InstantHelpSettings, InstantHelpSettingsChange } from './instant.ts';
+export type { AutoAssistSettings, AutoAssistSettingsChange } from './auto-assist.ts';
 
 export type LibraryThreadFilter = ThreadState | 'removed';
 export type ModelTier = 'fast' | 'deep';
@@ -27,7 +29,7 @@ export type ModelSelection = {
 export const vocabularyOriginLabels = {
   used: 'Used in your note',
   'looked-up': 'You asked for a definition',
-  stated: 'You chose Remember',
+  stated: 'You said this was familiar.',
   legacy: 'Earlier entry; origin not recorded',
 } as const;
 
@@ -68,6 +70,8 @@ export type VocabularyObservationResult = {
   deleted: boolean;
   entry?: VocabularyEntry;
 };
+
+export type VocabularyGatheringSettings = { enabled: boolean; revision: number };
 
 export type LibraryMatchKind = 'source' | 'note' | 'reply';
 

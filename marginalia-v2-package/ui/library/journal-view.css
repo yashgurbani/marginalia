@@ -1,0 +1,14 @@
+.ml-journal select { color: inherit; background: var(--m-surface); font: inherit; min-height: var(--m-target); max-width: 100%; }
+.ml-journal select:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 2px; }
+.ml-journal__source { border-top: 1px solid var(--m-rule); margin-top: var(--m-s5); padding-top: var(--m-s4); overflow-wrap: anywhere; }
+.ml-journal__item, .ml-journal__reply { margin-block: var(--m-s4); }
+.ml-journal__reply { margin-inline-start: var(--m-s4); }
+.ml-journal h4 { margin-bottom: var(--m-s1); }
+.ml-journal blockquote { margin-inline: 0; color: var(--m-ink-2); }
+.ml-journal__note { white-space: pre-wrap; }
+.ml-journal__meta { color: var(--m-ink-2); font-size: var(--m-t-1); }
+.ml-journal__journeys section { border-top: 1px solid var(--m-rule); padding-block: var(--m-s3); overflow-wrap: anywhere; }
+.ml-journal__journeys label { display: block; margin-block: var(--m-s2); }
+.ml-journal__journeys input { max-width: 100%; box-sizing: border-box; color: inherit; background: var(--m-surface); font: inherit; }
+.ml-journal__journeys input:not([type="checkbox"]) { min-height: var(--m-target); width: 100%; }
+.ml-journal__journeys input:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 2px; }

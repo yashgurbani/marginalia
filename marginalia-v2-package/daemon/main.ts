@@ -2,15 +2,12 @@ import { dedicatedRuntimeIdentity } from './runtime-identity.ts';
 import { createRuntimePolicy } from './runtime-policy.ts';
 import { mkdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { startServer } from './server.ts';
 import { createInterface } from 'node:readline';
 import { createDiagnostics } from './diagnostics.ts';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { AuthorizedRuntimeFactory } from './jobs/runtime.ts';
-import { randomUUID } from 'node:crypto';
-import { createCodexRuntimeFactory } from './jobs/runtime.ts';
-import { createConsentProviderAuthorization, createObservedPolicyEvidenceCollector } from './consent/index.ts';
+import { fileURLToPath } from 'node:url';
+import { createAuthorizedRuntime } from './reader-authorized-runtime.ts';
 import { createDedicatedHostEvidenceSource } from './consent/evidence-host.ts';
 import { launchProvider } from './providers/runtime.ts';
 import { inspectAppServer } from './providers/preflight.ts';
@@ -30,35 +27,24 @@ mkdirSync(solverProbeRoot, { recursive: true, mode: 0o700 });
 const port = Number(process.env.MARGINALIA_PORT ?? 43120);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MARGINALIA_PORT must be between 1 and 65535.');
 const runtimeIdentity = dedicatedRuntimeIdentity();
-const runtimePolicy = runtimeIdentity ? createRuntimePolicy(runtimeIdentity.codexHome) : undefined;
-const runtimeModule = process.env.MARGINALIA_AUTHORIZED_RUNTIME_MODULE;
+const runtimePolicy = runtimeIdentity ? createRuntimePolicy(runtimeIdentity.codexHome, runtimeIdentity.homeMode) : undefined;
 const hostEvidence = createDedicatedHostEvidenceSource();
-const installationDiagnostics = createDiagnostics(runtimeModule ? undefined : runtimeIdentity);
+const installationDiagnostics = createDiagnostics(runtimeIdentity);
 const diagnostics = async (refresh = false) => ({ ...await installationDiagnostics(refresh),
-  policyEvidence: runtimeModule ? { status: 'external-runtime-not-verified-here' } : { status: 'incomplete', missing: hostEvidence.readiness().reasons } });
-const runtimeFactoryBuilder = async ({ store, consent }: Parameters<NonNullable<Parameters<typeof startServer>[0]['runtimeFactoryBuilder']>>[0]) => {
-  if (runtimeModule) {
-    const module = await import(pathToFileURL(resolve(runtimeModule)).href) as { createAuthorizedRuntime?: (input: { dataDir: string; store: typeof store; consent: typeof consent }) => Promise<AuthorizedRuntimeFactory> | AuthorizedRuntimeFactory };
-    if (typeof module.createAuthorizedRuntime !== 'function') throw new Error('The authorized runtime module must export createAuthorizedRuntime().');
-    const factory = await module.createAuthorizedRuntime({ dataDir: canonicalDataDir, store, consent });
-    if (factory.consent !== consent || !factory.jobDefaults) throw new Error('An authorized runtime must use the provided consent authority and supply its host-owned jobDefaults.');
-    return factory;
-  }
-  if (!runtimeIdentity) return undefined;
-  const evidence = createObservedPolicyEvidenceCollector({ auditEpoch: randomUUID(), host: hostEvidence });
-  const authorization = createConsentProviderAuthorization({ consent, platform: process.platform as 'win32' | 'linux' | 'darwin', evidence });
-  return createCodexRuntimeFactory({ ...runtimeIdentity, consent, authorization,
-    dispatchReady: hostEvidence.readiness().ready, readiness: () => hostEvidence.readiness(),
-    configOverridesFor: (job, workspace) => runtimePolicy!.policyFor(workspace, job.mode, job.model, job.provider).configOverrides });
-};
-const jobDefaults = runtimePolicy && !runtimeModule ? runtimePolicy.jobDefaults : undefined;
-const solverTransport = runtimeIdentity && !runtimeModule ? createLazySolverTransport({
+  policyEvidence: { status: 'incomplete', missing: hostEvidence.readiness().reasons } });
+const runtimeFactoryBuilder: NonNullable<Parameters<typeof startServer>[0]['runtimeFactoryBuilder']> = async input =>
+  createAuthorizedRuntime({ ...input, dataDir: canonicalDataDir });
+const jobDefaults = runtimePolicy?.jobDefaults;
+const instantWorkspace = join(canonicalDataDir, 'instant');
+if (runtimeIdentity) mkdirSync(instantWorkspace, { recursive: true, mode: 0o700 });
+const solverTransport = runtimeIdentity ? createLazySolverTransport({
   launch: () => launchProvider('app-server', { ...runtimeIdentity, workspace: canonicalDataDir, timeoutMs: 60_000 }),
   inspect: rpc => inspectAppServer(rpc, canonicalDataDir, runtimeIdentity.codexHome),
   rpcTimeoutMs: 60_000,
 }) : undefined;
 const server = await startServer({ database: join(canonicalDataDir, 'marginalia.sqlite'), port, webRoot: fileURLToPath(new URL('../webapp/dist', import.meta.url)), diagnostics,
   jobWorkspaceRoot: join(canonicalDataDir, 'jobs'), runtimeFactoryBuilder, jobDefaults,
+  instant: runtimeIdentity ? { runtime: { ...runtimeIdentity, workspace: instantWorkspace } } : undefined,
   solverTransport, solverRpc: solverTransport, solverProbeRoot }).catch((error: unknown) => {
   solverTransport?.close();
   if (error instanceof ReaderMigrationError) {

@@ -11,7 +11,7 @@ import { DIAGNOSTICS_SCHEMA, type DiagnosticsSnapshot } from '../contracts/diagn
 import { diagnosticsSection, diagnosticLines, loadReaderDiagnostics } from '../ui/diagnostics.ts';
 import { dom, deferred } from './t05-dom.ts';
 
-const snapshot: DiagnosticsSnapshot = { schema: DIAGNOSTICS_SCHEMA, paired: true, dataDirectory: '/reader/data', helperVersion: '0.2.0',
+const snapshot: DiagnosticsSnapshot = { schema: DIAGNOSTICS_SCHEMA, paired: true, dataDirectory: '/reader/data', helperVersion: '1.1.0',
   backup: { state: 'unknown' }, codex: { status: 'installed', login: 'signed-out', version: '1.2.3', expectedVersion: '1.2.3' } };
 const origin = 'http://127.0.0.1:43120', token = 'a'.repeat(43);
 const fixtureFetch = (calls: { url: string; init?: RequestInit }[], payload: unknown = snapshot): typeof fetch => async (url, init) => {
@@ -32,13 +32,13 @@ test('unreachable helper has one next step and does not claim pairing or Codex a
   let calls = 0;
   const result = await loadReaderDiagnostics({ origin, token, fetch: async () => { calls++; throw new Error('SECRET'); } });
   assert.equal(calls, 1); assert.equal(result.pairing, 'unknown');
-  assert.match(diagnosticLines(result)[1].value, /start the local helper/);
+  assert.match(diagnosticLines(result)[1].value, /Start the local helper/);
   assert.doesNotMatch(JSON.stringify(diagnosticLines(result)), /SECRET|not installed|not found|No migration backup/);
 });
 test('unknown Codex and backup are distinct from absent backup and signed out', () => {
   const result = { origin, reachability: 'reachable' as const, pairing: 'paired' as const,
     snapshot: { ...snapshot, codex: { ...snapshot.codex, status: 'unavailable' as const, login: 'unknown' as const } } };
-  assert.match(diagnosticLines(result).find(l => l.label === 'Codex sign-in')!.value, /could not be checked/);
+  assert.match(diagnosticLines(result).find(l => l.label === 'Codex sign-in')!.value, /check was unavailable/);
   assert.match(diagnosticLines(result).at(-1)!.value, /Unknown/);
   result.snapshot.backup = { state: 'none' };
   assert.match(diagnosticLines(result).at(-1)!.value, /No migration backup/);
@@ -87,7 +87,7 @@ test('authenticated GET and extension read POST are cached, sanitized, and creat
     const get = await fetch(helper.origin + '/api/diagnostics', { headers: { Authorization: `Bearer ${localToken}`, 'Sec-Fetch-Site': 'same-origin' } });
     assert.equal(get.status, 200); assert.match(get.headers.get('cache-control')!, /no-store/);
     const data = await get.json() as DiagnosticsSnapshot;
-    assert.equal(data.codex.login, 'signed-out'); assert.equal(data.helperVersion, '0.2.0'); assert.equal(data.backup.state, 'unknown');
+    assert.equal(data.codex.login, 'signed-out'); assert.equal(data.helperVersion, '1.1.0'); assert.equal(data.backup.state, 'unknown');
     assert.doesNotMatch(JSON.stringify(data), /SECRET|fixture|token|sandbox/);
     const post = await fetch(helper.origin + '/api/read/diagnostics', { method: 'POST', headers: { Origin: extension, Authorization: `Bearer ${extensionToken}`, 'Content-Type': 'application/json' }, body: '{}' });
     assert.equal(post.status, 200); assert.deepEqual(await post.json(), data); assert.equal(probes, 2);

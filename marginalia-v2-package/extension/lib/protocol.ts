@@ -1,17 +1,17 @@
-import { validPublicationDate, type QuoteAnchor, type SourceCapture, type SourceSection } from '../../contracts/reader.ts';
+import { isHighlightColour, validPublicationDate, type HighlightColour, type QuoteAnchor, type SourceCapture, type SourceSection } from '../../contracts/reader.ts';
 export const MAX_TEXT = 1_000_000;
 export const MAX_QUOTE = 20_000;
 export const MAX_CONTEXT = 40;
 export type Section = SourceSection;
 export type Snapshot = { document: string; capture: SourceCapture; sections: Section[]; anchor: QuoteAnchor | null; position: number; revision: number };
-export type SavedMark = { anchor: QuoteAnchor; highlighted: boolean };
+export type SavedMark = { anchor: QuoteAnchor; highlighted: boolean; highlightColour?: HighlightColour };
 export type SavedMarks = { document: string; url: string; revision: number; marks: SavedMark[] };
 /** Only bounded source selectors cross into the page; never notes or credentials. */
 export function validSavedMarks(value: unknown): value is SavedMarks {
   if (!record(value) || !text(value.document, 64) || !value.document || !allowedPage(value.url) || !integer(value.revision, Number.MAX_SAFE_INTEGER) || !Array.isArray(value.marks) || value.marks.length > 500) return false;
   let size = 0;
   return value.marks.every(mark => {
-    if (!record(mark) || typeof mark.highlighted !== 'boolean' || !validAnchor(mark.anchor) || mark.anchor.kind === 'whole-page') return false;
+    if (!record(mark) || typeof mark.highlighted !== 'boolean' || (mark.highlightColour !== undefined && !isHighlightColour(mark.highlightColour)) || !validAnchor(mark.anchor) || mark.anchor.kind === 'whole-page') return false;
     size += mark.anchor.exact.length + mark.anchor.prefix.length + mark.anchor.suffix.length;
     return size <= 1_000_000;
   });

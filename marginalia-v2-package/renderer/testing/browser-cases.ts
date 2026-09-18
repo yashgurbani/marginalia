@@ -14,7 +14,7 @@ function deferred() { let release!: () => void; const promise = new Promise<void
 function root() { const node = document.createElement('div'); document.body.append(node); return node; }
 function input(node: HTMLElement, name: string, value: string) {
   const field = node.querySelector<HTMLInputElement>(`input[type=number][id$="-input-${name}"]`)!;
-  field.value = value; field.dispatchEvent(new Event('input', { bubbles: true }));
+  field.value = value; field.dispatchEvent(new Event('change', { bubbles: true }));
 }
 function sampleReply(): CandidateReply {
   return {
@@ -58,11 +58,79 @@ export async function runRendererRegressions(fixture: HostFixture): Promise<Brow
       gate = deferred(); report = fixture.reports[1]; input(node, 'f', '0.21'); input(node, 'f', '0.2'); gate.release();
       await until(() => node.querySelector('.mr-conclusion')!.textContent === fixture.reports[1].results[0].headline);
       const made = Array.from(node.querySelectorAll('details')).find(d => d.firstElementChild?.textContent === 'How this was made')!;
-      made.open = true; const authored = made.querySelector('details')!;
+      made.open = true; const authored = Array.from(made.querySelectorAll('details')).find(details => details.firstElementChild?.textContent === 'Original authored description (not a checked result)')!;
       assert(authored && /not a checked result/i.test(authored.firstElementChild!.textContent!), 'Original copy lacks an authority warning.');
       authored.open = true; assert(node.innerText.includes(fixture.reply.title), 'Original description cannot be inspected.');
       assert(JSON.stringify(fixture.reply) === original, 'Presentation mutated the immutable reply.');
     } finally { gate.release(); mounted.destroy(); }
+  });
+  await check('R2: slider holds checked text only during movement, then replaces pending or failed checks', async () => {
+    const node = root(), gate = deferred();
+    const mounted = mountReply(node, fixture.reply, { sourceText: '', hostReport: fixture.reports[0],
+      resolveHostReport: async () => { await gate.promise; throw new Error('Controlled check failure'); } });
+    try {
+      const sentence = fixture.reports[0].results[0].headline!;
+      await until(() => node.querySelector('.mr-conclusion')!.textContent === sentence);
+      const slider = node.querySelector<HTMLInputElement>('input[type=range][id$="-slider-f"]')!;
+      const number = node.querySelector<HTMLInputElement>('input[type=number][id$="-input-f"]')!;
+      assert(number.hidden && !slider.hidden, 'Duplicate parameter controls are visible.');
+      for (const value of ['0.19', '0.2']) {
+        slider.value = value; slider.dispatchEvent(new Event('input'));
+        assert(node.querySelector('.mr-conclusion')!.textContent === sentence + ' (recomputing)', 'The last checked sentence disappeared during input.');
+      }
+      slider.dispatchEvent(new Event('change'));
+      assert(!node.querySelector('.mr-conclusion')!.textContent!.includes('recomputing'), 'A settled slider retained stale text without a completed check.');
+      assert(node.querySelector('.mr-conclusion')!.textContent!.includes('withheld'), 'Pending authority must withhold a settled conclusion.');
+      gate.release(); await pause(); await pause();
+      assert(node.querySelector('.mr-conclusion')!.textContent!.includes('withheld'), 'A failed check retained the stale sentence.');
+      assert(node.querySelector('[data-type=classification]')!.textContent!.includes('Could not be checked here.'), 'Failure copy is missing.');
+      assert(!/criterion|schema|job|digest/i.test(node.querySelector('[data-type=classification]')!.textContent!), 'Internal check language leaked.');
+    } finally { gate.release(); mounted.destroy(); }
+  });
+  await check('R2: decimal drafts commit on change, bound assumptions reseal, and late checked sentences announce', async () => {
+    const node = root(), gate = deferred(); let calls = 0;
+    const mounted = mountReply(node, fixture.reply, { sourceText: '', hostReport: fixture.reports[0],
+      resolveHostReport: async () => { calls++; await gate.promise; return fixture.reports[1]; } });
+    try {
+      await until(() => node.querySelector('.mr-conclusion')!.textContent === fixture.reports[0].results[0].headline);
+      const field = node.querySelector<HTMLInputElement>('input[id$="-input-f"]')!;
+      (node.querySelector('[aria-label="Edit Forcing (1/s^2)"]') as HTMLButtonElement).click();
+      field.value = ''; field.dispatchEvent(new Event('input')); assert(field.value === '', 'Empty draft was rewritten.');
+      for (const draft of ['0', '0.2', '0.25']) { field.value = draft; field.dispatchEvent(new Event('input')); assert(field.value === draft, 'Decimal draft was rewritten.'); }
+      assert(mounted.getState().parameters.f === 0.07, 'Typing committed before change.');
+      field.dispatchEvent(new Event('change')); assert(mounted.getState().parameters.f === 0.25, 'Decimal commit was lost.');
+      field.blur();
+      const slider = node.querySelector<HTMLInputElement>('input[id$="-slider-f"]')!;
+      slider.value = '0.2'; slider.dispatchEvent(new Event('input')); slider.dispatchEvent(new Event('change'));
+      await new Promise(resolve => setTimeout(resolve, 350));
+      gate.release();
+      await until(() => node.querySelector('.mr-conclusion')!.textContent === fixture.reports[1].results[0].headline);
+      assert(node.querySelector('.mr-status')!.textContent === fixture.reports[1].results[0].headline, 'Late final checked sentence was swallowed.');
+      assert(calls > 0, 'The new host check was not requested.');
+      const assumption = node.querySelector<HTMLInputElement>('[data-assumption-id=forcing]')!;
+      const details = assumption.closest('details')!; details.open = true; assumption.focus();
+      assumption.value = ''; assumption.dispatchEvent(new Event('input')); assert(assumption.value === '', 'Assumption draft was rewritten.');
+      assumption.value = '0.07'; assumption.dispatchEvent(new Event('input'));
+      assert(mounted.getState().parameters.f === 0.2, 'Assumption typing committed too early.');
+      assumption.dispatchEvent(new Event('change'));
+      assert(mounted.getState().parameters.f === 0.07 && slider.value === '0.07', 'Assumption did not update shared parameter state.');
+      await until(() => node.querySelector('.mr-conclusion')!.textContent === fixture.reports[0].results[0].headline);
+      assert(node.querySelector('.mr-status')!.textContent === fixture.reports[0].results[0].headline, 'Assumption edit never restored the checked sentence.');
+    } finally { gate.release(); mounted.destroy(); }
+  });
+  await check('R2: illustration precedes the answer and partial frames remain visibly provisional without authority', async () => {
+    const reply = structuredClone(fixture.reply); reply.status = 'partial';
+    const node = root(); let calls = 0;
+    const mounted = mountReply(node, reply, { sourceText: '', hostReport: fixture.reports[0], resolveHostReport: async () => { calls++; return fixture.reports[0]; } });
+    try {
+      const title = node.querySelector('h3')!;
+      assert(title.nextElementSibling?.textContent === reply.illustration!.statement, 'Illustration is not directly under the title.');
+      assert(node.innerText.includes('Provisional reply.'), 'The partial frame is not visibly provisional.');
+      assert(node.querySelector('.mr-conclusion')!.textContent!.includes('not checked'), 'Unchecked conclusion has no short visible qualification.');
+      await pause(); await pause();
+      assert(calls === 0, 'A partial frame requested complete authority.');
+      assert(!node.querySelector('.mr-conclusion')!.textContent!.includes('Checked on this device'), 'Partial frame became a checked result.');
+    } finally { mounted.destroy(); }
   });
   await check('F11: late readiness keeps unrelated table focus, page and DOM identity', async () => {
     const reply = sampleReply(), record = await sidecar(reply), node = root(), gate = deferred();

@@ -44,9 +44,16 @@ export function createServerSolver(input: { database: string; store: ReaderStore
 export function createSolverRouteHandler(solver: SolverExecutionService, store: ReaderStore, pairing: Pairing) {
   const handle = createSolverRoutes(solver);
   return async (context: ApiRouteContext) => {
-    const { request, response, url, authOrigin, token, body, send } = context;
-    if (!url.pathname.startsWith('/api/solver/')) return false;
-    const solverBody = request.method === 'POST' ? await body(request) : undefined;
+    const { request, response, url, requestOrigin, authOrigin, token, body, emptyBody, requireCurrentPairing, send } = context;
+    const readAlias = url.pathname === '/api/read/solver/result';
+    if (!readAlias && !url.pathname.startsWith('/api/solver/')) return false;
+    if (readAlias) {
+      if (request.method !== 'POST') { send(response, 405, { error: 'Use POST for this read operation.' }); return true; }
+      if (!requestOrigin) { send(response, 401, { error: 'Origin required.' }); return true; }
+      await emptyBody(request, true);
+      if (!requireCurrentPairing()) { send(response, 401, { error: 'Pairing changed. Pair again.' }); return true; }
+    }
+    const solverBody = !readAlias && request.method === 'POST' ? await body(request) : undefined;
     let paired = pairing.session(token, authOrigin);
     if (!paired) { send(response, 401, { error: 'Pair with the local helper to recompute saved work.' }); return true; }
     const action = url.pathname.slice('/api/solver/'.length);
@@ -61,7 +68,8 @@ export function createSolverRouteHandler(solver: SolverExecutionService, store: 
       if (!paired) { send(response, 401, { error: 'Pair with the local helper to recompute saved work.' }); return true; }
     }
     const principal = paired.threadId ? { siteOrigin: authOrigin, threadId: paired.threadId, sessionId: paired.sessionId } : undefined;
-    const handled = await handle({ method: request.method ?? 'GET', pathname: url.pathname, search: url.searchParams, body: solverBody, principal });
+    const handled = await handle({ method: readAlias ? 'GET' : request.method ?? 'GET', pathname: readAlias ? '/api/solver/result' : url.pathname, search: url.searchParams, body: solverBody, principal });
+    if (readAlias && !requireCurrentPairing()) { send(response, 401, { error: 'Pairing changed. Pair again.' }); return true; }
     if (handled) send(response, handled.status, handled.body);
     return !!handled;
   };

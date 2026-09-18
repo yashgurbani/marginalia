@@ -1,8 +1,14 @@
+import { FrequencyPageScorer, createAutoAssistController, paintAutoAssistMarks, AUTO_ASSIST_CSS } from '../lib/auto-assist/index.ts';
+import { autoAssistAnchor } from '../lib/auto-assist/anchors.ts';
+import { sourceHash } from '../lib/instant-lifecycle.ts';
+import type { AutoAssistPosture, DifficultyCandidate } from '../../contracts/auto-assist.ts';
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { browser } from 'wxt/browser';
 import { readReply, respondAsync, type MessageReply } from '../lib/respond.ts';
 import { captureSelection, locate, projectPage, type SectionMarker } from '../lib/capture.ts';
 import { allowedPage, isMessage, pageIdentity, validAnchor, validSavedMarks, type Snapshot } from '../lib/protocol.ts';
+import { clearResumeMarker, resumeThreadId } from '../../contracts/resume.ts';
+import { HIGHLIGHT_COLOURS, highlightColour, type HighlightColour } from '../../contracts/reader.ts';
 
 const READING_LINE_OFFSET = 24;
 type ProjectedNode = ReturnType<typeof projectPage>['nodes'][number];
@@ -29,14 +35,98 @@ export default defineContentScript({
   main(ctx) {
     if (window.top !== window || !allowedPage(location.href)) return;
     const documentId = crypto.randomUUID();
+    let selectionTimer: ReturnType<typeof setTimeout> | undefined, pageTimer: ReturnType<typeof setTimeout> | undefined;
+    let autoCandidates: readonly DifficultyCandidate[] = [];
+    let previousVocabulary = new Set<string>();
+    const knownCandidates = new Map<string, DifficultyCandidate>();
+    let lastInstantSelection = '', instantBusy = false, alive = true, reprepare = false, pageEpoch = 0;
+    const instantMessage = (type: string, extra = {}) => browser.runtime.sendMessage({ type, version: 1, ...extra }).then(readReply);
+    async function resumeFromMarker() {
+      const markerUrl = location.href, threadId = resumeThreadId(markerUrl);
+      if (!threadId) return;
+      try {
+        const result = readReply(await browser.runtime.sendMessage({ type: 'resume', version: 1, threadId })) as { consumed?: boolean } | undefined;
+        if (result?.consumed === true && location.href === markerUrl) history.replaceState(history.state, '', clearResumeMarker(markerUrl));
+      } catch { /* A failed resume never blocks ordinary reading or navigation. */ }
+    }
+    async function instantAllowed() { return ((await instantMessage('instant-policy')) as { allowed?: boolean })?.allowed === true; }
+    function scheduleInstantPage() { clearTimeout(pageTimer); pageTimer = setTimeout(() => { void prepareInstantPage(); }, 600); }
+    async function prepareInstantPage() {
+      if (instantBusy) { reprepare = true; return; }
+      if (!alive || document.visibilityState === 'hidden') return;
+      instantBusy = true; const epoch = pageEpoch;
+      const currentPage = () => alive && epoch === pageEpoch;
+      try {
+        autoAssist.clear();
+        const instantEnabled = await instantAllowed();
+        let autoPolicy = await instantMessage('auto-assist-policy') as { enabled?: boolean; posture?: AutoAssistPosture; vocabulary?: string[] };
+        if ((!instantEnabled && !autoPolicy?.enabled) || !currentPage()) return;
+        const next = captureSelection(documentId, revision, false, rememberSections);
+        if (!next?.capture.text.trim()) return;
+        if (!snapshot || snapshot.capture.url !== next.capture.url || snapshot.capture.text !== next.capture.text || JSON.stringify(snapshot.anchor) !== JSON.stringify(next.anchor) || !sameSections(snapshot.sections, next.sections)) next.revision = ++revision;
+        snapshot = next; dirty = false; lastProjection = Date.now(); rememberPositionNodes(); readingPosition();
+        if (autoPolicy.enabled) autoPolicy = await instantMessage('auto-assist-page-policy') as typeof autoPolicy;
+        if (!currentPage()) return;
+        if (autoPolicy.enabled && autoPolicy.posture && Array.isArray(autoPolicy.vocabulary)) {
+          const vocabulary = new Set(autoPolicy.vocabulary.map(term => term.normalize('NFC').trim().replace(/\s+/gu, ' ').toLowerCase()));
+          for (const term of previousVocabulary) if (!vocabulary.has(term)) autoAssist.forgetDismissal(term);
+          previousVocabulary = vocabulary;
+          const pageKeyHash = await sourceHash(next.capture.text);
+          if (!currentPage()) return;
+          await autoAssist.update({ pageKeyHash, text: next.capture.text, sections: next.sections, language: document.documentElement.lang || '' }, {
+            enabled: true, excluded: false, posture: autoPolicy.posture, vocabulary: autoPolicy.vocabulary,
+            placement: candidate => {
+              const anchor = autoAssistAnchor(next.capture.text, candidate), range = anchor && locate(anchor); if (!range || range.startContainer.parentElement?.closest('code,pre') || range.endContainer.parentElement?.closest('code,pre')) return null;
+              const rect = range.getBoundingClientRect();
+              if (!rect.height) return null;
+              const top = rect.top + scrollY;
+              return { band: Math.max(0, Math.floor(top / Math.max(1, innerHeight))), top, block: String(next.sections.findIndex(section => candidate.start >= section.start && candidate.end <= section.end)) };
+            },
+          });
+        }
+        if (instantEnabled && currentPage()) await instantMessage('instant-page');
+        if (currentPage() && autoPolicy.enabled) {
+          const visibleIds = autoCandidates.filter(candidate => { const anchor = autoAssistAnchor(next.capture.text, candidate), range = anchor && locate(anchor); if (!range) return false; const rect = range.getBoundingClientRect(); return rect.bottom >= 0 && rect.top <= innerHeight * 2; }).map(candidate => candidate.candidateId);
+          await instantMessage('auto-assist-candidates', { candidates: autoCandidates.map(({ candidateId, term, start, end }) => ({ candidateId, term, start, end })), visibleIds });
+        }
+      } catch { /* Pairing and helper availability are shown in the margin. */ }
+      finally { instantBusy = false; if (reprepare) { reprepare = false; scheduleInstantPage(); } }
+    }
+    function queueInstantSelection() {
+      clearTimeout(selectionTimer);
+      selectionTimer = setTimeout(() => { void (async () => {
+        if (!alive || !await instantAllowed() || !alive) return;
+        const next = captureSelection(documentId, ++revision, true, rememberSections);
+        if (!next?.anchor) { lastInstantSelection = ''; return; }
+        const identity = JSON.stringify([next.capture.url, next.capture.text, next.anchor.start, next.anchor.end]);
+        if (identity === lastInstantSelection) return;
+        lastInstantSelection = identity; snapshot = next; dirty = false;
+        await instantMessage('instant-selection', { selectionId: crypto.randomUUID() });
+      })().catch(() => {}); }, 250);
+    }
     let snapshot: Snapshot | null = null, sectionMarkers: SectionMarker[] = [], positionNodes: ProjectedNode[] = [], revision = 0, busy = false, host: HTMLElement | null = null, dirty = true, lastProjection = 0;
-    const observer = new MutationObserver(changes => { if (changes.some(change => !host?.contains(change.target))) dirty = true; });
+    const observer = new MutationObserver(changes => { if (changes.some(change => !host?.contains(change.target))) { pageEpoch++; autoAssist.clear(); dirty = true; scheduleInstantPage(); } });
     observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
     const highlights = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
+    const autoAssist = createAutoAssistController({ scorer: new FrequencyPageScorer(), onDismiss: async observation => {
+      const candidate = knownCandidates.get(observation.term.normalize('NFC').trim().replace(/\s+/gu, ' ').toLowerCase());
+      if (!candidate) throw new Error('This ready help item changed.');
+      const result = await instantMessage('auto-assist-dismiss', { candidateId: candidate.candidateId }) as { dismissed?: boolean };
+      if (result?.dismissed !== true) throw new Error('This term could not be marked familiar.');
+    }, onMarks: candidates => {
+      autoCandidates = candidates; for (const candidate of candidates) knownCandidates.set(candidate.normalizedTerm, candidate);
+      const registry = highlights as Map<string, { priority: number }> | undefined;
+      const HighlightClass = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => { priority: number } }).Highlight;
+      const ranges = snapshot ? candidates.map(candidate => { const anchor = autoAssistAnchor(snapshot!.capture.text, candidate); return anchor ? locate(anchor) : null; }).filter((range): range is Range => !!range) : [];
+      paintAutoAssistMarks(registry, HighlightClass ? (...ranges) => new HighlightClass(...ranges) : undefined, ranges);
+    } });
     let markExpiry: ReturnType<typeof setTimeout> | undefined, markEpoch = 0;
-    function clearMarks() { clearTimeout(markExpiry); highlights?.delete('marginalia-kept'); highlights?.delete('marginalia-highlighted'); }
-    function clear() { markEpoch++; clearMarks(); snapshot = null; sectionMarkers = []; positionNodes = []; host?.remove(); host = null; highlights?.delete('marginalia-selection'); }
-    for (const type of ['pagehide', 'popstate']) ctx.addEventListener(window, type, clear);
+    function clearMarks() { clearTimeout(markExpiry); highlights?.delete('marginalia-kept'); highlights?.delete('marginalia-highlighted'); for (const colour of HIGHLIGHT_COLOURS) highlights?.delete('marginalia-highlighted-' + colour); }
+    function clear() { knownCandidates.clear(); pageEpoch++; autoAssist.clear(); markEpoch++; clearMarks(); snapshot = null; sectionMarkers = []; positionNodes = []; host?.remove(); host = null; highlights?.delete('marginalia-selection'); }
+    for (const type of ['pagehide', 'popstate']) ctx.addEventListener(window, type, () => { clear(); lastInstantSelection = ''; clearTimeout(selectionTimer); void instantMessage('instant-release').catch(() => {}); if (type === 'popstate') scheduleInstantPage(); else alive = false; });
+    ctx.addEventListener(window, 'pageshow', () => { alive = true; scheduleInstantPage(); });
+    ctx.addEventListener(document, 'visibilitychange', scheduleInstantPage);
+    ctx.addEventListener(document, 'selectionchange', queueInstantSelection);
     const rememberSections = (markers: SectionMarker[]) => { sectionMarkers = markers; };
     const sameSections = (left: Snapshot['sections'], right: Snapshot['sections']) => left.length === right.length && left.every((section, index) => {
       const other = right[index];
@@ -71,17 +161,31 @@ export default defineContentScript({
       } catch (error) { console.warn('Marginalia capture unavailable:', error instanceof Error ? error.message : 'unknown'); }
       finally { busy = false; }
     }
-    ctx.addEventListener(document, 'pointerup', event => { if (event.isTrusted) void select(); });
+    ctx.addEventListener(document, 'pointerup', event => {
+      if (!event.isTrusted) return;
+      if (getSelection()?.isCollapsed !== false && snapshot) {
+        const candidate = autoCandidates.find(candidate => { const anchor = autoAssistAnchor(snapshot!.capture.text, candidate), range = anchor && locate(anchor); return range && Array.from(range.getClientRects()).some(rect => event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom); });
+        if (candidate) { void open(); void instantMessage('auto-assist-open', { candidateId: candidate.candidateId }).catch(() => {}); return; }
+      }
+      void select();
+    });
     ctx.addEventListener(document, 'keyup', event => { if (event.isTrusted && (event.key === 'Shift' || event.key.startsWith('Arrow'))) void select(); });
     function rememberPositionNodes() { const projection = projectPage(); positionNodes = snapshot && projection.text === snapshot.capture.text ? projection.nodes : []; }
     function readingPosition() { if (snapshot) snapshot.position = readingPositionAt(positionNodes, sectionMarkers, innerHeight); }
-    ctx.addEventListener(window, 'scroll', readingPosition, { passive: true });
+    ctx.addEventListener(window, 'scroll', () => { readingPosition(); scheduleInstantPage(); }, { passive: true });
     for (const type of ['pageshow', 'resize']) ctx.addEventListener(window, type, () => { dirty = true; });
     ctx.addEventListener(document, 'load', () => { dirty = true; }, { capture: true });
     browser.runtime.onMessage.addListener((message: unknown, sender: { id?: string; tab?: unknown }, respond: (value: MessageReply) => void) => respondAsync(() => {
       if (sender.id !== browser.runtime.id || sender.tab) return;
+      if (isMessage(message, 'auto-assist-dismiss') && typeof message.candidateId === 'string') return (async () => {
+        const candidate = autoCandidates.find(item => item.candidateId === message.candidateId); if (!candidate) throw new Error('Stale source request.');
+        try { await autoAssist.dismiss(candidate.term); } catch (error) { scheduleInstantPage(); throw error; }
+        return { dismissed: true };
+      })();
+      if (isMessage(message, 'auto-assist-familiar') && typeof message.term === 'string') { scheduleInstantPage(); return Promise.resolve(true); }
+      if (isMessage(message, 'instant-navigation')) { clear(); lastInstantSelection = ''; scheduleInstantPage(); return Promise.resolve(true); }
       if (isMessage(message, 'identity')) return Promise.resolve({ document: documentId });
-      if (isMessage(message, 'excluded')) { clear(); return Promise.resolve(true); }
+      if (isMessage(message, 'excluded')) { clearTimeout(selectionTimer); clearTimeout(pageTimer); clear(); return Promise.resolve(true); }
       if (isMessage(message, 'saved-marks') && validSavedMarks(message)) return (async () => {
         const epoch = markEpoch;
         if (!await permitted()) { clear(); return false; }
@@ -89,14 +193,14 @@ export default defineContentScript({
         if (!snapshot || message.document !== documentId || message.url !== pageIdentity(location.href) || message.url !== snapshot.capture.url || message.revision !== snapshot.revision) return false;
         const HighlightClass = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
         if (!HighlightClass || !highlights) return false;
-        const kept: Range[] = [], tinted: Range[] = [];
+        const kept: Range[] = [], tinted: Record<HighlightColour, Range[]> = { yellow: [], green: [], blue: [], rose: [] };
         for (const mark of message.marks) {
           const range = locate(mark.anchor);
-          if (range) { kept.push(range); if (mark.highlighted) tinted.push(range); }
+          if (range) { kept.push(range); if (mark.highlighted) tinted[highlightColour(mark.highlightColour)].push(range); }
         }
         clearMarks();
-        highlights.set('marginalia-kept', new HighlightClass(...kept));
-        highlights.set('marginalia-highlighted', new HighlightClass(...tinted));
+        const keptPaint = new HighlightClass(...kept) as { priority: number }; keptPaint.priority = 10; highlights.set('marginalia-kept', keptPaint);
+        for (const colour of HIGHLIGHT_COLOURS) { const paint = new HighlightClass(...tinted[colour]) as { priority: number }; paint.priority = 20; highlights.set('marginalia-highlighted-' + colour, paint); }
         // Renewed by the live panel; covers abrupt panel destruction where a
         // final cleanup message cannot be delivered by the browser.
         markExpiry = setTimeout(clearMarks, 6000);
@@ -109,7 +213,8 @@ export default defineContentScript({
         return true;
       })();
       if (isMessage(message, 'snapshot')) return (async () => {
-        if (!await permitted() || snapshot?.capture.url !== pageIdentity(location.href)) { clear(); return null; }
+        if (!await permitted() || (snapshot && snapshot.capture.url !== pageIdentity(location.href))) { clear(); return null; }
+        if (!snapshot) snapshot = captureSelection(documentId, ++revision, false, rememberSections);
         if (dirty || Date.now() - lastProjection > 5000) {
           const fresh = captureSelection(documentId, revision, false, rememberSections); dirty = false; lastProjection = Date.now();
           if (fresh && snapshot && (fresh.capture.text !== snapshot.capture.text || !sameSections(fresh.sections, snapshot.sections))) { fresh.revision = ++revision; snapshot = fresh; }
@@ -128,13 +233,16 @@ export default defineContentScript({
           const range = locate(message.anchor);
           if (range && message.type === 'scroll') range.startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'instant' });
           const HighlightClass = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
-          if (range && HighlightClass) highlights?.set('marginalia-selection', new HighlightClass(range));
+          if (range && HighlightClass) { const paint = new HighlightClass(range) as { priority: number }; paint.priority = 30; highlights?.set('marginalia-selection', paint); }
         }
         return Promise.resolve(true);
       }
     }, respond));
     // Styling a named Custom Highlight never wraps or rewrites source nodes.
-    const style = document.createElement('style'); style.textContent = '::highlight(marginalia-selection){background-color:rgba(76,105,180,.18);color:inherit}::highlight(marginalia-kept){text-decoration:underline #d1ad45 2px;text-underline-offset:3px}::highlight(marginalia-highlighted){background-color:#f1dfa2;color:inherit}'; document.documentElement.append(style);
-    ctx.onInvalidated(() => { clear(); style.remove(); observer.disconnect(); });
+    const style = document.createElement('style'); style.textContent = AUTO_ASSIST_CSS + '::highlight(marginalia-selection){background-color:rgba(76,105,180,.18);color:inherit}::highlight(marginalia-kept){text-decoration:underline #d1ad45 2px;text-underline-offset:3px}::highlight(marginalia-highlighted-yellow){background:#f1dfa2;color:#202124}::highlight(marginalia-highlighted-green){background:#cce8cf;color:#202124}::highlight(marginalia-highlighted-blue){background:#d2e4f5;color:#202124}::highlight(marginalia-highlighted-rose){background:#f2d8df;color:#202124}@media(prefers-color-scheme:dark){::highlight(marginalia-highlighted-yellow){background:#5c512b;color:#f4f4f4}::highlight(marginalia-highlighted-green){background:#2e5940;color:#f4f4f4}::highlight(marginalia-highlighted-blue){background:#304f69;color:#f4f4f4}::highlight(marginalia-highlighted-rose){background:#69404c;color:#f4f4f4}}'; document.documentElement.append(style);
+    scheduleInstantPage();
+    void resumeFromMarker();
+    const policyTimer = setInterval(scheduleInstantPage, 15_000);
+    ctx.onInvalidated(() => { alive = false; clearInterval(policyTimer); clearTimeout(selectionTimer); clearTimeout(pageTimer); void instantMessage('instant-release').catch(() => {}); clear(); style.remove(); observer.disconnect(); });
   },
 });

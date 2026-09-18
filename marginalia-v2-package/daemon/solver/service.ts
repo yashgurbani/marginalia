@@ -19,6 +19,7 @@ import {
   validateSolverPlanRequest,
   validateSolverRequest,
   type SolverArtifactBinding,
+  SolverArtifactBindingError,
   type SolverExecutionRecord,
   type SolverLimits,
   type SolverOutcome,
@@ -484,7 +485,14 @@ export class SolverExecutionService {
     const entry = this.settled.get(requestId);
     if (!entry || !sameSolverPrincipal(entry.principal, principal)) return undefined;
 
-    const context = await this.options.context.resolve(entry.subject.replyVersionId, entry.subject.solverId);
+    let context: SolverRecomputeContext | undefined;
+    try { context = await this.options.context.resolve(entry.subject.replyVersionId, entry.subject.solverId); }
+    catch (error) {
+      if (error instanceof SolverArtifactBindingError && error.code === 'manifest-required') {
+        return rejected('manifest-required', 'This saved solver needs a manifest before it can run. Your saved reply remains available to read.');
+      }
+      throw error;
+    }
     if (!context) return rejected('unknown-reply', 'This reply version is no longer available.');
     if (context.threadId !== principal.threadId) {
       return rejected('authorization-refused', 'This result belongs to a different thread.');
@@ -757,7 +765,13 @@ export class SolverExecutionService {
     solverId: string,
     principal: SolverPrincipal,
   ): Promise<Resolved | { outcome: SolverOutcome }> {
-    const context = await this.options.context.resolve(replyVersionId, solverId);
+    let context: SolverRecomputeContext | undefined;
+    try { context = await this.options.context.resolve(replyVersionId, solverId); }
+    catch (error) {
+      if (error instanceof SolverArtifactBindingError && error.code === 'manifest-required') return { outcome:
+        rejected('manifest-required', 'This saved solver needs a manifest before it can run. Your saved reply remains available to read.') };
+      throw error;
+    }
     if (!context) return { outcome: rejected('unknown-reply', 'This reply version is not available for recomputation.') };
     if (digestReply(context.reply) !== context.replyHash) {
       return { outcome: rejected('unknown-reply', 'The stored reply does not match its recorded hash.') };

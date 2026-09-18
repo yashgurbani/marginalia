@@ -35,9 +35,10 @@ export function authorizePolicy(policy: CodexPolicy, request: ProviderRequest, a
       console.error(`READER-AUTHORIZED RUNTIME: confinement NOT observed; rejected issue codes: ${[...new Set(decision.issues.map(x => x.code))].join(',')}`);
     }
   }
-  if (decision.perRequestCatalogVeto === 'unsupported') throw new Error(`policy-catalog-veto:${decision.unsupportedCatalogEntries.join(',')}`);
+  if (decision.perRequestCatalogVeto === 'unsupported' && policy.homeMode !== 'ordinary') throw new Error(`policy-catalog-veto:${decision.unsupportedCatalogEntries.join(',')}`);
   return { policyKey: request.policyKey, auditScope: policy.evidenceScope, workspace: request.workspace,
+    ...(policy.homeMode === 'ordinary' ? { ordinarySetup: true } : {}),
     thread: { ...policy.threadStart.params, config: policy.configOverrides }, turn: { ...policy.turnPolicy },
-    mcp: { cwd: policy.workspace, sandbox: policy.threadStart.params.sandbox, 'approval-policy': 'never', config: policy.configOverrides,
+    mcp: { cwd: policy.workspace, ...(policy.homeMode === 'ordinary' ? {} : { sandbox: policy.threadStart.params.sandbox, 'approval-policy': 'never' }), config: policy.configOverrides,
       schemaEnforced: false, recovery: 'unsupported', cancellation: 'abandon-and-tombstone' } };
 }

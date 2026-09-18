@@ -2,8 +2,60 @@ import * as position from 'dom-anchor-text-position';
 import * as quote from 'dom-anchor-text-quote';
 import { attachQuote, validPublicationDate, type QuoteAnchor } from '../../contracts/reader.ts';
 import { MAX_TEXT, pageIdentity, type Snapshot } from './protocol.ts';
+import { detectPageType, type PageTypeInput } from './page-type.ts';
 
 export type SectionMarker = { heading: Element; start: number };
+
+type PageTypeDocument = Pick<Document, 'querySelector' | 'querySelectorAll'>;
+
+function schemaTypes(value: unknown, result: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    for (const item of value) schemaTypes(item, result);
+  } else if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>, type = record['@type'];
+    if (typeof type === 'string') result.push(type);
+    else if (Array.isArray(type)) for (const item of type) if (typeof item === 'string') result.push(item);
+    for (const [key, child] of Object.entries(record)) if (key !== '@type') schemaTypes(child, result);
+  }
+  return result;
+}
+
+/** Reads bounded structural metadata from the open document without logging or I/O. */
+export function pageTypeInput(source: PageTypeDocument = document, address: Pick<Location, 'hostname' | 'pathname'> = location): PageTypeInput {
+  let openGraphType: string | null = null;
+  const citationMetaTags: string[] = [];
+  for (const meta of Array.from(source.querySelectorAll('meta'))) {
+    const name = (meta.getAttribute('name') ?? meta.getAttribute('property') ?? '').trim().toLowerCase();
+    if (name === 'og:type' && !openGraphType) openGraphType = meta.getAttribute('content')?.trim() ?? null;
+    if (name.startsWith('citation_')) citationMetaTags.push(name);
+  }
+  const observedSchemaTypes: string[] = [];
+  for (const script of Array.from(source.querySelectorAll('script[type="application/ld+json"]')).slice(0, 20)) {
+    const json = script.textContent ?? '';
+    if (!json || json.length > 250_000) continue;
+    try { schemaTypes(JSON.parse(json), observedSchemaTypes); } catch { /* Invalid publisher metadata is not a signal. */ }
+  }
+  for (const element of Array.from(source.querySelectorAll('[itemtype]'))) {
+    const itemtype = element.getAttribute('itemtype');
+    if (itemtype) observedSchemaTypes.push(...itemtype.split(/\s+/).filter(Boolean));
+  }
+  const headings = Array.from(source.querySelectorAll('h1,h2,h3,h4,h5,h6'));
+  const headingDepth = headings.reduce((depth, heading) => Math.max(depth, Number(heading.tagName.slice(1)) || 0), 0);
+  const codeBlockCount = source.querySelectorAll('pre').length;
+  return {
+    hostname: address.hostname,
+    path: address.pathname,
+    openGraphType,
+    schemaTypes: observedSchemaTypes,
+    citationMetaTags,
+    hasArticleElement: !!source.querySelector('article'),
+    codeBlockCount,
+    headingDepth,
+    hasReferencesSection: !!source.querySelector('[id="references"],[id="reference"],[class~="references"],[aria-label="References"]'),
+    hasFeedMarkup: !!source.querySelector('[role="feed"],[itemtype$="/DataFeed"]'),
+    hasThreadMarkup: !!source.querySelector('[data-thread-id],[data-conversation-id],[aria-label="Thread"]'),
+  };
+}
 
 const metadataNames = {
   author: ['author', 'article:author', 'citation_author', 'dc.creator', 'byl'],
@@ -90,7 +142,7 @@ export function captureSelection(documentId: string, revision: number, requireSe
     } else if (requireSelection) return null;
   }
   onSections?.(projection.markers);
-  return { document: documentId, revision, anchor, position: anchor?.start ?? 0, sections: projection.sections, capture: { url: pageIdentity(location.href), title: document.title.slice(0, 500), pageType: location.hostname.endsWith('arxiv.org') ? 'Paper' : 'Web page', ...extractPageMetadata(), text: projection.text, capturedAt: new Date().toISOString(), extractionVersion: 'dom-safe-text-v1', sections: projection.sections } };
+  return { document: documentId, revision, anchor, position: anchor?.start ?? 0, sections: projection.sections, capture: { url: pageIdentity(location.href), title: document.title.slice(0, 500), pageType: detectPageType(pageTypeInput()).type, ...extractPageMetadata(), text: projection.text, capturedAt: new Date().toISOString(), extractionVersion: 'dom-safe-text-v1', sections: projection.sections } };
 }
 export function locate(anchor: QuoteAnchor): Range | null {
   const projection = projectPage(), attachment = attachQuote(anchor, projection.text);

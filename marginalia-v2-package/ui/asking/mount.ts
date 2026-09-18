@@ -2,10 +2,13 @@ import type { Intent } from '../../contracts/reply.ts';
 import type { AskingFlow } from './flow.ts';
 import type { AskingExposure, AskingState, AskingSuggestion, CompletionTrace } from './types.ts';
 import { connectAskingSurfaces, type AskingSurfaces } from './surfaces.ts';
+import { SUGGESTION_LABELS } from '../suggestion-policy.ts';
 import { hostCopy } from './binding.ts';
+import type { ReaderSkillsCatalog, ReaderSkillSelection } from '../../contracts/reader-skills.ts';
 
 export type AskingCardOptions = Omit<AskingSurfaces, 'consentRoot' | 'replyRoot' | 'provisionalRoot' | 'onCommitted' | 'onError'> & {
   flow: AskingFlow;
+  reviewOnly?: boolean;
   /** T05 chooses the presentation from the actual host, not native-panel width alone. */
   presentation?: 'inline' | 'sheet';
   suggestions?: readonly AskingSuggestion[];
@@ -30,10 +33,7 @@ const connectionLabels: Record<CompletionTrace['provider'], string> = {
   'app-server': 'Codex app connection',
   'mcp-server': 'Codex compatibility connection',
 };
-const intentLabels: Record<Intent, string> = {
-  define: 'Explain this passage', simulate: 'Simulate this idea', instantiate: 'Show a concrete example', derive: 'Work through the steps',
-  diagram: 'Make a diagram', evidence: 'Check supporting evidence', explore: 'Explore further', unsure: 'Answer this question',
-};
+const intentLabels = SUGGESTION_LABELS;
 const planPhases = new Set<AskingState['phase']>(['submitting', 'queued', 'sending', 'working', 'provisional', 'validating', 'cancel_requested']);
 
 /** Append to a T05 child slot at the reading position, below reader notes. Never replace the source or parent editor. */
@@ -51,20 +51,24 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
   const definition = make('section'), quote = make('blockquote'); definition.append(make('p', 'from this page'), quote);
   const noDefinition = make('p', 'No explicit definition found in the captured page. Ask to review a contextual question.');
   const actions = make('div'); actions.className = 'm-asking__actions';
-  const form = make('form'), suggestions = make('div'), more = make('details'); more.append(make('summary', 'More ideas'));
+  const form = make('form'), suggestions = make('div'), more = make('details'); more.append(make('summary', 'More'));
   const label = make('label', 'Your question'), input = make('textarea'); input.id = root.id + '-question'; input.rows = 2; input.maxLength = 4000; label.htmlFor = input.id; label.append(input);
-  const contextDetails = make('details'), contextLabel = make('label', 'Stated context (included in the reviewed question)'), context = make('textarea');
+  const contextDetails = make('details'), contextLabel = make('label', 'Add context'), context = make('textarea');
   context.id = root.id + '-context'; context.rows = 2; context.maxLength = 2000; contextLabel.htmlFor = context.id; contextLabel.append(context);
-  contextDetails.append(make('summary', 'What should the reply assume you know?'), contextLabel);
+  contextDetails.append(make('summary', 'Add context'), contextLabel);
   const submit = make('button', 'Ask'); submit.type = 'submit'; form.append(suggestions, more, label, contextDetails, submit); form.hidden = true;
   const status = make('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const plan = make('p'); plan.hidden = true;
+  const skillReview = make('p'); skillReview.className = 'm-asking__skill-disclosure'; skillReview.hidden = true;
+  const skillWait = make('p'); skillWait.className = 'm-asking__skill-wait'; skillWait.hidden = true;
   const localStatus = make('p'); localStatus.setAttribute('role', 'status');
   const elapsed = make('p'); elapsed.hidden = true;
   const consentRoot = make('div'), provisionalRoot = make('div'), replyRoot = make('div');
-  const trace = make('details'), traceBody = make('dl'); trace.append(make('summary', 'Completion record'), traceBody); trace.hidden = true;
+  const unformattedRoot = make('section'); unformattedRoot.className = 'm-asking__unformatted'; unformattedRoot.hidden = true;
+  const trace = make('details'), traceBody = make('dl'); trace.append(make('summary', 'How this was made'), traceBody); trace.hidden = true;
   const workActions = make('div'); workActions.className = 'm-asking__actions';
-  root.append(breadcrumb, definition, noDefinition, actions, form, status, plan, elapsed, localStatus, consentRoot, provisionalRoot, replyRoot, trace, workActions);
+  root.append(breadcrumb, definition, noDefinition, actions, form, status, plan, skillReview, skillWait, elapsed, localStatus, consentRoot, provisionalRoot, unformattedRoot, replyRoot, trace, workActions);
+  if (options.reviewOnly) { form.remove(); actions.remove(); breadcrumb.remove(); definition.remove(); noDefinition.remove(); }
   host.append(root);
   const busyButtons = new Set<HTMLButtonElement>();
   function action(text: string, callback?: () => void | Promise<void>) {
@@ -78,7 +82,7 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
     }, { signal: abort.signal });
     return button;
   }
-  const keep = action('Keep', options.onKeep), park = action('Park', options.onPark), source = action('Source passage', options.onSource);
+  const keep = action('Keep', options.onKeep), park = action('Read later', options.onPark), source = action('Source passage', options.onSource);
   keep.hidden = !options.onKeep; park.hidden = !options.onPark; source.hidden = !options.onSource;
   const change = action('Change', () => { flow.invalidate(); return options.onChange?.(); }); change.hidden = !options.onChange;
   const ask = action('Ask', () => { flow.openAsk(); if (!form.hidden) input.focus({ preventScroll: true }); });
@@ -98,7 +102,7 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
   const suggestionButtons: HTMLButtonElement[] = [];
   for (const [parent, items] of [[suggestions, offered], [more, additional]] as const) {
     for (const item of items) {
-      const button = action(item.label + (item.time === 'longer' ? ' (takes longer)' : ''), () => {
+      const button = action(SUGGESTION_LABELS[item.intent], () => {
         intent = item.intent; input.value = item.question; exposureChosen = true; exposure('choice', item.id); input.focus({ preventScroll: true });
       }); suggestionButtons.push(button); parent.append(button);
     }
@@ -126,7 +130,7 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
     onCommitted: result => {
       if (destroyed) return;
       trace.hidden = false; traceBody.replaceChildren();
-      for (const [key, value] of Object.entries(result.trace)) traceBody.append(make('dt', traceLabels[key as keyof CompletionTrace]),
+      for (const [key, value] of Object.entries(result.trace).filter(([key]) => ['provider', 'requestedAt', 'savedAt', 'attemptEndedAt'].includes(key))) traceBody.append(make('dt', traceLabels[key as keyof CompletionTrace]),
         make('dd', key === 'provider' ? connectionLabels[value as CompletionTrace['provider']]
           : typeof value === 'object' ? `${value.noteId}, version ${value.revision}` : value));
       options.onCommitted?.(result);
@@ -140,9 +144,28 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
     const definitionText = state.definition?.text ?? ''; if (quote.textContent !== definitionText) quote.textContent = definitionText;
     if (status.textContent !== state.message) status.textContent = state.message;
     const reviewed = state.preparation && state.intent && planPhases.has(state.phase)
-      ? `Reviewed plan: ${intentLabels[state.intent]} with ${state.preparation.preview.recipientLabel} using ${state.preparation.job.model}.`
+      ? `Reviewed plan: ${intentLabels[state.intent]} with ${state.preparation.preview.recipientLabel}.`
       : '';
     plan.hidden = !reviewed; if (plan.textContent !== reviewed) plan.textContent = reviewed;
+    const reviewingSkill = state.preparation?.job.readerSkill;
+    skillReview.hidden = !reviewingSkill || !['consent', 'deciding', 'submitting'].includes(state.phase);
+    if (!skillReview.hidden && reviewingSkill) {
+      skillReview.replaceChildren(doc.createTextNode('This runs your own skill '), doc.createTextNode(reviewingSkill.name),
+        doc.createTextNode(' with this passage. It can take up to 15 minutes.'));
+    }
+    const waitingForSkill = state.job?.context.readerSkill && ['queued', 'sending', 'working', 'provisional', 'validating', 'cancel_requested'].includes(state.phase);
+    skillWait.hidden = !waitingForSkill;
+    if (waitingForSkill) skillWait.textContent = 'This can take up to 15 minutes.';
+    const unformatted = state.phase === 'failed' ? state.job?.unformatted : undefined;
+    unformattedRoot.hidden = !unformatted;
+    unformattedRoot.replaceChildren();
+    if (unformatted) {
+      const heading = make('h3', 'Unformatted skill output');
+      const sourceLine = make('p'); sourceLine.replaceChildren(doc.createTextNode('From your skill: '),
+        doc.createTextNode(unformatted.readerSkill.name), doc.createTextNode('. Marginalia did not check these sources.'));
+      const output = make('pre'); output.textContent = unformatted.text;
+      unformattedRoot.append(heading, sourceLine, output);
+    }
     elapsed.hidden = state.elapsedSeconds === undefined;
     const duration = state.elapsedSeconds === undefined ? '' : `${state.elapsedSeconds} s elapsed.`;
     if (elapsed.textContent !== duration) elapsed.textContent = duration;
@@ -173,4 +196,95 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
     if (ownedFocus && options.returnFocus?.isConnected) options.returnFocus.focus({ preventScroll: true });
   }
   return { destroy };
+}
+
+/** The single draft editor. It works before a saved helper binding exists. */
+export function mountAskingDraft(host: HTMLElement, options: {
+  id: string; question: string; context: string; suggestions: readonly AskingSuggestion[];
+  /** A function defers the local catalog read until the reader opens More. */
+  readerSkills?: Promise<ReaderSkillsCatalog> | (() => Promise<ReaderSkillsCatalog>);
+  moreAction?: HTMLElement;
+  onEdit(question: string, context: string): void;
+  onChoose(intent: Intent, question: string, context: string, readerSkill?: ReaderSkillSelection): Promise<void>;
+  onMore(): void; onIdeas(): Promise<readonly AskingSuggestion[]>;
+  onClose(): void; onKeep(): void; onPark(): void;
+}) {
+  const doc = host.ownerDocument, abort = new AbortController();
+  const make = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string) => {
+    const node = doc.createElement(tag); if (text !== undefined) node.textContent = text; return node;
+  };
+  const form = make('form'); form.className = 'm-asking-draft'; form.id = options.id;
+  const top = make('div'); top.className = 'm-offers';
+  const input = make('input'); input.type = 'text'; input.id = options.id + '-question'; input.maxLength = 4000;
+  input.placeholder = 'Ask something else\u2026'; input.setAttribute('aria-label', 'Your question'); input.value = options.question;
+  const more = make('details'); more.append(make('summary', 'More'));
+  const extra = make('div'), contextDetails = make('details'), context = make('textarea');
+  context.setAttribute('aria-label', 'Context to attach'); context.id = options.id + '-context'; context.value = options.context; context.maxLength = 2000;
+  const label = make('label', 'Add context'); label.htmlFor = context.id; label.append(context);
+  contextDetails.append(make('summary', 'Add context'), label); more.append(extra, contextDetails);
+  const moreActionParent = options.moreAction?.parentElement;
+  if (options.moreAction) { more.append(options.moreAction); if (moreActionParent) moreActionParent.hidden = true; }
+  const ideas = make('button', 'More ideas'); ideas.type = 'button'; ideas.hidden = true;
+  const submit = make('button', 'Ask'); submit.type = 'submit';
+  const useSkill = make('button', 'Use a skill'); useSkill.type = 'button'; useSkill.className = 'm-asking-draft__use-skill'; useSkill.hidden = true;
+  const skillList = make('div'); skillList.className = 'm-asking-draft__skills'; skillList.hidden = true;
+  const message = make('p'); message.setAttribute('role', 'status');
+  form.append(top, input, submit, more, ideas, useSkill, skillList, message); host.replaceChildren(form);
+  let offers = [...options.suggestions], busy = false, disposed = false;
+  function edit() { options.onEdit(input.value, context.value); ideas.hidden = false; }
+  input.addEventListener('input', edit, { signal: abort.signal }); context.addEventListener('input', edit, { signal: abort.signal });
+  async function choose(intent: Intent, question: string, readerSkill?: ReaderSkillSelection) {
+    if (busy || disposed) return; busy = true;
+    try { options.onEdit(question, context.value); await options.onChoose(intent, question, context.value, readerSkill); }
+    catch (error) { message.textContent = error instanceof Error ? error.message : 'Your question could not be saved. Try again.'; }
+    finally { busy = false; }
+  }
+  function draw() {
+    top.replaceChildren(); extra.replaceChildren();
+    offers.forEach((item, index) => {
+      const row = make('div'); row.className = 'm-suggestion';
+      const button = make('button', item.label); button.type = 'button'; button.id = options.id + '-' + item.intent;
+      button.dataset.intent = item.intent;
+      if (index < 3) row.append(make('span', String(index + 1)));
+      row.append(button);
+      if (item.time === 'longer') { const time = make('span', 'a few minutes'); time.className = 'm-suggestion-time'; row.append(time); }
+      button.addEventListener('click', () => { input.value = item.question; void choose(item.intent, item.question); }, { signal: abort.signal });
+      (index < 3 ? top : extra).append(row);
+    });
+  }
+  draw();
+  const showSkills = (pending: Promise<ReaderSkillsCatalog>): void => void pending.then(catalog => {
+    if (disposed || catalog.status !== 'ready' || !catalog.revision || catalog.skills.length === 0) return;
+    const revision = catalog.revision;
+    for (const skill of catalog.skills) {
+      const row = make('div'); row.className = 'm-asking-draft__skill';
+      const select = make('button'); select.type = 'button';
+      const name = make('span'); name.textContent = skill.name;
+      const description = make('span'); description.className = 'm-asking-draft__skill-description'; description.textContent = skill.description;
+      select.append(name, description);
+      select.addEventListener('click', () => {
+        const question = input.value.trim() || 'Run this skill on this passage.';
+        input.value = question; void choose('unsure', question, { name: skill.name, catalogRevision: revision });
+      }, { signal: abort.signal });
+      row.append(select); skillList.append(row);
+    }
+    useSkill.hidden = false;
+  }).catch(() => { /* Catalog failure is intentionally silent. */ });
+  const skillSource = options.readerSkills; let skillsAsked = false;
+  if (skillSource && typeof skillSource !== 'function') showSkills(skillSource);
+  more.addEventListener('toggle', () => { if (!more.open || skillsAsked || typeof skillSource !== 'function') return; skillsAsked = true; showSkills(Promise.resolve().then(skillSource)); }, { signal: abort.signal });
+  useSkill.addEventListener('click', () => { skillList.hidden = !skillList.hidden; }, { signal: abort.signal });
+  more.addEventListener('toggle', () => { if (more.open) options.onMore(); }, { signal: abort.signal });
+  ideas.addEventListener('click', () => { if (ideas.disabled) return; ideas.disabled = true; void options.onIdeas().then(next => { if (disposed) return; offers = [...next]; draw(); ideas.hidden = true; if (more.open) options.onMore(); }).catch(() => { if (!disposed) message.textContent = 'New ideas could not be loaded. Your current offers remain here.'; }).finally(() => { ideas.disabled = false; }); }, { signal: abort.signal });
+  form.addEventListener('submit', event => { event.preventDefault(); if (input.value.trim()) void choose('unsure', input.value); }, { signal: abort.signal });
+  form.addEventListener('keydown', event => {
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+    const index = ['1', '2', '3'].indexOf(event.key);
+    if (index >= 0) { event.preventDefault(); top.querySelectorAll<HTMLButtonElement>('button')[index]?.click(); }
+    else if (event.key === '/') { event.preventDefault(); input.focus({ preventScroll: true }); }
+    else if (event.key.toLowerCase() === 'k') { event.preventDefault(); options.onKeep(); }
+    else if (event.key.toLowerCase() === 'p') { event.preventDefault(); options.onPark(); }
+    else if (event.key === 'Escape') { event.preventDefault(); options.onClose(); }
+  }, { signal: abort.signal });
+  return { message, submit, chooseIndex: (index: number) => top.querySelectorAll<HTMLButtonElement>('button')[index]?.click(), setVisible: (visible: boolean) => { if (visible) host.append(form); else form.remove(); }, focus: () => input.focus(), changed: () => { ideas.hidden = false; }, destroy: () => { disposed = true; abort.abort(); if (options.moreAction && moreActionParent?.isConnected) { moreActionParent.append(options.moreAction); moreActionParent.hidden = false; } form.remove(); } };
 }

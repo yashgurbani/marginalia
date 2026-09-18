@@ -21,38 +21,21 @@ for (const [name, metadata, expected] of [
   assert.equal(heading.textContent.includes('invented-venue'), false);
   assert.equal(detail.hidden, false);
   api.setReadingPosition(5);
-  assert.equal(heading.classList.contains('m-head-compact'), true); assert.equal(detail.hidden, true);
-  assert.equal(heading.getAttribute('aria-labelledby'), title.id); assert.equal(title.hidden, false);
-  const toggle = button(heading, 'Details');
-  assert.equal(toggle.tagName, 'BUTTON'); assert.equal(toggle.getAttribute('aria-expanded'), 'false');
-  assert.equal(toggle.getAttribute('aria-controls'), detail.id);
-  assert.equal(toggle.getAttribute('aria-label'), `Show source details: ${capture.title}`);
-  toggle.focus(); toggle.click();
-  assert.equal(e.document.activeElement, toggle); assert.equal(detail.hidden, false); assert.equal(toggle.getAttribute('aria-expanded'), 'true');
-  api.setReadingPosition(12); assert.equal(detail.hidden, false, 'explicit reopening persists during reading');
-  button(heading, 'Hide').click(); assert.equal(detail.hidden, true); assert.equal(e.document.activeElement, toggle);
+  assert.equal(detail.hidden, false); assert.equal(title.hidden, false);
+  assert.equal(heading.querySelectorAll('button').length, 0);
+  assert.equal(heading.getAttribute('aria-labelledby'), title.id);
   api.destroy(); await api.drain();
 });
 
-test('E33 automatic collapse preserves keyboard focus and header source nodes', async t => {
+test('R4 top row preserves page identity and merges Hide into Collapse', async t => {
   const e = { ...dom(t), ...storage(t) };
-  const api = await mountMargin(asHost(e.root), { capture, allowHelper: false, storageName: crypto.randomUUID() });
-  const heading = e.root.querySelector('.m-head')!, title = heading.querySelector('h1')!, toggle = button(heading, 'Hide');
-  toggle.focus(); api.setReadingPosition(4);
-  assert.equal(e.document.activeElement, toggle); assert.equal(heading.classList.contains('m-head-compact'), false);
-  e.root.focus(); toggle.fire('focusout'); await Promise.resolve();
-  assert.equal(heading.classList.contains('m-head-compact'), true); assert.equal(heading.querySelector('h1'), title);
-  api.destroy(); await api.drain();
-});
-
-test('E33 source scrolling collapses the header within the first reading section', async t => {
-  const e = { ...dom(t), ...storage(t) }, source = e.document.createElement('article');
-  source.textContent = capture.text; e.document.body.append(source);
-  const api = await mountMargin(asHost(e.root), { capture, sourceRoot: asHost(source), allowHelper: false, storageName: crypto.randomUUID() });
-  const heading = e.root.querySelector('.m-head')!;
-  assert.equal(heading.classList.contains('m-head-compact'), false);
-  (window as unknown as TestElement).fire('scroll');
-  assert.equal(heading.classList.contains('m-head-compact'), true);
-  assert.equal(source.textContent, capture.text);
+  const api = await mountMargin(asHost(e.root), { capture, allowHelper: false, storageName: crypto.randomUUID(), onLibrary() {} });
+  const heading = e.root.querySelector('.m-head')!, title = heading.querySelector('h1')!;
+  assert.deepEqual(e.root.querySelector('.m-bar')!.querySelectorAll('button').map(node => node.textContent), ['Library', 'Settings', 'Collapse']);
+  assert.equal(button(e.root, 'Follow reading').hidden, true);
+  const settings = button(e.root, 'Settings'); settings.focus(); api.setReadingPosition(4);
+  assert.equal(e.document.activeElement, settings); assert.equal(heading.querySelector('h1'), title);
+  button(e.root, 'Write here\u2026').click();
+  assert.equal(button(e.root, 'Follow reading').hidden, false);
   api.destroy(); await api.drain();
 });

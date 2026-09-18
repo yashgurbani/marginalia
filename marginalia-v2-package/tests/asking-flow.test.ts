@@ -9,6 +9,9 @@ import type { AskingAccess, AskingBinding, AskingHost, AskingPreparation, Asking
 import type { ConsentChoice, ConsentGrant, ConsentPreview } from '../contracts/consent.ts';
 import type { JobSnapshot, PrepareJobInput } from '../contracts/jobs.ts';
 import type { CandidateReply } from '../contracts/reply.ts';
+import { validateReply } from '../contracts/reply.ts';
+import { growthReply, growthSourceText } from '../fixtures/growth-reply.ts';
+import { illustrationOrigins } from '../fixtures/illustration-origins.ts';
 import type { Thread } from '../contracts/reader.ts';
 import type { ConsentSheetOptions } from '../ui/consent.ts';
 import type { ReplyOptions } from '../renderer/index.ts';
@@ -47,7 +50,7 @@ function preparation(input: PrepareJobInput, b: AskingBinding): AskingPreparatio
     ...(input.parentReplyId ? { parentReplyId: input.parentReplyId, parentReply: { replyVersionId: input.parentReplyId,
       attribution: 'Prior generated work, not source evidence.', excerpt: '{"title":"Prior reply"}', omittedBytes: 0 } } : {}),
     availableCapabilities: capabilities, omissions: [] };
-  return { job: { ...input, provider: 'app-server', model: 'host-selected', mode: 'structured-final', policyKey: POLICY, preparedPayloadDigest: DIGEST, capabilities: [...capabilities] },
+  return { unverified: [], disclosureVersion: null, job: { ...input, provider: 'app-server', model: 'host-selected', mode: 'structured-final', policyKey: POLICY, preparedPayloadDigest: DIGEST, capabilities: [...capabilities] },
     preview: { id: 'preview-' + input.id, revision: 1, requestId: input.id, site: 'https://example.org',
       scope: input.intent === 'evidence' || input.intent === 'explore' ? 'open-session' : 'cloud-inference', scopeLabel: 'Host scope',
       recipient: 'openai-codex', recipientLabel: 'OpenAI Codex', provider: 'app-server', policyKey: POLICY,
@@ -84,7 +87,7 @@ function saved(j: JobSnapshot, b: AskingBinding): SavedAskingReply {
       answeredNote: b.answeredNote ? { ...b.answeredNote, createdAt: TIME } : null, createdAt: j.updatedAt, deletedAt: null, revision: 1 },
     view: { replyVersionId: j.replyVersionId!, parameters: {}, view: {}, revision: 0, updatedAt: j.updatedAt } };
 }
-function harness(withNote = true) {
+function harness(withNote = true, validator: AskingValidator = validate) {
   const binding = bound(withNote), rows = new Map<string, JobSnapshot>();
   let currentBinding: AskingBinding | undefined = structuredClone(binding);
   let access: AskingAccess = { epoch: 'session-1', paired: true, canAuthorize: true, excluded: false, supported: true, helper: 'connected', surface: 'native-panel' };
@@ -93,7 +96,7 @@ function harness(withNote = true) {
   const calls: Array<{ name: string; input?: unknown }> = [];
   const setObserved = (value: JobSnapshot) => { observed = hostCopy(value); rows.set(value.id, observed); };
   const host: AskingHost = {
-    availability: async () => { calls.push({ name: 'availability' }); return { configured: true, available: true }; },
+    availability: async () => { calls.push({ name: 'availability' }); return { configured: true, available: true, unverified: [], disclosureVersion: null }; },
     prepare: async input => { calls.push({ name: 'prepare', input }); lineage = {}; return prepared = preparation(input, binding); },
     prepareRetry: async (id, input) => {
       calls.push({ name: 'prepareRetry', input: { previous: id, ...input } }); const old = rows.get(id)!;
@@ -118,7 +121,7 @@ function harness(withNote = true) {
       if (!owner) throw new Error('Reply not found'); return saved(owner, binding);
     },
   };
-  const options = { binding, host, validateReply: validate, currentBinding: () => currentBinding, currentAccess: () => access,
+  const options = { binding, host, validateReply: validator, currentBinding: () => currentBinding, currentAccess: () => access,
     ensureContextSaved: async (value: AskingBinding) => { calls.push({ name: 'ensureSaved', input: value }); }, now: () => clock, newId: () => 'request-' + ++sequence };
   const flow = createAskingFlow(options);
   return { binding, host, calls, flow, options, rows, get prepared() { return prepared; }, get observed() { return observed; },
@@ -183,7 +186,7 @@ test('prepared Simulate review exposes its digest-bound local solver capability 
 });
 
 test('paired is not provider-ready; unavailable runtime never reaches preparation or dispatch', async () => {
-  const h = harness(); h.host.availability = async () => ({ configured: true, available: false });
+  const h = harness(); h.host.availability = async () => ({ configured: true, available: false, unverified: [], disclosureVersion: null });
   await h.flow.ask('define', 'Explain'); assert.equal(h.flow.getState().blocker, 'runtime-unavailable'); assert.equal(h.count('prepare'), 0);
   assert.equal(h.count('start'), 0);
 });
@@ -275,7 +278,7 @@ test('preview tampering and expiry before or during decision never dispatch', as
 });
 
 test('readiness is checked again before approval, not inferred from an earlier pairing or preparation', async () => {
-  const h = harness(); await h.flow.ask('define', 'Explain'); h.host.availability = async () => ({ configured: true, available: false });
+  const h = harness(); await h.flow.ask('define', 'Explain'); h.host.availability = async () => ({ configured: true, available: false, unverified: [], disclosureVersion: null });
   await assert.rejects(h.approve()); assert.equal(h.count('decide'), 0); assert.equal(h.count('start'), 0);
 });
 
@@ -300,9 +303,9 @@ test('dismissal, consent-signal abort, explicit Change, revocation and close fen
 });
 
 test('source and pairing changes during awaited readiness checks prevent later authorization', async () => {
-  const h = harness(); await h.flow.ask('define', 'Explain'); const gate = deferred<{ configured: boolean; available: boolean }>();
+  const h = harness(); await h.flow.ask('define', 'Explain'); const gate = deferred<import('../ui/asking/types.ts').AskingAvailability>();
   h.host.availability = async () => gate.promise; const pending = h.approve(); await settle();
-  h.setAccess({ epoch: 'replaced' }); gate.resolve({ configured: true, available: true }); await assert.rejects(pending);
+  h.setAccess({ epoch: 'replaced' }); gate.resolve({ configured: true, available: true, unverified: [], disclosureVersion: null }); await assert.rejects(pending);
   assert.equal(h.count('decide'), 0); assert.equal(h.count('start'), 0);
 });
 
@@ -340,7 +343,7 @@ test('the reviewed host plan remains visible through submitting, working and pro
   const pending = h.approve(); await settle();
   const plan = d.node.all().find(n => n.textContent.startsWith('Reviewed plan:'))!;
   assert.equal(h.flow.getState().phase, 'submitting'); assert.deepEqual(h.flow.getState().preparation, reviewed);
-  assert.equal(plan.hidden, false); assert.equal(plan.textContent, 'Reviewed plan: Explain this passage with OpenAI Codex using host-selected.');
+  assert.equal(plan.hidden, false); assert.equal(plan.textContent, 'Reviewed plan: Define it here with OpenAI Codex.');
   gate.resolve(job(h.prepared, h.binding, 'running')); await pending;
   assert.equal(h.flow.getState().phase, 'working'); assert.deepEqual(h.flow.getState().preparation, reviewed); assert.equal(plan.hidden, false);
   h.setObserved({ ...job(h.prepared, h.binding, 'running', 2), provisional: candidate('partial') }); await h.flow.refresh();
@@ -524,11 +527,12 @@ class ElementDouble extends EventTarget {
   get isConnected(): boolean { return this === this.ownerDocument.body || !!this.parent?.isConnected; }
   setAttribute(name: string, value: string) { this.attrs[name] = value; }
   getAttribute(name: string) { return this.attrs[name] ?? null; }
+  querySelector(tag: string) { return this.all().find(node => node !== this && node.tagName === tag) ?? null; }
   focus(_options?: unknown) { this.ownerDocument.activeElement = this; }
   click() { if (!this.disabled) this.dispatchEvent(new Event('click')); }
   all(): ElementDouble[] { return [this, ...this.children.flatMap(n => n.all())]; }
 }
-class DocumentDouble { body = new ElementDouble('body', this); activeElement: ElementDouble | null = null; createElement(tag: string) { return new ElementDouble(tag, this); } }
+class DocumentDouble { body = new ElementDouble('body', this); activeElement: ElementDouble | null = null; createElement(tag: string) { return new ElementDouble(tag, this); } createElementNS(_namespace: string, tag: string) { return this.createElement(tag); } }
 function dom() { const doc = new DocumentDouble(), host = doc.createElement('div'); doc.body.append(host); return { doc, host: host as unknown as HTMLElement, node: host }; }
 const mountedStub = () => ({ getState: () => ({ parameters: {}, view: {} }), destroy() {} });
 
@@ -536,7 +540,7 @@ test('helper adapter preserves exact route/body protocol and does not invent a j
   const b = bound(), p = preparation({ id: 'request', idempotencyKey: 'key', threadId: b.threadId, intent: 'define', question: 'Explain' }, b), j = job(p, b, 'succeeded'), result = saved(j, b);
   const posts: Array<[string, unknown]> = [], gets: string[] = [];
   const host = createAskingHost({ request: async (path, input) => { posts.push([path, input]); return path.includes('prepare') ? p : path.includes('decision') ? { grant: grant(p.preview, 'this-time') } : j; },
-    get: async path => { gets.push(path); return path.startsWith('/api/jobs?') ? { jobs: [j] } : path === '/api/jobs' ? { configured: true, available: true } : j; },
+    get: async path => { gets.push(path); return path.startsWith('/api/jobs?') ? { jobs: [j] } : path === '/api/jobs' ? { configured: true, available: true, unverified: [], disclosureVersion: null } : j; },
     replies: async () => ({ source: result.source, replies: [{ ...result.reply, id: 'sibling' }, result.reply], views: [result.view!] }) });
   const signal = new AbortController().signal;
   await host.availability(signal); assert.deepEqual(await host.prepare(p.job, signal), p);
@@ -610,6 +614,74 @@ test('literal provisional text is inert and follow-up inputs become explicit rev
   assert.throws(() => followupQuestion({ text: 'Why?', parameters: { x: Infinity }, view: {} }));
 });
 
+test('a validated provisional model draws a bounded inert curve while withholding authored result slots', () => {
+  const d = dom(), reply = structuredClone(growthReply); reply.status = 'partial';
+  reply.title = 'RESULT TITLE'; reply.summary = 'RESULT SUMMARY'; reply.staticFallback = 'RESULT FALLBACK';
+  const valid = validateReply(reply, { sourceText: growthSourceText, requireOrigins: true });
+  assert.equal(valid.ok, true, valid.ok ? '' : valid.errors.join('\n'));
+  const before = JSON.stringify(reply), mounted = mountProvisionalText(d.host, reply);
+  const nodes = d.node.all(), svg = nodes.find(node => node.tagName === 'svg'); assert.ok(svg);
+  assert.equal(svg.getAttribute('role'), 'img');
+  const curve = nodes.find(node => node.getAttribute('class') === 'mr-curve'); assert.ok(curve);
+  assert.match(curve.getAttribute('d')!, /M.*L/);
+  assert.ok((curve.getAttribute('d')!.match(/[ML]/g) ?? []).length <= 600);
+  const text = nodes.map(node => node.textContent).join('\n');
+  assert.match(text, /Provisional preview/); assert.doesNotMatch(text, /RESULT TITLE|RESULT SUMMARY|RESULT FALLBACK|Diverges|Settles/);
+  assert.ok(text.includes(reply.illustration!.statement));
+  assert.doesNotMatch(nodes.find(node => node.tagName === 'desc')!.textContent, /data table|every row/);
+  assert.equal(nodes.some(node => ['a', 'button', 'input', 'script', 'iframe', 'foreignObject'].includes(node.tagName)), false);
+  assert.equal(JSON.stringify(reply), before); mounted.destroy(); assert.equal(d.node.children.length, 0);
+});
+
+test('provisional model-only and supplied-table frames render while unsupported solver previews remain plain', () => {
+  for (const kind of ['model', 'table', 'solver'] as const) {
+    const d = dom(), reply = structuredClone(growthReply); reply.status = 'partial'; reply.checks = [];
+    if (kind === 'model') reply.blocks = reply.blocks.filter(block => block.type === 'model');
+    if (kind === 'table') reply.blocks = [
+      { type: 'table', id: 'values', columns: [{ key: 't', label: 'Time' }, { key: 'y', label: 'Value' }], rows: [{ t: 0, y: 1 }, { t: 1, y: 2 }] },
+      { type: 'plot', id: 'view', from: 'values', x: 't', y: ['y'], labels: {} },
+    ];
+    if (kind === 'solver') reply.blocks = [{ type: 'solver', id: 'solver', path: 'solver/main.js', inputNames: ['gamma'], outputBlocks: [] }];
+    reply.origins = illustrationOrigins(reply);
+    const mounted = mountProvisionalText(d.host, reply);
+    assert.equal(d.node.all().some(node => node.tagName === 'svg'), kind !== 'solver');
+    assert.equal(d.node.all().some(node => node.tagName === 'button' || node.tagName === 'a'), false);
+    mounted.destroy();
+  }
+});
+
+test('visual provisional frame keeps cancel visible, fences late previews and yields only to a validated saved reply', async () => {
+  const preview = structuredClone(growthReply); preview.status = 'partial'; preview.sourceBindings = []; preview.origins = illustrationOrigins(preview);
+  for (const cancel of [false, true]) {
+    const h = harness(false, validateReply), d = dom(); let commits = 0;
+    const card = mountAskingCard(d.host, { flow: h.flow, mountConsent: () => ({ update() {}, destroy() {} }),
+      mountReply: () => { commits++; return mountedStub(); }, replyOptions: () => ({}) });
+    try {
+      await h.flow.ask('simulate', 'Show the model'); await h.approve();
+      h.setObserved({ ...job(h.prepared, h.binding, 'running', 2), provisional: preview }); await h.flow.refresh();
+      assert.equal(h.flow.getState().phase, 'provisional');
+      const svg = d.node.all().find(node => node.tagName === 'svg'); assert.ok(svg); assert.equal(commits, 0);
+      const button = d.node.all().find(node => node.tagName === 'button' && node.textContent === 'Cancel');
+      assert.ok(button && !button.hidden && !button.disabled);
+      if (cancel) {
+        const late = deferred<JobSnapshot>(); h.host.inspect = async () => late.promise;
+        const pending = h.flow.refresh(); await settle(); await h.flow.cancel();
+        late.resolve({ ...job(h.prepared, h.binding, 'running', 9), provisional: { ...preview, staticFallback: 'LATE PREVIEW' } }); await pending;
+        assert.equal(h.flow.getState().phase, 'cancelled'); assert.equal(commits, 0);
+        assert.equal(d.node.all().filter(node => node.tagName === 'svg').length, 1);
+        assert.equal(d.node.all().find(node => node.tagName === 'svg'), svg);
+      } else {
+        const read = h.host.readReply; h.host.readReply = async (thread, id, signal) => {
+          const value = await read(thread, id, signal); value.reply.reply.status = 'partial'; return value;
+        };
+        await h.complete(); assert.equal(commits, 0); assert.ok(d.node.all().some(node => node === svg));
+        h.host.readReply = read; await h.flow.refresh(); assert.equal(commits, 1);
+        assert.equal(d.node.all().some(node => node.tagName === 'svg'), false);
+      }
+    } finally { card.destroy(); }
+  }
+});
+
 test('inline and narrow-sheet cards preserve the editor, keep actions local, invalidate Change, and clean timers/focus', async () => {
   for (const presentation of ['inline', 'sheet'] as const) {
     const h = harness(), d = dom(); let keeps = 0, parks = 0, changed = 0, held = 0;
@@ -621,7 +693,7 @@ test('inline and narrow-sheet cards preserve the editor, keep actions local, inv
       onExposure: e => exposure.push(e.kind), moreSuggestions: [{ id: 'derive', label: 'Show steps', intent: 'derive', question: 'Show steps', time: 'longer' }] });
     try {
       const find = (text: string) => d.node.all().find(n => n.tagName === 'button' && n.textContent === text)!;
-      find('Keep').click(); find('Park').click(); await settle(); assert.equal(keeps, 1); assert.equal(parks, 1); assert.equal(h.calls.length, 0);
+      find('Keep').click(); find('Read later').click(); await settle(); assert.equal(keeps, 1); assert.equal(parks, 1); assert.equal(h.calls.length, 0);
       find('Ask').click(); await settle(); const editor = d.node.all().find(n => n.tagName === 'textarea')!;
       editor.value = 'A preserved draft?'; editor.focus(); const identity = editor;
       h.flow.openAsk(); assert.strictEqual(d.node.all().find(n => n.tagName === 'textarea'), identity); assert.equal(editor.value, 'A preserved draft?');
@@ -704,4 +776,48 @@ test('a reply-options callback changing the source cannot mount or announce that
     mountReply: () => { renders++; return mountedStub(); }, onCommitted: () => { announces++; } });
   await h.flow.ask('define', 'Explain'); await h.approve(); await h.complete();
   assert.equal(renders, 0); assert.equal(announces, 0); surface.destroy();
+});
+
+
+test('stock runtime disclosure reaches the sheet and a refreshed version never gates approval', async () => {
+  const h = harness(), d = dom(); let offered: ConsentSheetOptions | undefined; const updates: string[] = [];
+  const surfaces = connectAskingSurfaces(h.flow, { consentRoot: d.host, replyRoot: d.host, provisionalRoot: d.host,
+    mountConsent: (_root, options) => { offered = options; return { update() {}, destroy() {},
+      updateDisclosure(value) { updates.push(value.disclosureVersion ?? ''); } }; },
+    mountReply: mountedStub, replyOptions: () => ({}) });
+  h.host.prepare = async input => ({ ...preparation(input, h.binding), unverified: ['settings'], disclosureVersion: 'stock-v1' });
+  h.host.availability = async () => ({ configured: true, available: true, unverified: ['settings'], disclosureVersion: 'stock-v2' });
+  await h.flow.ask('define', 'Explain');
+  assert.equal(h.flow.getState().phase, 'consent');
+  assert.equal(h.flow.getState().preparation?.disclosureVersion, 'stock-v1');
+  assert.deepEqual(offered?.disclosure?.unverified, ['settings']);
+  assert.equal(offered?.disclosure?.disclosureVersion, 'stock-v1');
+  let refreshed = false;
+  h.flow.subscribe(state => { if (state.preparation?.disclosureVersion === 'stock-v2') refreshed = true; });
+  h.host.decide = async input => grant(h.flow.getState().preparation!.preview, input.choice);
+  h.host.start = async () => { throw new Error('Fixture ends at submission'); };
+  await h.flow.choose('this-time', h.flow.getState().preparation!.preview);
+  assert.equal(refreshed, true); assert.equal(h.flow.getState().submitted, true);
+  assert.ok(updates.includes('stock-v2')); surfaces.destroy();
+  const unavailable = harness();
+  unavailable.host.availability = async () => ({ configured: false, available: false, unverified: ['settings'], disclosureVersion: 'stock-v1' });
+  await unavailable.flow.ask('define', 'Explain');
+  assert.equal(unavailable.flow.getState().message, 'Codex execution is not ready. Pairing alone does not make it available. Nothing was asked.');
+  assert.equal(unavailable.count('prepare'), 0);
+});
+
+test('adapter retains and validates disclosure on availability and all preparation routes', async () => {
+  const p = preparation({ id: 'r', idempotencyKey: 'k', threadId: 'thread', intent: 'define', question: 'Why?' }, bound());
+  let metadata: unknown = { unverified: ['settings'], disclosureVersion: 'v1' };
+  const host = createAskingHost({ get: async () => ({ configured: true, available: true, ...metadata as object }),
+    request: async () => ({ ...p, ...metadata as object }), replies: async () => { throw new Error('unused'); } });
+  const signal = new AbortController().signal;
+  const calls = [() => host.availability(signal), () => host.prepare(p.job, signal),
+    () => host.prepareRetry('old', { id: 'r', idempotencyKey: 'k' }, signal),
+    () => host.prepareFollowup('old', { id: 'r', idempotencyKey: 'k', question: 'Why?' }, signal)];
+  for (const call of calls) { const value = await call(); assert.deepEqual(value.unverified, ['settings']); assert.equal(value.disclosureVersion, 'v1'); }
+  for (const invalid of [{ unverified: [1], disclosureVersion: 'v1' }, { unverified: [], disclosureVersion: 4 }]) {
+    metadata = invalid;
+    for (const call of calls) await assert.rejects(call(), /disclosure/);
+  }
 });

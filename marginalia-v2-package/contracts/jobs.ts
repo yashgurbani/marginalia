@@ -1,8 +1,10 @@
+import type { EvidenceRetrieval } from './evidence.ts';
 import type { ProviderHandle, ProviderKind } from './job-runner.ts';
 import type { CandidateReply, Intent, ReplyCapability } from './reply.ts';
 import type { NoteVersionRef } from './reader.ts';
 import type { ConsentAuthorization } from './consent.ts';
 import type { OutgoingPart } from './consent.ts';
+import type { ReaderSkillProvenance, ReaderSkillSelection, UnformattedSkillOutput } from './reader-skills.ts';
 
 export type JobState = 'queued' | 'preparing' | 'sending' | 'running' | 'validating' | 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'outcome_unknown' | 'cancel_requested';
 
@@ -22,10 +24,11 @@ export type StartJobInput = {
   answeredNote?: NoteVersionRef;
   parentReplyId?: string;
   capabilities?: ReplyCapability[];
+  readerSkill?: ReaderSkillSelection;
 };
 
 /** Browser request shape before permission. Provider, model, policy and capabilities remain host-owned. */
-export type PrepareJobInput = Pick<StartJobInput, 'id' | 'idempotencyKey' | 'threadId' | 'intent' | 'question' | 'answeredNote' | 'parentReplyId'>;
+export type PrepareJobInput = Pick<StartJobInput, 'id' | 'idempotencyKey' | 'threadId' | 'intent' | 'question' | 'answeredNote' | 'parentReplyId' | 'readerSkill'>;
 export type PreparedJobPlan = Omit<StartJobInput, 'grantId'>;
 export type PreparedJobResult = { consent: import('./consent.ts').PrepareConsentInput; job: PreparedJobPlan };
 
@@ -44,7 +47,7 @@ export type PrepareRetryJobInput = Pick<RetryJobInput, 'id' | 'idempotencyKey'>;
 
 /** Actual installed instruction bytes included in the reviewed model prompt, not model data. */
 export type HostInstructionBundle = {
-  kind: 'define' | 'simulate' | 'evidence' | 'explore' | 'instantiate' | 'derive' | 'diagram'; text: string; sha256: string;
+  kind: 'define' | 'simulate' | 'evidence' | 'explore' | 'instantiate' | 'derive' | 'diagram' | 'unsure'; text: string; sha256: string;
   documents: { path: string; sha256: string }[];
 };
 
@@ -71,6 +74,7 @@ export type FrozenJobContext = {
   modelSettingsRevision: number;
   modelCompatibilityKey: string;
   outgoing: ProviderJobPacket;
+  readerSkill?: ReaderSkillProvenance;
 };
 
 export type ProviderJobPacket = {
@@ -86,6 +90,8 @@ export type ProviderJobPacket = {
   parentReply?: { replyVersionId: string; attribution: 'Prior generated work, not source evidence.'; excerpt: string; omittedBytes: number; sha256?: string };
   availableCapabilities: ReplyCapability[];
   omissions: string[];
+  /** Requested reader skill; records the request, never observed execution or pinned content. */
+  readerSkill?: ReaderSkillProvenance;
 };
 
 export type JobAttempt = {
@@ -126,6 +132,7 @@ export type JobSnapshot = {
   cancelRequested: boolean;
   latestAttemptId?: string;
   provisional?: CandidateReply;
+  unformatted?: UnformattedSkillOutput;
   replyVersionId?: string;
   reason?: string;
   createdAt: string;
@@ -145,7 +152,10 @@ export interface JobConsentAuthority {
   assertSharedDatabase(database: unknown): void;
   /** Synchronous final consent fence, called within the JobStore handoff transaction. */
   finalizeDispatch(job: Readonly<JobSnapshot>, attemptId: string, expectedEligibilityFingerprint: string): ConsentAuthorization;
-  /** Runs the acceptance callback inside the same SQLite transaction as the final consent fence. */
-  withResultAcceptance<T>(job: Readonly<JobSnapshot>, attemptId: string, commit: () => T): T;
+  /** Runs the acceptance callback inside the same SQLite transaction as the final consent fence.
+   * 'unformatted' keeps a reader-skill's raw output through the same fences without marking it accepted. */
+  withResultAcceptance<T>(job: Readonly<JobSnapshot>, attemptId: string, commit: () => T, outcome?: 'unformatted'): T;
+  /** Host records for this exact accepted attempt; read inside the acceptance fence. */
+  evidenceObservations?(job: Readonly<JobSnapshot>, attemptId: string): EvidenceRetrieval | undefined;
   recordOutcome(attemptId: string, outcome: string): void;
 }

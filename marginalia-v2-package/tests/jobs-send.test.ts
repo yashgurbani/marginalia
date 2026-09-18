@@ -198,7 +198,7 @@ test('definition preparation pins installed instructions in the prompt, preview 
   try {
     const result = await jobs.prepare({ id: 'definition', idempotencyKey: 'definition-key', threadId: keep.threadId, intent: 'define', question: 'Define Start in context' });
     const instructions = result.consent.outgoing.find(part => part.label === 'Pinned define instructions');
-    assert.ok(instructions); assert.ok(instructions.text.includes('Keep the contextual explanation at most 60 words'));
+    assert.ok(instructions); assert.ok(instructions.text.includes('explain what the term means here in at most 60 words'));
     assert.equal(instructions.sha256, createHash('sha256').update(instructions.text).digest('hex'));
     assert.ok(result.consent.outgoing.find(part => part.label === 'Adapter prompt')!.text.startsWith(instructions.text));
     assert.ok(result.consent.outgoing.reduce((bytes, part) => bytes + Buffer.byteLength(part.text), 0) <= 60 * 1024);

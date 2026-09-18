@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reconcileEvidence, type EvidenceObservations } from '../daemon/transforms/evidence/reconcile.ts';
+import { isPublicHttpUrl, reconcileEvidence, type EvidenceObservations } from '../daemon/transforms/evidence/reconcile.ts';
 import type { CandidateReply, CitationsBlock } from '../contracts/reply.ts';
 import type { FetchedResourceRecord } from '../contracts/consent.ts';
 
@@ -45,6 +45,32 @@ test('a fetch claim binds a retrieval without certifying its support', () => {
   assert.equal(result.entries[0].dates.claimedSourceDateVerified, false);
   assert.equal(result.headline, null);
   assert.equal(result.entries[0].citationUrlMatch, 'both');
+});
+
+test('citation matching rejects private and credential-bearing hosts even when a record is supplied', () => {
+  for (const url of ['https://127.0.0.1/private', 'https://[::1]/private', 'https://user:pass@example.org/private']) {
+    const result = reconcileEvidence(reply([entry({ fetched: true, url })]), open({ observed: [fetched(url, 'fetched')] }));
+    assert.equal(result.entries[0].attribution, 'unsupported-fetch-claim');
+    assert.equal(result.entries[0].fetchedObserved, false);
+    assert.equal(result.verdict, 'insufficient');
+  }
+});
+
+test('rejects benchmark IPv4 ranges in direct and IPv4-mapped IPv6 URLs without overblocking public neighbors', () => {
+  for (const url of [
+    'https://198.18.0.1/private',
+    'https://198.19.255.255/private',
+    'https://[::ffff:198.18.0.1]/private',
+    'https://[::ffff:198.19.255.255]/private',
+  ]) {
+    assert.equal(isPublicHttpUrl(url), false, url);
+  }
+  for (const url of [
+    'https://198.1.18.1/public',
+    'https://[::ffff:198.1.18.1]/public',
+  ]) {
+    assert.equal(isPublicHttpUrl(url), true, url);
+  }
 });
 
 test('a forged fetch claim with no matching record is neutralized to unsupported', () => {
@@ -180,4 +206,52 @@ test('the reconciliation is deterministic for the same inputs', () => {
   const url = 'https://papers.example.org/a';
   const build = () => reconcileEvidence(reply([entry({ fetched: true, url })]), open({ observed: [fetched(url, 'fetched')] }));
   assert.deepEqual(build(), build());
+});
+
+
+function quotedFixture() {
+  const candidate = reply([entry({ support: 'Exact passage.', source: 'Current page' })]);
+  candidate.sourceBindings = [{ name: 'passage', meaning: 'The cited passage', relation: 'quoted', selector: { exact: 'Exact passage.' } }];
+  candidate.origins = { version: 1, parts: { '/blocks/0/entries/0/support': { kind: 'source-page', binding: 'passage' } } };
+  return candidate;
+}
+
+test('local quote receipt requires a unique exact quoted support origin and preserves unverified claim support', () => {
+  const candidate = quotedFixture();
+  const observations = open({ boundSourceText: 'Before Exact passage. After', boundSourceUrl: 'https://source.example/page', retrievalComplete: false });
+  const result = reconcileEvidence(candidate, observations);
+  assert.deepEqual(result.entries[0].sourceQuote, { start: 7, end: 21 });
+  assert.equal(result.entries[0].blockId, 'c1');
+  assert.equal(result.entries[0].textVerified, false);
+  assert.equal(result.headline, null);
+  assert.equal(result.retrievalComplete, false);
+  for (const mutate of [
+    (r: CandidateReply) => { r.sourceBindings[0].relation = 'interpreted'; },
+    (r: CandidateReply) => { r.origins = undefined; },
+    (r: CandidateReply) => { r.status = 'partial'; },
+    (r: CandidateReply) => { (r.blocks[0] as CitationsBlock).entries[0].fetched = true; },
+    (r: CandidateReply) => { (r.blocks[0] as CitationsBlock).entries[0].url = 'https://other.example/page'; },
+  ]) {
+    const changed = structuredClone(candidate); mutate(changed);
+    assert.equal(reconcileEvidence(changed, observations).entries[0].sourceQuote, null);
+  }
+  assert.equal(reconcileEvidence(candidate, { ...observations, boundSourceText: 'Different passage.' }).entries[0].sourceQuote, null);
+  assert.equal(reconcileEvidence(candidate, { ...observations, currentSourceVersion: { ...BOUND, id: 'different' } }).entries[0].sourceQuote, null);
+});
+
+test('quote receipt refuses ambiguous containment and uses selector context to resolve it', () => {
+  const candidate = quotedFixture();
+  const observations = open({ boundSourceText: 'First Exact passage. Second Exact passage.' });
+  assert.equal(reconcileEvidence(candidate, observations).entries[0].sourceQuote, null);
+  candidate.sourceBindings[0].selector.prefix = 'Second ';
+  assert.deepEqual(reconcileEvidence(candidate, observations).entries[0].sourceQuote, { start: 28, end: 42 });
+});
+
+test('identical entry IDs in different blocks keep separate quote attribution', () => {
+  const candidate = quotedFixture();
+  candidate.blocks.push({ id: 'c2', type: 'citations', entries: [entry({ support: 'Exact passage.' })] });
+  const result = reconcileEvidence(candidate, open({ boundSourceText: 'Exact passage.' }));
+  assert.deepEqual(result.entries.map(value => [value.blockId, value.id, value.sourceQuote]), [
+    ['c1', 'e1', { start: 0, end: 14 }], ['c2', 'e1', null],
+  ]);
 });

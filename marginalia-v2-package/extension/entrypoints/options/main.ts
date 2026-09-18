@@ -1,3 +1,4 @@
+import { readReply } from '../../lib/respond.ts';
 import { browser } from 'wxt/browser';
 import '../../../ui/tokens.css';
 import './options.css';
@@ -7,12 +8,13 @@ import { localPersistence } from '../../../ui/persistence.ts';
 const list = document.querySelector('#sites')!;
 const statusLine = document.querySelector<HTMLParagraphElement>('#status')!;
 async function hosts(): Promise<string[]> { const value = (await browser.storage.local.get('excludedHosts')).excludedHosts; return Array.isArray(value) ? value.filter(v => typeof v === 'string') : []; }
+async function changeExclusion(host: string, excluded: boolean) { return readReply(await browser.runtime.sendMessage({ type: 'instant-exclusion', version: 1, host, excluded })) as { excluded: boolean }; }
 async function render() {
   list.replaceChildren();
   const current = await hosts();
   if (!current.length) {
     const empty = document.createElement('li');
-    empty.textContent = 'No sites are excluded. Marginalia only reads a page when you open its margin there.';
+    empty.textContent = 'No sites are excluded. With Instant help on, readable page text is sent ahead when you open a page.';
     list.append(empty); return;
   }
   for (const host of current) {
@@ -20,12 +22,16 @@ async function render() {
     row.append(document.createTextNode(host + ' ')); remove.textContent = 'Stop excluding';
     remove.setAttribute('aria-label', 'Stop excluding ' + host);
     remove.onclick = async () => {
-      await browser.storage.local.set({ excludedHosts: (await hosts()).filter(h => h !== host) });
+      remove.disabled = true;
+      let result: { excluded: boolean };
+      try { result = await changeExclusion(host, false); }
+      catch { remove.disabled = false; statusLine.textContent = 'The site remains excluded. Connect the helper and try again.'; return; }
       await render();
+      statusLine.textContent = result.excluded ? 'Another rule still excludes this site. Review helper settings.' : host + ' can be read again.';
       // render() replaces the button that was just used, so place focus deliberately.
       const next = list.querySelector<HTMLButtonElement>('button');
       if (next) { next.focus(); return; }
-      statusLine.tabIndex = -1; statusLine.textContent = host + ' can be read again.'; statusLine.focus();
+      statusLine.tabIndex = -1; statusLine.focus();
     };
     row.append(remove); list.append(row);
   }
@@ -35,7 +41,7 @@ document.querySelector<HTMLFormElement>('#add')!.onsubmit = async event => {
   const input = document.querySelector<HTMLInputElement>('input')!;
   const host = input.value.trim().toLowerCase();
   if (!/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(host) || host.length > 253) { statusLine.textContent = 'Enter a hostname such as example.org.'; return; }
-  await browser.storage.local.set({ excludedHosts: [...new Set([...(await hosts()), host])] }); input.value = ''; statusLine.textContent = 'Site excluded.'; await render();
+  await changeExclusion(host, true); input.value = ''; statusLine.textContent = 'Site excluded.'; await render();
 };
 void render();
 const originInput = document.querySelector<HTMLInputElement>('#helper-origin')!;

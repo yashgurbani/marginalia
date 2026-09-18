@@ -26,6 +26,8 @@ export class RpcRequestUsedError extends Error {
   constructor() { super('Prepared RPC request was already used.'); this.name = 'RpcRequestUsedError'; }
 }
 export interface RpcTransport {
+  /** Launch-bound ordinary discovery hint; absent for dedicated or explicit deadlines. */
+  setMcpDiscoveryStartupAllowance?(seconds: number): void;
   /** Optional for observation-only transports; model adapters must fail closed without it. */
   prepareRequest?(method: string, params?: unknown, options?: { onRequestId(id: number): void }): PreparedRpcRequest;
   request(method: string, params?: unknown, options?: { onRequestId(id: number): void }): Promise<any>;
@@ -42,6 +44,9 @@ export interface StdioTransportOptions {
   env: NodeJS.ProcessEnv;
   protocol?: 'app-server' | 'jsonrpc';
   timeoutMs?: number;
+  /** Host-owned deadlines for specific operations; all other requests use timeoutMs. */
+  methodTimeoutMs?: Readonly<Record<string, number>>;
+  allowMcpDiscoveryStartupAllowance?: boolean;
   maxMessageBytes?: number;
 }
 
@@ -70,6 +75,16 @@ export function createStdioTransport(options: StdioTransportOptions): RpcTranspo
   const protocol = options.protocol ?? 'jsonrpc';
   if (protocol !== 'app-server' && protocol !== 'jsonrpc') throw new TypeError('protocol must be app-server or jsonrpc.');
   assertPositiveInteger(timeoutMs, 'timeoutMs');
+  const methodTimeoutMs = new Map(Object.entries(options.methodTimeoutMs ?? {}));
+  let discoveryCeilingDetail = '';
+  function setMcpDiscoveryStartupAllowance(seconds: number): void {
+    if (!Number.isFinite(seconds) || seconds <= 0) return;
+    // Cap before conversion; this host ceiling may be shorter than reader startup settings.
+    const capped = seconds > 120;
+    methodTimeoutMs.set('mcpServerStatus/list', Math.max(90_000, Math.ceil(Math.min(seconds, 120) * 1000) + 30_000));
+    discoveryCeilingDetail = capped ? ` Discovery host ceiling reached; configured startup allowance ${seconds} s plus 30 s overhead exceeds 150 s.` : '';
+  }
+  for (const value of methodTimeoutMs.values()) assertPositiveInteger(value, 'methodTimeoutMs');
   assertPositiveInteger(maxMessageBytes, 'maxMessageBytes');
 
   const child = spawn(options.executable, [...options.args], {
@@ -201,6 +216,9 @@ export function createStdioTransport(options: StdioTransportOptions): RpcTranspo
   function prepareRequest(method: string, params?: unknown, requestOptions?: { onRequestId(id: number): void }): PreparedRpcRequest {
     if (typeof method !== 'string' || method.length === 0) throw new RpcNotSentError(new TypeError('RPC method is required.'));
     if (!Number.isSafeInteger(nextId)) throw new RpcNotSentError(new Error('RPC request identity exhausted.'));
+    const requestTimeoutMs = methodTimeoutMs.get(method) ?? timeoutMs;
+    const timeoutDetail = method === 'mcpServerStatus/list' ? discoveryCeilingDetail : '';
+    const timeoutPrefix = method === 'mcpServerStatus/list' ? 'Your Codex tools took too long to start. Try again, or check your Codex setup. ' : '';
     const id = nextId++;
     const message: JsonObject = { id, method };
     if (protocol === 'jsonrpc') message.jsonrpc = '2.0';
@@ -220,8 +238,8 @@ export function createStdioTransport(options: StdioTransportOptions): RpcTranspo
       void response.catch(() => {});
       const timer = setTimeout(() => {
         if (!pending.delete(id)) return;
-        reject(new Error(`RPC request timed out after ${timeoutMs} ms.`));
-      }, timeoutMs);
+        reject(new Error(`${timeoutPrefix}RPC ${method} request timed out after ${requestTimeoutMs} ms.${timeoutDetail}`));
+      }, requestTimeoutMs);
       timer.unref();
       try {
         if (inference && typeof finalize !== 'function') throw new Error('Inference requires synchronous host finalization.');
@@ -247,6 +265,7 @@ export function createStdioTransport(options: StdioTransportOptions): RpcTranspo
   }
 
   return {
+    ...(options.allowMcpDiscoveryStartupAllowance === true ? { setMcpDiscoveryStartupAllowance } : {}),
     prepareRequest,
     request(method: string, params?: unknown, requestOptions?: { onRequestId(id: number): void }): Promise<any> {
       try { return prepareRequest(method, params, requestOptions).send(); }

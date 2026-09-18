@@ -107,10 +107,13 @@ test('shell installer dry-run prints its service plan without changing the machi
   assert.equal(stderr, '');
   assert.match(stdout, /DRY RUN/); assert.match(stdout, /npm ci.*node_modules/i);
   assert.match(stdout, /LaunchAgent.*launchctl|systemd user unit.*systemctl/i);
-  assert.match(stdout, /http:\/\/127\.0\.0\.1:43120/);
-  assert.match(stdout, /Open the extension options and pair with the code the helper shows\./);
+  assert.match(stdout, /http:\/\/127\.0\.0\.1:43120\//);
+  assert.match(stdout, /To pair, open the helper address in a browser, choose "Show pairing code", then enter the code in the extension options\./);
+  assert.doesNotMatch(stdout, /Pairing code: \d{6}/);
   const removed = await run('bash', ['scripts/install-helper.sh', '--uninstall', '--dry-run']);
   assert.match(removed.stdout, /remove.*retain/i);
+  assert.match(removed.stdout, /helper is stopped/i);
+  assert.doesNotMatch(removed.stdout, /Show pairing code/);
 });
 
 test('PowerShell installer dry-run prints its Scheduled Task plan', async t => {
@@ -123,8 +126,11 @@ test('PowerShell installer dry-run prints its Scheduled Task plan', async t => {
   assert.equal(result.stderr, '');
   assert.match(result.stdout, /DRY RUN/); assert.match(result.stdout, /npm ci.*node_modules/i);
   assert.match(result.stdout, /Scheduled Task.*logon/i);
-  assert.match(result.stdout, /http:\/\/127\.0\.0\.1:43120/);
-  assert.match(result.stdout, /Open the extension options and pair with the code the helper shows\./);
+  assert.match(result.stdout, /http:\/\/127\.0\.0\.1:43120\//);
+  assert.match(result.stdout, /To pair, open the helper address in a browser, choose "Show pairing code", then enter the code in the extension options\./);
+  assert.doesNotMatch(result.stdout, /Pairing code: \d{6}/);
   const removed = await run('pwsh', ['-NoProfile', '-File', 'scripts/install-helper.ps1', '-Uninstall', '-DryRun']);
   assert.match(removed.stdout, /remove.*retain/i);
+  assert.match(removed.stdout, /helper is stopped/i);
+  assert.doesNotMatch(removed.stdout, /Show pairing code/);
 });

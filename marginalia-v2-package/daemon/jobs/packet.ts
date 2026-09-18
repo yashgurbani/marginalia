@@ -1,3 +1,4 @@
+import { skillProvenance } from '../reader-skills.ts';
 import type { FrozenJobContext, ProviderJobPacket, StartJobInput } from '../../contracts/jobs.ts';
 import type { QuoteAnchor, SourceVersion } from '../../contracts/reader.ts';
 import { prefixCharacters, suffixCharacters } from './outgoing-budget.ts';
@@ -44,6 +45,7 @@ export function buildProviderPacket(input: StartJobInput, anchor: QuoteAnchor, s
   if (answeredNote && noteText!.length < answeredNote.text.length) omissions.push(`The answered note was deterministically bounded to its first 4,000 characters; ${answeredNote.text.length - noteText!.length} trailing characters were omitted from provider context.`);
   return {
     schema: 'marginalia.job-packet.v1' as const,
+    ...(input.readerSkill ? { readerSkill: skillProvenance(input.readerSkill) } : {}),
     intent: input.intent,
     question: input.question,
     source: { url, title, pageType: source.pageType,

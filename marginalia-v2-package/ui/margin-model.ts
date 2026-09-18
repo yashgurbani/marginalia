@@ -11,7 +11,7 @@ export function egressRecord(job: JobSnapshot) {
     outcome_unknown: 'Outcome unconfirmed', cancel_requested: 'Cancellation requested',
   };
   return {
-    summary: unsent ? 'Nothing left this machine. This job never reached the provider handoff.'
+    summary: unsent ? 'Nothing left this machine. This request never reached the provider handoff.'
       : 'This record describes the reviewed content. Provider handoff does not independently confirm delivery.',
     fields: [
       [unsent ? 'Intended recipient' : 'Recipient', `OpenAI Codex · ${job.provider} · ${job.model}`],
@@ -19,10 +19,10 @@ export function egressRecord(job: JobSnapshot) {
       ...job.attempts.filter(a => a.startedAt).map(a => [`Attempt ${a.number} recorded by provider adapter`, a.startedAt!]),
       ['Last updated', job.updatedAt],
       ['Capabilities offered', job.context.outgoing.availableCapabilities.join(', ') || 'None'],
-      ['Outcome', outcomes[job.state] + (job.reason ? ` — ${job.reason}` : '')],
+      ['Outcome', outcomes[job.state] + (job.reason ? `. ${job.reason}` : '')],
       ['Reviewed content digest (SHA-256)', job.preparedPayloadDigest || 'Not recorded'],
     ],
-    retention: 'The full reviewed text is no longer stored in the job record. Its stored digest is shown above; the retained reading packet is shown below.',
+    retention: 'The full reviewed text is no longer stored in the request record. Its stored digest is shown above; the retained reading packet is shown below.',
     packet: job.context.outgoing,
   };
 }

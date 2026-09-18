@@ -1,10 +1,14 @@
 import { createHash } from 'node:crypto';
+import { AUTO_ASSIST_KEY, AUTO_ASSIST_POSTURE_LIMITS, AUTO_DEFINITION_BATCH_SIZE, AUTO_DEFINITION_BUDGET_PERCENT, defaultAutoAssistSettings, type AutoAssistSettings, type AutoAssistSettingsChange } from '../contracts/auto-assist.ts';
+import { defaultInstantHelpSettings, INSTANT_HELP_KEY, INSTANT_MODELS, type InstantHelpSettings, type InstantHelpSettingsChange } from '../contracts/instant.ts';
 import { isDigest } from '../contracts/digest.ts';
 import type { LibraryMatchKind, LibrarySearchResult, ModelSelection, ModelSettings, ModelSettingsChange, ModelTier, RelatedLibraryResult, VocabularyEntry, VocabularyObservation, VocabularyObservationResult, VocabularyOrigin, VocabularyOriginKind, VocabularySourceReference } from '../contracts/library.ts';
 import type { Thread } from '../contracts/reader.ts';
 import { ConflictError, type ReaderStore } from './store.ts';
 
 const MODELS_KEY = 'library.models.v1';
+const GATHERING_KEY = 'library.vocabulary-gathering.v1';
+const SKIP_PREFIX = 'library.vocabulary-skip.v1:';
 const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 export const DEFAULT_MODELS = Object.freeze({ fast: 'gpt-5.6-luna', deep: 'gpt-6-astra' });
 
@@ -141,6 +145,83 @@ export class LibrarySettingsService {
     const entries = this.reader.db.prepare('SELECT termKey,term,status,firstSeen,lastSeen FROM vocabulary ORDER BY term COLLATE NOCASE,term').all() as Array<Omit<VocabularyEntry, 'origins'> & { termKey: string }>;
     const origins = this.reader.db.prepare('SELECT operationId,termKey,origin,observedAt,sourceKind,sourceId,sourceRevision FROM vocabulary_origins ORDER BY observedAt,operationId').all() as VocabularyOriginRow[];
     return entries.map(({ termKey, ...entry }) => ({ ...entry, origins: origins.filter(origin => origin.termKey === termKey).map(readOrigin) }));
+  }
+
+  autoAssist(): AutoAssistSettings {
+    const row = this.reader.db.prepare('SELECT value FROM settings WHERE key=?').get(AUTO_ASSIST_KEY) as { value: string } | undefined;
+    if (!row) return defaultAutoAssistSettings();
+    const value = JSON.parse(row.value) as AutoAssistSettings;
+    validateAutoAssistSettings(value);
+    return value;
+  }
+
+  saveAutoAssist(change: AutoAssistSettingsChange): AutoAssistSettings {
+    if (!Number.isSafeInteger(change.expectedRevision) || change.expectedRevision < 0) throw new Error('Invalid settings revision.');
+    const { expectedRevision, ...fields } = change;
+    const next: AutoAssistSettings = { ...fields, version: 1, revision: expectedRevision + 1, updatedAt: new Date().toISOString() };
+    validateAutoAssistSettings(next);
+    return this.reader.db.transaction(() => {
+      if (this.autoAssist().revision !== expectedRevision) throw new ConflictError('Auto assist settings changed elsewhere. Reload Settings before saving.');
+      this.reader.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(AUTO_ASSIST_KEY, JSON.stringify(next));
+      this.reader.db.prepare('INSERT INTO events(kind,payload,createdAt) VALUES(?,?,?)')
+        .run('auto-assist-settings-changed', JSON.stringify({ revision: next.revision }), next.updatedAt);
+      return next;
+    }).immediate();
+  }
+
+  instantHelp(): InstantHelpSettings {
+    const row = this.reader.db.prepare('SELECT value FROM settings WHERE key=?').get(INSTANT_HELP_KEY) as { value: string } | undefined;
+    if (!row) return defaultInstantHelpSettings();
+    const value = JSON.parse(row.value) as InstantHelpSettings;
+    validateInstantSettings(value);
+    return value;
+  }
+
+  saveInstantHelp(change: InstantHelpSettingsChange): InstantHelpSettings {
+    if (!Number.isSafeInteger(change.expectedRevision) || change.expectedRevision < 0) throw new Error('Invalid settings revision.');
+    const { expectedRevision, ...fields } = change;
+    const next: InstantHelpSettings = { ...fields, version: 1, revision: expectedRevision + 1, updatedAt: new Date().toISOString() };
+    validateInstantSettings(next);
+    return this.reader.db.transaction(() => {
+      if (this.instantHelp().revision !== expectedRevision) throw new ConflictError('Instant help settings changed elsewhere. Reload Settings before saving.');
+      this.reader.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(INSTANT_HELP_KEY, JSON.stringify(next));
+      this.reader.db.prepare('INSERT INTO events(kind,payload,createdAt) VALUES(?,?,?)')
+        .run('instant-help-settings-changed', JSON.stringify({ revision: next.revision }), next.updatedAt);
+      return next;
+    }).immediate();
+  }
+
+  vocabularyGathering(): import('../contracts/library.ts').VocabularyGatheringSettings {
+    const row = this.reader.db.prepare('SELECT value FROM settings WHERE key=?').get(GATHERING_KEY) as { value: string } | undefined;
+    if (!row) return { enabled: true, revision: 0 };
+    const value = JSON.parse(row.value);
+    if (!value || typeof value.enabled !== 'boolean' || !Number.isSafeInteger(value.revision) || value.revision < 1) throw new Error('Saved vocabulary gathering settings need review.');
+    return { enabled: value.enabled, revision: value.revision };
+  }
+
+  saveVocabularyGathering(change: { enabled: boolean; expectedRevision: number }) {
+    if (!change || typeof change.enabled !== 'boolean' || !Number.isSafeInteger(change.expectedRevision) || change.expectedRevision < 0) throw new Error('Invalid vocabulary gathering setting.');
+    return this.reader.db.transaction(() => {
+      const current = this.vocabularyGathering();
+      if (current.revision !== change.expectedRevision) throw new ConflictError('Vocabulary gathering changed elsewhere. Review the current setting.');
+      if (current.revision === Number.MAX_SAFE_INTEGER) throw new Error('Vocabulary gathering revision needs review.');
+      const next = { enabled: change.enabled, revision: current.revision + 1 };
+      this.reader.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(GATHERING_KEY, JSON.stringify(next));
+      return next;
+    })();
+  }
+
+  skipVocabulary(term: string): { term: string; skipped: true } {
+    const normalized = normalizeTerm(term);
+    this.reader.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+      .run(SKIP_PREFIX + normalized.toLowerCase(), 'true');
+    return { term: normalized, skipped: true };
+  }
+
+  canGatherVocabulary(term: string): boolean {
+    if (!this.vocabularyGathering().enabled) return false;
+    // Suppression survives deleting the visible vocabulary entry and its origins.
+    return !this.reader.db.prepare('SELECT 1 FROM settings WHERE key=?').get(SKIP_PREFIX + normalizeTerm(term).toLowerCase());
   }
 
   recordVocabularyObservation(input: VocabularyObservation): VocabularyObservationResult {
@@ -284,4 +365,25 @@ function withCompatibility(value: { fast: string; deep: string; revision: number
 }
 function digest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function validateInstantSettings(value: InstantHelpSettings) {
+  if (!value || value.version !== 1 || !Number.isSafeInteger(value.revision) || value.revision < 0 || typeof value.enabled !== 'boolean') throw new Error('Invalid instant help settings.');
+  if (!INSTANT_MODELS.includes(value.model)) throw new Error('This instant help model is not supported.');
+  if (value.effort !== 'medium' && value.effort !== 'high') throw new Error('This instant help effort is not supported.');
+  if (value.defaultAction !== 'define' && value.defaultAction !== 'explain-simply') throw new Error('Invalid instant help action.');
+  if (!value.tokenBudget || value.tokenBudget.period !== 'day' || typeof value.tokenBudget.timezone !== 'string' || !value.tokenBudget.timezone) throw new Error('Invalid instant help daily budget.');
+  try { new Intl.DateTimeFormat('en', { timeZone: value.tokenBudget.timezone }); } catch { throw new Error('Invalid instant help timezone.'); }
+  for (const number of [value.tokenBudget.limit, value.warmPages, value.idleMinutes]) if (!Number.isSafeInteger(number) || number < 1) throw new Error('Instant help limits must be positive whole numbers.');
+  if (!value.disclosure || !Number.isSafeInteger(value.disclosure.version) || value.disclosure.version < 1) throw new Error('Invalid instant help disclosure.');
+  for (const date of [value.updatedAt, value.disclosure.acknowledgedAt]) if (date !== null && (typeof date !== 'string' || !Number.isFinite(Date.parse(date)))) throw new Error('Invalid instant help date.');
+}
+
+function validateAutoAssistSettings(value: AutoAssistSettings) {
+  if (!value || value.version !== 1 || !Number.isSafeInteger(value.revision) || value.revision < 0 || typeof value.enabled !== 'boolean') throw new Error('Invalid auto assist settings.');
+  if (value.method !== 'frequency-page-v0') throw new Error('This auto assist method is not available.');
+  if (!Object.hasOwn(AUTO_ASSIST_POSTURE_LIMITS, value.posture)) throw new Error('This reading posture is not supported.');
+  if (!value.autoDefinitions || value.autoDefinitions.budgetPercent !== AUTO_DEFINITION_BUDGET_PERCENT
+    || value.autoDefinitions.batchSize !== AUTO_DEFINITION_BATCH_SIZE) throw new Error('Invalid automatic definition settings.');
+  if (value.updatedAt !== null && (typeof value.updatedAt !== 'string' || !Number.isFinite(Date.parse(value.updatedAt)))) throw new Error('Invalid auto assist date.');
 }

@@ -366,7 +366,7 @@ function key(root: ElementDouble, value: string, shiftKey = false) {
 }
 const tick = async () => { await Promise.resolve(); await Promise.resolve(); };
 
-test('ui: Tab may leave the non-modal sheet; outgoing text is readable; Escape is not-now', t => {
+test('ui: Tab may leave the non-modal sheet; outgoing text is readable; Escape cancels', t => {
   const d = dom(t); let decisions = 0, dismissed = 0;
   mountConsentSheet(d.element, { preview: preview(), canAuthorize: true, decide: async () => { decisions++; return allowed; }, onNotNow: () => dismissed++ });
   d.flush(); const root = d.host.children[0], buttons = root.querySelectorAll('button');
@@ -414,7 +414,7 @@ test('ui: network copy is honest and leaves reviewed outgoing bytes and recipien
     decide: async (_choice, value) => { decided = value; return allowed; } });
   d.flush(); let root = d.host.children[0];
   assert.deepEqual(root.querySelectorAll('pre').map(node => node.textContent), [exactBytes]);
-  assert.match(root.textContent, /Your question is sent to Codex\. Other internet access has not been established as blocked on this device\./);
+  assert.match(root.textContent, /Your question goes to Codex through the app on this device\./);
   assert.ok(root.textContent.includes(cloud.recipientLabel));
   assert.doesNotMatch(root.textContent, /network access stays closed/i);
   root.querySelector('button')!.click(); await tick();
@@ -428,11 +428,11 @@ test('ui: network copy is honest and leaves reviewed outgoing bytes and recipien
   assert.match(root.textContent, /This action is unavailable here\. Nothing was sent\./);
   assert.deepEqual(root.querySelectorAll('pre').map(node => node.textContent), [exactBytes]);
   assert.doesNotMatch(root.textContent, /separate web access|Fetched pages are recorded/i);
-  assert.deepEqual(root.querySelectorAll('button').map(node => node.textContent), ['Not now']);
+  assert.deepEqual(root.querySelectorAll('button').map(node => node.textContent), ['Cancel']);
   unavailable.destroy();
 });
 
-test('ui: not-now stays usable while saving; late approval cannot send after dismissal', async t => {
+test('ui: Cancel stays usable while saving; late approval cannot send after dismissal', async t => {
   const d = dom(t); let resolve!: (value: ConsentGrant) => void; let signal!: AbortSignal; let granted = 0, backed = 0;
   mountConsentSheet(d.element, { preview: preview(), canAuthorize: true,
     decide: (_choice, _preview, nextSignal) => { signal = nextSignal; return new Promise(done => { resolve = done; }); },
@@ -468,7 +468,7 @@ test('ui: floating, denied and excluded surfaces offer dismissal but no authoriz
     let settings = 0;
     const sheet = mountConsentSheet(d.element, { preview: { ...preview(), state: options.state }, surface: options.surface, canAuthorize: true, decide: async () => { throw new Error('must not authorize'); }, onOpenSettings: () => settings++ });
     d.flush(); const buttons = d.host.children[0].querySelectorAll('button');
-    assert.deepEqual(buttons.map(button => button.textContent), options.state === 'denied' ? ['Settings', 'Not now'] : ['Not now']);
+    assert.deepEqual(buttons.map(button => button.textContent), options.state === 'denied' ? ['Settings', 'Cancel'] : ['Cancel']);
     if (options.state === 'denied') { buttons[0].click(); assert.equal(settings, 1); }
     assert.equal(d.host.children[0].dataset.surface, options.surface); sheet.destroy();
   }
@@ -476,4 +476,55 @@ test('ui: floating, denied and excluded surfaces offer dismissal but no authoriz
   assert.match(css, /\.m-consent\[data-surface="floating"\][^{]*\{[^}]*position: fixed/s);
   assert.doesNotMatch(css, /\.m-consent\s*\{[^}]*position: fixed/s);
   assert.doesNotMatch(css, /var\(--m-danger\)/);
+});
+
+
+test('ui: runtime disclosure is shown once per installation version without another permission control', t => {
+  const d = dom(t), stored = new Map<string, string>();
+  const old = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => { assert.ok(d.host.children.length); stored.set(key, value); },
+  } });
+  t.after(() => { if (old) Object.defineProperty(globalThis, 'localStorage', old); else Reflect.deleteProperty(globalThis, 'localStorage'); });
+  const generic = 'Marginalia cannot yet confirm the limits Codex runs under on this device: where sign-in came from, inherited settings, and access to files, tools and the network.';
+  const ownSetup = 'Marginalia uses your own Codex setup, including its settings and tools.';
+  for (const [version, unverified, expected] of [
+    ['runtime-d2-v2:ordinary', ['settings', ownSetup], ownSetup],
+    ['runtime-d2-v2:ordinary', ['settings', ownSetup], null],
+    ['runtime-d2-v2:dedicated', ['settings'], generic],
+    ['runtime-d2-v2:quiet', [], null],
+  ] as const) {
+    const sheet = mountConsentSheet(d.element, { preview: preview(), canAuthorize: true,
+      disclosure: { unverified: [...unverified], disclosureVersion: version }, decide: async () => allowed });
+    const root = d.host.children[0], disclosure = root.querySelectorAll('p').find(node => node.className === 'm-consent__disclosure')!;
+    assert.equal(disclosure.textContent, expected ?? '');
+    assert.equal(root.querySelectorAll('p').filter(node => node.textContent === ownSetup).length, expected === ownSetup ? 1 : 0);
+    assert.equal(root.querySelectorAll('p').filter(node => node.textContent === generic).length, expected === generic ? 1 : 0);
+    assert.equal(root.querySelectorAll('button').length, 4);
+    sheet.destroy();
+  }
+  assert.equal(stored.size, 1); assert.equal([...stored.values()][0], 'runtime-d2-v2:dedicated');
+});
+
+
+test('R2 send sheet leads with readable passage and note, keeps exact bytes closed, and Escape sends nothing', t => {
+  const d = dom(t), packet = JSON.stringify({ selection: { exact: 'A <literal> passage.' }, answeredNote: { text: 'My exact note.' }, question: 'Why?' });
+  const reviewed = { ...preview(), outgoing: [{ label: 'Bounded reading packet', text: packet, sha256: hash(packet) },
+    { label: 'Reply schema', text: '{"type":"object"}', sha256: hash('{"type":"object"}') }] };
+  let decisions = 0, cancellations = 0;
+  mountConsentSheet(d.element, { preview: reviewed, canAuthorize: true, decide: async () => { decisions++; return allowed; }, onNotNow: () => { cancellations++; } });
+  d.flush(); const root = d.host.children[0], details = root.querySelector('details')!;
+  assert.equal(root.querySelector('h2')!.textContent, 'Send this passage to Codex');
+  assert.equal(d.doc.activeElement.textContent, 'This time');
+  assert.equal(details.querySelector('summary')!.textContent, 'What is sent');
+  assert.equal(details.getAttribute('open'), null);
+  assert.equal(details.querySelectorAll('pre').length, root.querySelectorAll('pre').length);
+  assert.deepEqual(details.querySelectorAll('pre').map(node => node.textContent), reviewed.outgoing.map(part => part.text));
+  assert.deepEqual(details.querySelectorAll('h3').map(node => node.textContent), ['The passage and context', 'The reply format']);
+  const reading = root.children[1];
+  assert.equal(reading.querySelector('blockquote')!.textContent, 'A <literal> passage.');
+  assert.ok(reading.textContent.includes('My exact note.'));
+  assert.ok(root.children.indexOf(details) > root.children.findIndex(node => node.querySelector('button')));
+  key(root, 'Escape'); assert.equal(decisions, 0); assert.equal(cancellations, 1);
 });

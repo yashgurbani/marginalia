@@ -18,9 +18,13 @@ if (-not [IO.Path]::IsPathRooted($dataDir)) { throw 'MARGINALIA_DATA_DIR must be
 $log = Join-Path $dataDir 'helper.log'
 $planOnly = $DryRun -or $WhatIfPreference
 
-function Show-Finish {
-  Write-Output 'Helper address: http://127.0.0.1:43120'
-  Write-Output 'Open the extension options and pair with the code the helper shows.'
+function Show-StartInstructions {
+  Write-Output 'Helper address: http://127.0.0.1:43120/'
+  Write-Output 'To pair, open the helper address in a browser, choose "Show pairing code", then enter the code in the extension options.'
+}
+
+function Show-RemovedInstructions {
+  Write-Output 'The helper is stopped. Install it again before opening the helper address or pairing.'
 }
 
 function Quote-PowerShellLiteral([string]$Value) {
@@ -40,7 +44,7 @@ if ($Uninstall) {
       Write-Output "Scheduled Task '$taskName' is not installed. Reader data remains in $dataDir."
     }
   }
-  Show-Finish
+  Show-RemovedInstructions
   exit 0
 }
 
@@ -60,7 +64,7 @@ if ($planOnly) {
   Write-Output "[DRY RUN] Create $dataDir for data and logs."
   Write-Output "[DRY RUN] Register per-user Scheduled Task '$taskName' at logon and start it now."
   Write-Output "[DRY RUN] Run node daemon/main.ts from $root with MARGINALIA_DATA_DIR=$dataDir."
-  Show-Finish
+  Show-StartInstructions
   exit 0
 }
 
@@ -90,4 +94,4 @@ if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
 Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
 Write-Output "Installed and started Scheduled Task '$taskName'. Helper output: $log"
-Show-Finish
+Show-StartInstructions

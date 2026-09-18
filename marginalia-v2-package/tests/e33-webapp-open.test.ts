@@ -22,7 +22,7 @@ test('E33 actual webapp library opening preserves complete, partial and absent s
   replaceGlobals(t, { fetch: async (input: string) => {
     const url = new URL(input); requests.push(url.pathname);
     if (url.pathname === '/api/position') return Response.json({ anchor: null });
-    if (url.pathname === '/api/export') return Response.json(bundles.get(url.searchParams.get('thread')!));
+    if (url.pathname === '/api/read/export') return Response.json(bundles.get(url.searchParams.get('thread')!));
     if (url.pathname === '/api/read/replies') {
       const bundle = bundles.get(url.searchParams.get('threadId')!)!;
       return Response.json({ source: bundle.source, replies: [], views: [] });
@@ -44,9 +44,13 @@ test('E33 actual webapp library opening preserves complete, partial and absent s
     assert.equal(header.querySelector('h1')!.textContent, `Saved ${id}`);
     assert.equal(workspace.querySelector('.m-captured-text')!.textContent, bundles.get(id)!.source.text);
     assert.equal(header.textContent.includes('invented-venue'), false);
-    button(header, 'Hide').click(); button(header, 'Details').click();
+    assert.equal(header.querySelectorAll('button').length, 0);
     assert.equal(header.querySelector('.m-meta')!.textContent, expected);
   }
-  assert.equal(requests.filter(path => path === '/api/export').length, 3);
-  assert.equal(requests.every(path => ['/api/position', '/api/export', '/api/read/replies'].includes(path)), true);
+  const resumed: string[] = [];
+  replaceGlobals(t, { location: { origin: e.document.location.origin, assign: (href: string) => { resumed.push(href); } } });
+  await boundaries.libraryOptions.onResumePage(bundles.get('complete')!.thread);
+  assert.deepEqual(resumed, ['https://invented-venue.example/2020/complete#marginalia-resume=complete']);
+  assert.equal(requests.filter(path => path === '/api/read/export').length, 3);
+  assert.equal(requests.every(path => ['/api/position', '/api/read/export', '/api/read/replies'].includes(path)), true);
 });

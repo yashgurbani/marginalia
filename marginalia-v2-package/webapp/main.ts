@@ -4,9 +4,17 @@ import { localPersistence } from '../ui/persistence.ts';
 import { libraryAdapters } from '../ui/helper.ts';
 import { mountLibrary, type LibraryMount } from './library/index.ts';
 import type { Thread } from '../contracts/reader.ts';
+import { resumePageUrl } from '../contracts/resume.ts';
 import type { LibrarySearchResult } from '../contracts/library.ts';
 import { focusSavedPassage, validateSavedPassage } from '../ui/library/passage.ts';
 import { sourceCaptureFromVersion } from '../ui/library-entry.ts';
+import { LibraryImportClient } from '../ui/import/client.ts';
+import { JournalRecapClient } from '../ui/journal-recap/client.ts';
+import { LibraryAnswerClient } from '../ui/answer/client.ts';
+import { ShareClient } from '../ui/share/client.ts';
+import { WhitelistClient } from '../ui/whitelist/client.ts';
+import { InstantClient } from '../ui/instant/client.ts';
+import { AutoAssistClient } from '../ui/auto-assist/client.ts';
 import '../ui/margin.css';
 import '../ui/helper-management.css';
 
@@ -64,6 +72,30 @@ function openLibrary() {
         try { await openSavedThread(thread, request, connection); } finally { opening.delete(thread.id); }
       },
     });
+    const instantHelp = new InstantClient({
+      request: async (path, body, signal) => {
+        // InstantClient uses an empty object for reads and wraps settings writes
+        // as { change }; the helper route uses GET for settings reads and accepts
+        // the raw revisioned change for POST. Prepared-page actions remain owned
+        // by the reader surface, where the helper-issued page identity exists.
+        const requestBody = path === '/api/instant/settings'
+          ? body && typeof body === 'object' && 'change' in body ? (body as { change: object }).change : undefined
+          : body;
+        const result = await connection().request(path, requestBody, signal);
+        return path === '/api/instant/settings' ? { settings: result } : result;
+      },
+      stream: async function* () { throw new Error('Instant definitions are owned by the reader surface.'); },
+    });
+    const autoAssist = new AutoAssistClient({ request: (method, path, body, signal) => connection().request(path, body, signal) });
+    adapters.instantHelp = instantHelp; adapters.autoAssist = autoAssist;
+    adapters.libraryFeatures = {
+      importer: new LibraryImportClient({ request: (path, body, signal) => connection().request(path, body, signal) }),
+      journalRecap: new JournalRecapClient({ request: (path, signal) => connection().request(path, undefined, signal) }),
+      answer: new LibraryAnswerClient({ request: (path, signal) => connection().request(path, undefined, signal) }),
+      share: new ShareClient({ download: (path, signal) => connection().request(path, undefined, signal) }),
+      whitelist: new WhitelistClient({ request: (method, path, body, signal) => connection().request(path, body, signal) }),
+      onboarding: { instantHelp, autoAssist },
+    };
     if (adapters.permissions) {
       const permissions = adapters.permissions;
       const changed = () => { const channel = new BroadcastChannel('marginalia-reader'); channel.postMessage({ type: 'permissions-changed' }); channel.close(); };
@@ -72,7 +104,12 @@ function openLibrary() {
         setExcluded: async (site, excluded, revision, signal) => { const result = await permissions.setExcluded(site, excluded, revision, signal); changed(); return result; },
       };
     }
-    library = mountLibrary(libraryHost, adapters);
+    library = mountLibrary(libraryHost, {
+      ...adapters,
+      onResumePage: thread => {
+        location.assign(resumePageUrl(thread.sourceUrl, thread.id));
+      },
+    });
     status.textContent = 'Saved helper threads, local passage search and settings. Other reading drafts remain open.';
     libraryHost.querySelector<HTMLElement>('button')?.focus();
   })().catch(error => { status.textContent = error instanceof Error ? error.message : 'The library is unavailable. Your reading draft is retained.'; });
@@ -99,7 +136,7 @@ async function openSavedThread(thread: Thread, request: number, connection: () =
   const capture = sourceCaptureFromVersion(bundle.thread.sourceUrl, version);
   const root = document.createElement('section'); root.className = 'm-saved-workspace'; root.hidden = true;
   const article = document.createElement('article'); article.className = 'm-captured-source';
-  const label = document.createElement('p'); label.textContent = 'Saved source capture, not a newly fetched page.';
+  const label = document.createElement('p'); label.textContent = 'Saved source capture. This view uses the earlier capture.';
   const source = document.createElement('div'); source.className = 'm-captured-text'; source.tabIndex = -1;
   let offset = 0;
   for (const [index, section] of (capture.sections ?? []).entries()) { source.append(document.createTextNode(capture.text.slice(offset, section.start))); const block = document.createElement('span'); block.dataset.readingSection = String(index); block.textContent = capture.text.slice(section.start, section.end); source.append(block); offset = section.end; }

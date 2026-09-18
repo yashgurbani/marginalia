@@ -49,3 +49,15 @@ One `shelf` block inside a valid `marginalia.reply.v1` reply. Each item is:
   require the reader to still be at that source: an older shelf returns to the source and anchor
   where it was created. The returned URL is a navigation request, not permission or proof that
   the resource exists. It performs no fetch.
+
+## Answer first and useful next reading
+
+The summary and first visible text block answer why the reader should go further from this
+passage. The shelf follows with three to five distinct items. Each reason names the concept,
+claim or gap in the selected passage that the item addresses, so the reader can choose without
+opening every link. A thin shelf stays thin and says what is missing.
+
+Do not describe a suggested item as read, fetched, checked or authoritative. Use exact public
+HTTPS destinations without credentials, local names or private addresses. The host validates the
+URL and saved return anchor again at the explicit open action. Every visible block and source
+binding needs an origin; an authored recommendation is not a fetched source.

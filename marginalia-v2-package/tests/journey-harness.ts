@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ReaderStore } from '../daemon/store.ts';
 import type { JobSnapshot } from '../contracts/jobs.ts';
 import type { ReaderMutation } from '../contracts/reader.ts';
@@ -34,7 +34,18 @@ export async function journey(name: string, capabilities: ReplyCapability[] = []
   const data = join(root, 'data'), runtime = join(root, 'runtime'), database = join(data, 'marginalia.sqlite');
   const runtimeModule = join(root, 'fake-runtime.mjs'), scriptPath = join(runtime, 'script.json');
   await mkdir(runtime);
-  await writeFile(runtimeModule, FAKE_RUNTIME_SOURCE.replace('capabilities: []', `capabilities: ${JSON.stringify(capabilities)}`), 'utf8');
+  await writeFile(runtimeModule, FAKE_RUNTIME_SOURCE
+    .replace('capabilities: []', `capabilities: ${JSON.stringify(capabilities)}`)
+    .replace('solverAuthoring: false', `solverAuthoring: ${capabilities.includes('solver')}`), 'utf8');
+  const entry = join(root, 'test-server.mjs');
+  await mkdir(data);
+  await writeFile(entry, `import { startServer } from ${JSON.stringify(pathToFileURL(join(packageRoot, 'daemon/server.ts')).href)};
+import { createAuthorizedRuntime } from './fake-runtime.mjs';
+const server = await startServer({ database: ${JSON.stringify(database)}, port: Number(process.env.MARGINALIA_PORT),
+  jobWorkspaceRoot: ${JSON.stringify(join(data, 'jobs'))}, runtimeFactoryBuilder: input => createAuthorizedRuntime({ ...input, dataDir: ${JSON.stringify(data)} }) });
+console.log('Marginalia local helper: ' + server.origin);
+console.log('Pairing code: ' + server.challenge + ' (valid for five minutes, one use)');
+`);
   await writeFile(scriptPath, '{}', 'utf8');
   const port = await freePort();
   const children = new Set<Daemon>();
@@ -43,9 +54,9 @@ export async function journey(name: string, capabilities: ReplyCapability[] = []
     async start(lifetime) {
       const env = { ...process.env };
       delete env.MARGINALIA_CODEX_EXECUTABLE; delete env.MARGINALIA_CODEX_HOME; delete env.CODEX_HOME;
-      Object.assign(env, { MARGINALIA_DATA_DIR: data, MARGINALIA_PORT: String(port), MARGINALIA_AUTHORIZED_RUNTIME_MODULE: runtimeModule,
+      Object.assign(env, { MARGINALIA_DATA_DIR: data, MARGINALIA_PORT: String(port), 
         MARGINALIA_TEST_RUNTIME_DIR: runtime, MARGINALIA_TEST_LIFETIME: lifetime });
-      const child = spawn(process.execPath, [join(packageRoot, 'daemon', 'main.ts')], { cwd: packageRoot, stdio: ['pipe', 'pipe', 'pipe'], env });
+      const child = spawn(process.execPath, [entry], { cwd: packageRoot, stdio: ['pipe', 'pipe', 'pipe'], env });
       let output = '', stdout = '', origin: string | undefined, challenge: string | undefined, stopped: Promise<void> | undefined;
       const startup = new Promise<void>((ready, reject) => {
         const timer = setTimeout(() => reject(new Error(`Daemon startup timed out.\n${output}`)), 30_000);
@@ -134,6 +145,7 @@ export function scriptedReply(title = 'Contextual meaning'): CandidateReply {
 export const FAKE_RUNTIME_SOURCE = String.raw`import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { writeSolverManifest } from ${JSON.stringify(new URL('./solver-fixture.ts', import.meta.url).href)};
 
 const dir = process.env.MARGINALIA_TEST_RUNTIME_DIR;
 const live = new Map();
@@ -143,7 +155,7 @@ const current = handle => live.get(handle.jobId) ?? handle;
 
 export function createAuthorizedRuntime({ consent }) {
   return { consent, dispatchReady: true,
-    jobDefaults: { provider: 'app-server', mode: 'workspace-files', policyKey: 'a'.repeat(64), capabilities: [] },
+    jobDefaults: { provider: 'app-server', mode: 'workspace-files', policyKey: 'a'.repeat(64), capabilities: [], solverAuthoring: false },
     create: async (job, attemptId, workspace, hooks) => {
       record({ kind: 'create', jobId: job.id, attemptId, workspace, model: job.model, mode: job.mode, policyKey: job.policyKey });
       const runner = {
@@ -162,6 +174,11 @@ export function createAuthorizedRuntime({ consent }) {
           if (script.savedSolver) {
             mkdirSync(join(request.workspace, 'solver'), { recursive: true });
             writeFileSync(join(request.workspace, 'solver/main.js'), 'console.log(JSON.stringify({ y: 1 }));');
+            await writeSolverManifest(request.workspace, 'console.log(JSON.stringify({ y: 1 }));', [
+              { name: 'gamma', min: 0, max: 2, default: 0.5, unit: '1/s' },
+              { name: 'f', min: 0, max: 1, default: 0.07, unit: '1/s²' },
+              { name: 'y0', min: -2, max: 2, default: 0, unit: '1/s' },
+            ], ['grid']);
           }
           writeFileSync(join(request.workspace, 'reply.json'), JSON.stringify(script.reply));
           const done = (await hooks.checkpoint({ ...handle, state: 'completed' })) ?? { ...handle, state: 'completed' };

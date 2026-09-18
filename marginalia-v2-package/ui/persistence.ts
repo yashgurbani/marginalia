@@ -389,6 +389,19 @@ export function localPersistence(name = 'marginalia-reader') {
       rememberExposure(key, record);
       await persistExposure(key, record);
     },
+    /** Append only newly displayed positions; caller serializes reveals before resolution. */
+    async reveal(scope: string, exposureId: string, shown: SuggestionExposureRecord['shown']): Promise<SuggestionExposureRecord> {
+      const key = suggestionKey(scope, exposureId), current = pendingExposure(key) ?? knownExposures.get(pendingKey(key)) ?? await read<unknown>(key);
+      if (!validSuggestionExposure(current) || current.exposureId !== exposureId) throw new Error('The saved suggestion exposure is invalid.');
+      if (current.resolvedAt) return current;
+      if (shown.length < current.shown.length || current.shown.some((entry, index) =>
+        entry.intent !== shown[index]?.intent || entry.label !== shown[index]?.label || entry.position !== shown[index]?.position)) throw new Error('Shown suggestions keep their original positions.');
+      const revealed = { ...current, shown: structuredClone(shown) };
+      if (!validSuggestionExposure(revealed)) throw new Error('The revealed suggestions are invalid.');
+      rememberExposure(key, revealed); knownExposures.set(pendingKey(key), revealed);
+      await persistExposure(key, revealed);
+      return revealed;
+    },
     async resolve(scope: string, exposureId: string, resolution: SuggestionExposureResolution, choice: string | null, resolvedAt: string, latencyMs: number | null): Promise<SuggestionExposureRecord | undefined> {
       const key = suggestionKey(scope, exposureId), current = pendingExposure(key) ?? knownExposures.get(pendingKey(key)) ?? await read<unknown>(key);
       if (!validSuggestionExposure(current) || current.exposureId !== exposureId) throw new Error('The saved suggestion exposure is invalid.');
@@ -693,4 +706,32 @@ export function localPersistence(name = 'marginalia-reader') {
     },
   };
   return { read, write, values, journal, suggestions, replies, library };
+}
+
+/** One installation-local display receipt, separate from permission and reviewed content. */
+export const runtimeDisclosureReceipt = {
+  read(): string | null { try { return localStorage.getItem('marginalia-runtime-disclosure-version'); } catch { return null; } },
+  shown(version: string): void { try { localStorage.setItem('marginalia-runtime-disclosure-version', version); } catch { /* Display remains nonblocking when storage is unavailable. */ } },
+};
+
+export const INSTANT_ONBOARDING_RECEIPT_KEY = 'instant-help-onboarding:v1';
+export type ReaderKeyValueStore = {
+  read<T>(key: string): Promise<T | undefined>;
+  write(key: string, value: unknown): Promise<void>;
+};
+
+/** A display receipt in the reader's existing local store. It grants no send authority. */
+export function instantOnboardingReceipt(store: ReaderKeyValueStore) {
+  return {
+    async dismissed(): Promise<boolean> {
+      const value = await store.read<unknown>(INSTANT_ONBOARDING_RECEIPT_KEY);
+      return !!value && typeof value === 'object' && !Array.isArray(value)
+        && (value as { version?: unknown }).version === 1
+        && typeof (value as { dismissedAt?: unknown }).dismissedAt === 'string'
+        && Number.isFinite(Date.parse((value as { dismissedAt: string }).dismissedAt));
+    },
+    dismiss(): Promise<void> {
+      return store.write(INSTANT_ONBOARDING_RECEIPT_KEY, { version: 1, dismissedAt: new Date().toISOString() });
+    },
+  };
 }

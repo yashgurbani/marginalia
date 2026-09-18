@@ -4,6 +4,7 @@ import type { CandidateReply } from '../../contracts/reply.ts';
 import type { AskingFlow } from './flow.ts';
 import type { AskingResult, AskingState } from './types.ts';
 import { hostCopy } from './binding.ts';
+import { provisionalGraphic } from './provisional.ts';
 
 export type AskingSurfaces = {
   consentRoot: HTMLElement;
@@ -11,7 +12,7 @@ export type AskingSurfaces = {
   provisionalRoot: HTMLElement;
   mountConsent(host: HTMLElement, options: ConsentSheetOptions): ConsentSheet;
   mountReply(host: HTMLElement, reply: CandidateReply, options: ReplyOptions): MountedReply;
-  /** The default is a labelled literal provisional text view, never the committed renderer. */
+  /** The default is a labelled restricted first frame, never the committed renderer. */
   mountProvisional?(host: HTMLElement, reply: CandidateReply): { destroy(): void };
   replyOptions(result: AskingResult): Omit<ReplyOptions, 'sourceText' | 'hostReport' | 'onFollowup'>;
   returnFocus?: HTMLElement;
@@ -30,14 +31,26 @@ export function followupQuestion(context: FollowupContext): string {
   return question;
 }
 
-/** Plain first content from an already structurally validated host partial. No titles/classifications/links execute or gain authority. */
+/** Restricted first content from an already structurally validated host partial.
+ * The historical export name remains compatible with existing callers. */
 export function mountProvisionalText(host: HTMLElement, candidate: CandidateReply): { destroy(): void } {
   const doc = host.ownerDocument, root = doc.createElement('section'); root.className = 'm-asking__provisional';
   root.setAttribute('aria-label', 'Provisional reply');
-  const label = doc.createElement('p'); label.textContent = 'Provisional. This reply has not finished its checks or been saved as complete.';
+  const label = doc.createElement('p'); label.textContent = 'Provisional preview. Checks are pending.';
   const content = doc.createElement('p');
-  content.textContent = candidate.staticFallback || 'A provisional reply is available. The finished reply is not ready.';
-  root.append(label, content); host.append(root);
+  let graphic: SVGSVGElement | undefined;
+  try { graphic = provisionalGraphic(doc, candidate); } catch { /* A failed first frame leaves the job and cancellation available. */ }
+  content.textContent = graphic ? 'Starting inputs. The finished reply will replace this frame.'
+    : candidate.blocks.some(block => block.type === 'model' || block.type === 'plot') ? 'The visual preview is pending. The build continues.'
+    : candidate.staticFallback || 'A provisional reply is available.';
+  root.append(label, content);
+  if (graphic) {
+    if (candidate.illustration?.value) {
+      const illustration = doc.createElement('p'); illustration.textContent = candidate.illustration.statement; root.append(illustration);
+    }
+    root.append(graphic);
+  }
+  host.append(root);
   return { destroy() { root.remove(); } };
 }
 
@@ -65,7 +78,7 @@ export function connectAskingSurfaces(flow: AskingFlow, options: AskingSurfaces)
         try {
           const a = flow.getAccess();
           const preparation = state.preparation!;
-          const mounted = options.mountConsent(options.consentRoot, { preview: hostCopy(preview),
+          const mounted = options.mountConsent(options.consentRoot, { preview: hostCopy(preview), disclosure: hostCopy(state.preparation!),
             reviewedPlan: hostCopy({ previewId: preview.id, previewRevision: preview.revision,
               preparedPayloadDigest: preparation.job.preparedPayloadDigest,
               capabilities: preparation.job.capabilities ?? [] }), surface: a.surface,
@@ -77,6 +90,7 @@ export function connectAskingSurfaces(flow: AskingFlow, options: AskingSurfaces)
         } catch { flow.dismissPreview(); report('The permission review could not open. Nothing was asked.'); }
       }
     }
+    if (preview && state.preparation) sheet?.updateDisclosure?.(hostCopy(state.preparation));
     if (destroyed || version !== revision) return;
     // Keep the parent mounted while its follow-up is reviewed or running; never overwrite a kept version.
     const desired = [state.previousResult, state.result].filter((r): r is AskingResult => !!r);
@@ -93,6 +107,14 @@ export function connectAskingSurfaces(flow: AskingFlow, options: AskingSurfaces)
         const label = root.ownerDocument.createElement('p'); label.textContent = `Reply to note version ${result.reply.answeredNote.revision}`;
         const quote = root.ownerDocument.createElement('blockquote'); quote.textContent = result.reply.answeredNote.text;
         root.append(label, quote);
+      }
+      if (result.reply.readerSkill) {
+        const line = root.ownerDocument.createElement('p');
+        line.className = 'm-asking__skill-source';
+        line.replaceChildren(root.ownerDocument.createTextNode('From your skill: '),
+          root.ownerDocument.createTextNode(result.reply.readerSkill.name),
+          root.ownerDocument.createTextNode('. Marginalia did not check these sources.'));
+        root.append(line);
       }
       try {
         const supplied = options.replyOptions(hostCopy(result));

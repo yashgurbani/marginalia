@@ -35,7 +35,71 @@ export const SOLVER_LIMITS = Object.freeze({
   maxSeriesColumns: 8,
   maxValueNames: 64,
   maxSolverBytes: 1024 * 1024,
+  maxManifestBytes: 16 * 1024,
 });
+
+export const SOLVER_MANIFEST_SCHEMA = 'marginalia.solver-manifest.v1' as const;
+export const SOLVER_AUTHORING_PATH = 'solver/main.js' as const;
+export const SOLVER_MANIFEST_PATH = 'solver/manifest.json' as const;
+
+/** The manifest inventories payload files, excluding itself and host reply delivery files. */
+export type SolverAuthoringManifest = {
+  schema: typeof SOLVER_MANIFEST_SCHEMA;
+  files: [{ path: typeof SOLVER_AUTHORING_PATH; sha256: string }];
+  inputs: { name: string; min: number; max: number; default: number; unit: string }[];
+  outputs: string[];
+};
+
+/** Existing packet capability selection is the host's authoring switch, never reply data. */
+export function permitsSolverAuthoring(intent: string, mode: string, capabilities: readonly string[]): boolean {
+  return intent === 'simulate' && mode === 'workspace-files' && capabilities.includes('solver');
+}
+
+export function validateSolverAuthoringManifest(value: unknown, reply: CandidateReply): SolverValidation<SolverAuthoringManifest> {
+  const exact = (record: Record<string, unknown>, keys: readonly string[]) =>
+    Object.keys(record).length === keys.length && keys.every(key => Object.hasOwn(record, key));
+  const invalid = (reason: string) => reject('artifact-modified', reason);
+  if (!isRecord(value) || !exact(value, ['schema', 'files', 'inputs', 'outputs']) || value.schema !== SOLVER_MANIFEST_SCHEMA) {
+    return invalid('The solver manifest has an unsupported schema.');
+  }
+  if (!Array.isArray(value.files) || value.files.length !== 1 || !isRecord(value.files[0]) ||
+    !exact(value.files[0], ['path', 'sha256']) || value.files[0].path !== SOLVER_AUTHORING_PATH || !isDigest(value.files[0].sha256)) {
+    return invalid('The manifest must pin exactly the fixed solver file.');
+  }
+  const solvers = reply.blocks.filter((block): block is SolverBlock => block.type === 'solver');
+  if (solvers.length !== 1 || solvers[0].path !== SOLVER_AUTHORING_PATH || !reply.requiredCapabilities?.includes('solver')) {
+    return invalid('The reply must declare exactly one solver at the fixed path and require solver capability.');
+  }
+  const solver = solvers[0];
+  if (!Array.isArray(value.inputs) || value.inputs.length > SOLVER_LIMITS.maxInputs ||
+    value.inputs.length !== solver.inputNames.length || new Set(solver.inputNames).size !== solver.inputNames.length) {
+    return invalid('The manifest inputs must match the solver block.');
+  }
+  const inputs: SolverAuthoringManifest['inputs'] = [];
+  for (const input of value.inputs) {
+    if (!isRecord(input) || !exact(input, ['name', 'min', 'max', 'default', 'unit']) ||
+      typeof input.name !== 'string' || !NAME.test(input.name) || !solver.inputNames.includes(input.name) ||
+      inputs.some(previous => previous.name === input.name) || typeof input.unit !== 'string' ||
+      typeof input.min !== 'number' || !Number.isFinite(input.min) || typeof input.max !== 'number' || !Number.isFinite(input.max) ||
+      typeof input.default !== 'number' || !Number.isFinite(input.default) || input.min > input.max || input.default < input.min || input.default > input.max) {
+      return invalid('The manifest has an invalid or undeclared input.');
+    }
+    const parameters = reply.parameters.filter(parameter => parameter.name === input.name);
+    if (parameters.length !== 1 || parameters[0].min !== input.min || parameters[0].max !== input.max ||
+      parameters[0].default !== input.default || parameters[0].unit !== input.unit) {
+      return invalid('The manifest input ranges must match the reply parameters.');
+    }
+    inputs.push({ name: input.name, min: input.min, max: input.max, default: input.default, unit: input.unit });
+  }
+  if (!Array.isArray(value.outputs) || value.outputs.length === 0 || value.outputs.length > SOLVER_LIMITS.maxOutputBlocks ||
+    value.outputs.length !== solver.outputBlocks.length || new Set(value.outputs).size !== value.outputs.length ||
+    !value.outputs.every(output => typeof output === 'string' && ID.test(output) && solver.outputBlocks.includes(output) &&
+      reply.blocks.filter(block => block.id === output && ['model', 'derived', 'samples', 'table'].includes(block.type)).length === 1)) {
+    return invalid('The manifest outputs must match the solver output blocks.');
+  }
+  return { ok: true, value: { schema: SOLVER_MANIFEST_SCHEMA,
+    files: [{ path: SOLVER_AUTHORING_PATH, sha256: value.files[0].sha256 }], inputs, outputs: [...value.outputs] } };
+}
 
 const ID = /^[\w-]{1,100}$/;
 const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
@@ -261,6 +325,7 @@ export type SolverRejectionCode =
   | 'reply-changed'
   | 'artifact-unknown'
   | 'artifact-modified'
+  | 'manifest-required'
   | 'path-unsafe'
   | 'inputs-invalid'
   | 'limits-invalid'
@@ -277,6 +342,17 @@ export type SolverRejectionCode =
   | 'request-identity-mismatch'
   /** The workspace generation or profile manifest moved after the host hashed the solver. */
   | 'generation-drift';
+
+/** A bounded host-owned binding refusal. Raw filesystem errors never cross this boundary. */
+export class SolverArtifactBindingError extends Error {
+  override name = 'SolverArtifactBindingError';
+  readonly code: 'manifest-required';
+
+  constructor(code: 'manifest-required') {
+    super(code);
+    this.code = code;
+  }
+}
 
 export type SolverUnavailableCode =
   | 'not-configured'

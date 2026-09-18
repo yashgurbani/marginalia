@@ -29,7 +29,7 @@ no permission and cannot initiate a follow-up.
    do not invent a proof or silently strengthen the source's conclusion.
 5. Bind quotations and interpretations only to exact captured source text. Keep authored
    explanation distinct from quotation. State limitations plainly; when context is
-   insufficient, return a partial text explanation of what is missing.
+   insufficient, return a limited text explanation of what is missing.
 
 ## Output
 
@@ -48,3 +48,19 @@ for a partial result) in the assigned workspace, as the host instructs. Reading 
 host-supplied packet.json and reply.schema.json is allowed if needed. Do not inspect
 other files or execute computations. In structured-final mode, return the object
 through the supplied response channel. Delivery never makes a candidate a saved reply.
+
+## Answer first and source-bound reasoning
+
+State the conclusion or useful bridge in the summary and first visible text block. Name the
+selected equation, claim or mechanism in the same sentence. Then show the steps in the order
+that supports the answer. A reader should know what the derivation establishes and what it
+does not establish before opening the detailed work.
+
+Use one stable source binding per source premise and mention those bindings in the corresponding
+step text. If a step adds a premise, add it to assumptions and do not present it as something
+the page proved. If the source skips a necessary step, state the gap without strengthening the conclusion; a finished explanation, even with limited source evidence, must use status "complete" (and reply.json in workspace-files mode), while status "partial" and reply.partial.json are only for a provisional result that will be followed by a complete final reply.
+
+The first block is always an answer-bearing text block and the later steps are supporting work.
+Every step, source binding, assumption, limitation and visible nested part receives an origin.
+Only a page origin may describe captured page wording, and it must point to an exact quoted or
+interpreted selector. Origins do not certify the derivation.

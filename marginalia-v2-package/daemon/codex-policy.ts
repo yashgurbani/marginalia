@@ -20,6 +20,7 @@ export type ClosedSandbox =
       readonly excludeTmpdirEnvVar: true; readonly excludeSlashTmp: true };
 
 type CommonInput = {
+  homeMode?: 'dedicated' | 'ordinary';
   version: string;
   platform: Platform;
   adapter: PolicyAdapter;
@@ -37,14 +38,15 @@ export type PolicyInput = CommonInput & (
 
 type ThreadStart = {
   readonly method: 'thread/start';
-  readonly params: { readonly model: string; readonly cwd: string; readonly approvalPolicy: 'never';
-    readonly sandbox: 'read-only' | 'workspace-write'; readonly ephemeral: false };
+  readonly params: { readonly model: string; readonly cwd: string; readonly approvalPolicy?: 'never';
+    readonly sandbox?: 'read-only' | 'workspace-write'; readonly ephemeral: false };
 };
 /** Adapter adds threadId and granted input; these are policy fields, not a complete turn request. */
-export type TurnPolicy = { readonly cwd: string; readonly approvalPolicy: 'never'; readonly sandboxPolicy: ClosedSandbox;
+export type TurnPolicy = { readonly cwd: string; readonly approvalPolicy?: 'never'; readonly sandboxPolicy?: ClosedSandbox;
   readonly outputSchema?: { readonly [key: string]: JsonValue } };
 
 type PolicyBase = {
+  readonly homeMode?: 'dedicated' | 'ordinary';
   readonly version: typeof PINNED_CODEX_VERSION;
   readonly policyVersion: typeof CODEX_POLICY_VERSION;
   readonly platform: Platform;
@@ -186,7 +188,11 @@ export function createCodexPolicy(input: PolicyInput): CodexPolicy {
   };
   for (const feature of disabledFeatures) configOverrides[`features.${feature}`] = false;
   if (input.platform === 'win32') configOverrides['windows.sandbox'] = 'elevated';
+  // D15: the ordinary setup is intentionally inherited, never advertised as isolated.
+  const ordinary = input.homeMode === 'ordinary' && input.operation !== 'saved-solver';
+  if (ordinary) for (const key of Object.keys(configOverrides)) delete configOverrides[key];
   const base = {
+    ...(ordinary ? { homeMode: 'ordinary' as const } : {}),
     version: PINNED_CODEX_VERSION, policyVersion: CODEX_POLICY_VERSION, platform: input.platform,
     adapter: input.adapter, reviewedProfile: reviewedProfile(input.adapter, input.operation, input.platform),
     workspace, codexHome, configOverrides, sandboxPolicy, readAccess: 'not-job-confined' as const,
@@ -212,9 +218,9 @@ export function createCodexPolicy(input: PolicyInput): CodexPolicy {
   }
   if (!nonempty(input.model)) throw new Error('An explicitly selected model is required.');
   const threadStart: ThreadStart = { method: 'thread/start', params: {
-    model: input.model, cwd: workspace, approvalPolicy: 'never', sandbox: write ? 'workspace-write' : 'read-only', ephemeral: false,
+    model: input.model, cwd: workspace, ...(ordinary ? {} : { approvalPolicy: 'never' as const, sandbox: write ? 'workspace-write' as const : 'read-only' as const }), ephemeral: false,
   } };
-  const turnPolicy: TurnPolicy = { cwd: workspace, approvalPolicy: 'never', sandboxPolicy };
+  const turnPolicy: TurnPolicy = { cwd: workspace, ...(ordinary ? {} : { approvalPolicy: 'never' as const, sandboxPolicy }) };
   if (input.operation === 'definition') {
     if (!record(input.outputSchema) || input.outputSchema.type !== 'object') throw new Error('Definition requires an object outputSchema.');
     // Clone before freezing: the caller owns its schema. Provider schema support still needs an integration test.

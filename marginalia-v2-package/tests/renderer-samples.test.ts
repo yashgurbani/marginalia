@@ -68,7 +68,7 @@ test('bounded T18 browser regressions', { skip: !process.env.T18_CHROMIUM, timeo
   const reply = classificationFixture();
   const reports = [0.07, 0.2].map(f => runHostChecks(reply, { gamma: 0.5, f, y0: 0 }));
   const results = await runBrowserRegressions(process.env.T18_CHROMIUM!, { reply, reports });
-  assert.equal(results.length, 6, 'Every browser regression must report a result.');
+  assert.equal(results.length, 9, 'Every browser regression must report a result.');
   for (const result of results) await t.test(result.name, () => assert.equal(result.error, undefined, result.error));
 });
 
@@ -129,7 +129,7 @@ function classificationFixture(): CandidateReply {
     title: 'This model settles at zero.', summary: 'The current result is settling, not divergence.',
     illustration: { value: true, statement: 'Synthetic scalar illustration for renderer authority tests.' },
     resultClaims: [{ target: 'title', classification: 'classification' }, { target: 'summary', classification: 'classification' }],
-    sourceBindings: [], assumptions: [], limitations: [], staticFallback: 'Original description.',
+    sourceBindings: [], assumptions: [{ id: 'forcing', text: 'Forcing range', editable: true, binding: { parameter: 'f', min: 0, max: 1 } }], limitations: [], staticFallback: 'Original description.',
     parameters: [
       { name: 'gamma', label: 'Damping', default: 0.5, min: 0, max: 2, unit: '1/s' },
       { name: 'f', label: 'Forcing', default: 0.07, min: 0, max: 1, unit: '1/s^2' },

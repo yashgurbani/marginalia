@@ -1,9 +1,12 @@
+import type { UnformattedSkillOutput } from '../../contracts/reader-skills.ts';
+import { checkedUnformatted, authoredSkillText, skillReplyAllowed, rejectedSkillOutput, skillOutputHash } from '../reader-skills.ts';
+import type { EvidenceRetrieval } from '../../contracts/evidence.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { ProviderHandle } from '../../contracts/job-runner.ts';
 import type { OutgoingPart } from '../../contracts/consent.ts';
 import { isDigest } from '../../contracts/digest.ts';
-import { canonicalReplyData, validateReply, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
+import { canonicalReplyData, validateReply, parseAndValidateReply, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
 import type { FrozenJobContext, JobAttempt, JobConsentAuthority, JobSnapshot, JobState, StartJobInput } from '../../contracts/jobs.ts';
 import type { SolverArtifactBinding } from '../../contracts/solver.ts';
 import type { ReaderStore } from '../store.ts';
@@ -74,6 +77,12 @@ export class JobStore {
           policyKey TEXT NOT NULL, grantId TEXT NOT NULL, state TEXT NOT NULL, cancelRequested INTEGER NOT NULL DEFAULT 0,
           latestAttemptId TEXT, provisional TEXT, replyVersionId TEXT REFERENCES reply_versions(id), reason TEXT,
           context TEXT NOT NULL, capabilities TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS job_skill_outputs(
+          jobId TEXT PRIMARY KEY REFERENCES jobs(id), attemptId TEXT NOT NULL, json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS job_skill_pending(
+          attemptId TEXT PRIMARY KEY REFERENCES job_attempts(id), text TEXT NOT NULL, sha256 TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS job_attempts(
           id TEXT PRIMARY KEY, jobId TEXT NOT NULL REFERENCES jobs(id), number INTEGER NOT NULL, state TEXT NOT NULL,
@@ -211,6 +220,7 @@ export class JobStore {
       const job = this.get(jobId);
       if (!job) throw new Error('This work is unavailable.');
       if (job.cancelRequested) throw new JobConflictError('Cancelled work cannot be dispatched.');
+      if (job.unformatted) throw new JobConflictError('Retry this skill through a new reviewed request.');
       const row = this.db.prepare('SELECT COALESCE(MAX(number),0) AS n FROM job_attempts WHERE jobId=?').get(jobId) as { n: number };
       const attempt: JobAttempt = { id: randomUUID(), jobId, number: row.n + 1, state: 'queued', revision: 0, dispatchClaimed: false, handoffMarked: false, workspacePrepared: false };
       this.db.prepare('INSERT INTO job_attempts(id,jobId,number,state,predecessorAttemptId) VALUES(?,?,?,?,?)').run(attempt.id, jobId, attempt.number, attempt.state, job.context.parentAttemptId ?? null);
@@ -240,7 +250,13 @@ export class JobStore {
   }
   private snapshot(row: JobRow): JobSnapshot {
     const attempts = this.db.prepare('SELECT * FROM job_attempts WHERE jobId=? ORDER BY number').all(row.id) as AttemptRow[];
+    const rawOutput = this.db.prepare('SELECT attemptId,json FROM job_skill_outputs WHERE jobId=?').get(row.id) as { attemptId: string; json: string } | undefined;
+    if (rawOutput && rawOutput.json.length > 256 * 1024 * 6 + 4096) throw new JobConflictError('Saved unformatted output exceeds its bound.');
+    const unformatted = rawOutput && row.state === 'failed' && !row.replyVersionId && rawOutput.attemptId === row.latestAttemptId
+      ? checkedUnformatted(JSON.parse(rawOutput.json)) : undefined;
+    if (rawOutput && (!unformatted || packetDigest(unformatted.readerSkill) !== packetDigest((JSON.parse(row.context) as FrozenJobContext).readerSkill ?? null))) throw new JobConflictError('Invalid saved unformatted result.');
     return {
+      ...(unformatted ? { unformatted } : {}),
       clarificationBudget: this.clarificationBudget(row.id),
       id: row.id, threadId: row.threadId, idempotencyKey: row.idempotencyKey, packetDigest: row.packetDigest, preparedPayloadDigest: row.preparedPayloadDigest, provider: row.provider,
       model: row.model, mode: row.mode, policyKey: row.policyKey, grantId: row.grantId, state: row.state,
@@ -249,7 +265,7 @@ export class JobStore {
       reason: row.reason ?? undefined, createdAt: row.createdAt, updatedAt: row.updatedAt, context: JSON.parse(row.context),
       attempts: attempts.map(a => ({ id: a.id, jobId: a.jobId, number: a.number, state: a.state, revision: a.revision,
         dispatchClaimed: !!a.dispatchClaimed, handoffMarked: !!a.handoffMarked, workspacePrepared: !!a.workspacePrepared, predecessorAttemptId: a.predecessorAttemptId ?? undefined,
-        authorizationFingerprint: a.authorizationFingerprint ?? undefined, providerHandle: a.providerHandle ? JSON.parse(a.providerHandle) : undefined,
+        authorizationFingerprint: a.authorizationFingerprint ?? undefined, providerHandle: a.providerHandle ? publicProviderHandle(JSON.parse(a.providerHandle)) : undefined,
         sentContent: a.sentContent ? JSON.parse(a.sentContent) : undefined,
         startedAt: a.startedAt ?? undefined, deadlineAt: a.deadlineAt ?? undefined, endedAt: a.endedAt ?? undefined, reason: a.reason ?? undefined })),
     };
@@ -401,16 +417,24 @@ export class JobStore {
       } else if (!a.handoffMarked) throw new JobConflictError('Provider dispatch was not durably handed off.');
       else if (!incoming.providerInstanceId) throw new JobConflictError('Provider instance identity is required before dispatch.');
 
-      let canonical: ProviderHandle = { ...incoming };
-      if (job.cancelRequested) canonical = { ...canonical, tombstone: true, output: undefined,
+      if (incoming.rawFinalOutput !== undefined && (!job.context.readerSkill || (incoming.state !== 'completed' && !rejectedSkillOutput(incoming)) ||
+          authoredSkillText(incoming.rawFinalOutput, 'raw') !== incoming.rawFinalOutput)) throw new JobConflictError('Invalid final authored output.');
+      let canonical: ProviderHandle = publicProviderHandle(incoming);
+      if (job.cancelRequested) canonical = { ...canonical, tombstone: true, output: undefined, rawFinalOutput: undefined,
         state: canonical.state === 'completed' || canonical.state === 'cancelled' ? 'cancelled'
           : canonical.state === 'outcome_unknown' ? 'outcome_unknown' : 'cancel_requested' };
       const revision = a.revision + 1;
       canonical.revision = revision;
-      const mapped = mapProviderState(canonical.state, canonical.tombstone, job.cancelRequested);
+      const mapped = job.context.readerSkill && !canonical.tombstone && !job.cancelRequested && rejectedSkillOutput(canonical) && incoming.rawFinalOutput !== undefined
+        ? 'validating' : mapProviderState(canonical.state, canonical.tombstone, job.cancelRequested);
       const effective = terminal.has(a.state) ? a.state : mapped;
       const now = new Date().toISOString();
       this.claimThreadLease(job, a, canonical);
+      if (incoming.rawFinalOutput !== undefined && !job.cancelRequested && !canonical.tombstone && job.latestAttemptId === attemptId && !terminal.has(job.state)) {
+        this.db.prepare('INSERT INTO job_skill_pending(attemptId,text,sha256) VALUES(?,?,?) ON CONFLICT(attemptId) DO UPDATE SET text=excluded.text,sha256=excluded.sha256')
+          .run(attemptId, incoming.rawFinalOutput, skillOutputHash(incoming.rawFinalOutput));
+      }
+      if (terminal.has(effective) || job.cancelRequested || canonical.tombstone) this.clearPendingSkillOutput(attemptId);
       this.db.prepare(`UPDATE job_attempts SET state=?,revision=?,dispatchClaimed=1,providerHandle=?,startedAt=COALESCE(startedAt,?),
         endedAt=?,reason=? WHERE id=?`).run(effective, revision, JSON.stringify(canonical), now, terminal.has(effective) ? now : null, canonical.reason ?? null, attemptId);
       const currentAttempt = job.latestAttemptId === attemptId;
@@ -431,7 +455,7 @@ export class JobStore {
       incoming.threadId !== current.threadId || incoming.turnId !== current.turnId ||
       incoming.revision !== current.revision || job.latestAttemptId !== attemptId ||
       !job.cancelRequested || !['timed_out', 'cancelled', 'outcome_unknown'].includes(job.state)) return;
-    return { ...incoming, revision: current.revision, tombstone: true, output: undefined };
+    return { ...incoming, revision: current.revision, tombstone: true, output: undefined, rawFinalOutput: undefined };
   }
   private claimThreadLease(job: JobSnapshot, attempt: AttemptRow, handle: ProviderHandle) {
     if (!handle.threadId) return;
@@ -457,6 +481,7 @@ export class JobStore {
       if (job.state === 'succeeded' || ['failed', 'cancelled', 'timed_out'].includes(job.state)) return { job };
       const attempt = job.attempts.find(a => a.id === job.latestAttemptId);
       const now = new Date().toISOString();
+      if (attempt) this.clearPendingSkillOutput(attempt.id);
       const nextState = job.state === 'outcome_unknown' ? 'outcome_unknown' : 'cancel_requested';
       this.db.prepare('UPDATE jobs SET cancelRequested=1,state=?,updatedAt=? WHERE id=?').run(nextState, now, jobId);
       if (attempt && !terminal.has(attempt.state)) this.db.prepare("UPDATE job_attempts SET state='cancel_requested',reason='user-cancelled' WHERE id=?").run(attempt.id);
@@ -471,6 +496,7 @@ export class JobStore {
       const now = new Date().toISOString();
       this.db.prepare("UPDATE jobs SET state='cancelled',reason='cancelled-before-provider-handoff',updatedAt=? WHERE id=?").run(now, jobId);
       this.db.prepare("UPDATE job_attempts SET state='cancelled',endedAt=?,reason='cancelled-before-provider-handoff' WHERE id=?").run(now, attemptId);
+      this.clearPendingSkillOutput(attemptId);
       this.event('job-state', { jobId, attemptId, state: 'cancelled', reason: 'cancelled-before-provider-handoff' });
       return true;
     })();
@@ -482,6 +508,7 @@ export class JobStore {
       const now = new Date().toISOString();
       this.db.prepare("UPDATE jobs SET cancelRequested=1,state='timed_out',reason='deadline-reached-provider-stop-unconfirmed',updatedAt=? WHERE id=?").run(now, jobId);
       this.db.prepare("UPDATE job_attempts SET state='timed_out',endedAt=?,reason='deadline-reached-provider-stop-unconfirmed' WHERE id=?").run(now, attemptId);
+      this.clearPendingSkillOutput(attemptId);
       this.event('job-state', { jobId, attemptId, state: 'timed_out', reason: 'deadline-reached-provider-stop-unconfirmed' });
       return attempt.providerHandle;
     })();
@@ -491,6 +518,7 @@ export class JobStore {
       const job = this.get(jobId), attempt = job?.attempts.find(a => a.id === attemptId);
       if (!job || !attempt || job.latestAttemptId !== attemptId || job.cancelRequested || terminal.has(job.state)) return;
       if (!validateReply(reply, { sourceText: job.context.sourceText, capabilities: this.capabilities(jobId) }).ok) return;
+      if (job.context.readerSkill && !skillReplyAllowed(reply)) throw new JobConflictError('Unsupported reader skill reply.');
       this.claimClarification(jobId, attemptId, reply);
       const serialized = JSON.stringify(reply);
       const previous = this.db.prepare('SELECT provisional FROM jobs WHERE id=?').get(jobId) as { provisional: string | null };
@@ -499,16 +527,25 @@ export class JobStore {
       this.event('job-provisional', { jobId, attemptId, status: 'partial' });
     })();
   }
-  succeed(jobId: string, attemptId: string, expectedRevision: number, reply: CandidateReply, solverBindings: readonly SolverBindingCommit[] = []) {
+  succeed(jobId: string, attemptId: string, expectedRevision: number, reply: CandidateReply, solverBindings: readonly SolverBindingCommit[] = [], evidence?: EvidenceRetrieval) {
     return this.db.transaction(() => {
       const job = this.get(jobId), attempt = job?.attempts.find(a => a.id === attemptId);
       if (!job || !attempt) throw new Error('This work is unavailable.');
       if (job.cancelRequested) throw new JobConflictError('The result arrived after cancellation.');
+      if (job.context.readerSkill) {
+        if (attempt.deadlineAt && Date.parse(attempt.deadlineAt) <= Date.now()) throw new JobConflictError('The skill result arrived after its deadline.');
+        const thread = this.reader.get(job.threadId), source = thread && this.reader.sourceVersion(thread.sourceVersionId);
+        if (!thread || thread.deletedAt || !source || source.id !== job.context.sourceVersionId || source.hash !== job.context.sourceHash) throw new JobConflictError('The skill source differs from its frozen request.');
+      }
       if (job.latestAttemptId !== attemptId || attempt.state !== 'validating' || !attempt.dispatchClaimed ||
         attempt.revision !== expectedRevision || attempt.providerHandle?.state !== 'completed') throw new JobConflictError('This attempt is no longer eligible to commit.');
+      if (job.context.readerSkill && !skillReplyAllowed(reply)) throw new JobConflictError('Unsupported reader skill reply.');
       this.claimClarification(jobId, attemptId, reply);
       const committed = this.reader.commitReply({ id: `${job.id}-reply`, threadId: job.threadId, reply,
-        parentId: job.context.parentReplyId, answeredNote: job.context.answeredNote && { noteId: job.context.answeredNote.noteId, revision: job.context.answeredNote.revision } }, this.capabilities(job.id));
+        parentId: job.context.parentReplyId, readerSkill: job.context.readerSkill, answeredNote: job.context.answeredNote && { noteId: job.context.answeredNote.noteId, revision: job.context.answeredNote.revision } }, this.capabilities(job.id), ['evidence', 'explore'].includes(reply.intent) ? {
+          sessionScope: evidence?.sessionScope ?? 'open-session', retrievalComplete: evidence?.retrievalComplete ?? false, observed: evidence?.observed ?? [],
+          boundSourceVersion: { id: job.context.sourceVersionId, hash: job.context.sourceHash, capturedAt: job.context.sourceCapturedAt },
+        } : undefined);
       const insertBinding = this.db.prepare(`INSERT INTO solver_artifact_bindings
         (replyVersionId,solverId,jobId,attemptId,workspace,workspaceDev,workspaceIno,workspaceGeneration,solverRelativePath,solverSha256,runtimeExecutable,runtimeIdentity,runtimeVersion,runtimeSha256)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
@@ -522,8 +559,46 @@ export class JobStore {
       const now = new Date().toISOString();
       this.db.prepare("UPDATE jobs SET state='succeeded',replyVersionId=?,provisional=NULL,reason=NULL,updatedAt=? WHERE id=?").run(committed.id, now, job.id);
       this.db.prepare("UPDATE job_attempts SET state='succeeded',endedAt=?,reason=NULL WHERE id=?").run(now, attemptId);
+      this.clearPendingSkillOutput(attemptId);
       this.event('job-state', { jobId, attemptId, state: 'succeeded', replyVersionId: committed.id });
       return this.get(job.id)!;
+    })();
+  }
+  /** Internal settlement/recovery only. Never included in JobSnapshot or events. */
+  pendingSkillOutput(attemptId: string): string | undefined {
+    const row = this.db.prepare(`SELECT p.text,p.sha256 FROM job_skill_pending p
+      JOIN job_attempts a ON a.id=p.attemptId JOIN jobs j ON j.id=a.jobId
+      WHERE a.id=? AND j.latestAttemptId=a.id AND j.cancelRequested=0 AND j.state='validating' AND a.state='validating'`)
+      .get(attemptId) as { text: string; sha256: string } | undefined;
+    if (!row || authoredSkillText(row.text, 'raw') !== row.text || skillOutputHash(row.text) !== row.sha256) return;
+    return row.text;
+  }
+  private clearPendingSkillOutput(attemptId: string) {
+    this.db.prepare('DELETE FROM job_skill_pending WHERE attemptId=?').run(attemptId);
+    this.db.prepare("UPDATE job_attempts SET providerHandle=json_remove(providerHandle,'$.rawFinalOutput') WHERE id=? AND providerHandle IS NOT NULL").run(attemptId);
+  }
+  saveUnformatted(jobId: string, attemptId: string, expectedRevision: number, input: UnformattedSkillOutput) {
+    return this.db.transaction(() => {
+      const job = this.get(jobId), attempt = job?.attempts.find(a => a.id === attemptId);
+      const output = checkedUnformatted(input);
+      const thread = job && this.reader.get(job.threadId);
+      if (!output || !job?.context.readerSkill || !thread || thread.deletedAt || !attempt || job.cancelRequested ||
+          job.latestAttemptId !== attemptId || job.state !== 'validating' || attempt.state !== 'validating' ||
+          !attempt.dispatchClaimed || attempt.revision !== expectedRevision || (attempt.providerHandle?.state !== 'completed' && !rejectedSkillOutput(attempt.providerHandle)) ||
+          job.replyVersionId || packetDigest(output.readerSkill) !== packetDigest(job.context.readerSkill) ||
+          (attempt.deadlineAt && Date.parse(attempt.deadlineAt) <= Date.now())) throw new JobConflictError('This unformatted result is no longer eligible to save.');
+      const source = this.reader.sourceVersion(thread.sourceVersionId);
+      if (!source || source.id !== job.context.sourceVersionId || source.hash !== job.context.sourceHash) throw new JobConflictError('The source differs from the frozen request.');
+      if (job.mode === 'structured-final' && this.pendingSkillOutput(attemptId) !== output.text) throw new JobConflictError('The authored final output changed before saving.');
+      const candidate = parseAndValidateReply(output.text, { sourceText: job.context.sourceText, capabilities: this.capabilities(jobId), requireOrigins: true });
+      if (candidate.ok && candidate.value.status === 'complete' && skillReplyAllowed(candidate.value)) throw new JobConflictError('A valid skill reply cannot be relabelled as unformatted.');
+      this.db.prepare('INSERT INTO job_skill_outputs(jobId,attemptId,json) VALUES(?,?,?)').run(jobId, attemptId, JSON.stringify(output));
+      const now = new Date().toISOString();
+      this.db.prepare("UPDATE jobs SET state='failed',provisional=NULL,reason='reply-validation-failed',updatedAt=? WHERE id=?").run(now, jobId);
+      this.db.prepare("UPDATE job_attempts SET state='failed',endedAt=?,reason='reply-validation-failed' WHERE id=?").run(now, attemptId);
+      this.clearPendingSkillOutput(attemptId);
+      this.event('job-state', { jobId, attemptId, state: 'failed', reason: 'reply-validation-failed' });
+      return this.get(jobId)!;
     })();
   }
   setState(jobId: string, attemptId: string, state: Extract<JobState, 'failed' | 'outcome_unknown' | 'cancelled' | 'validating'>, reason?: string) {
@@ -535,6 +610,7 @@ export class JobStore {
       this.db.prepare('UPDATE jobs SET state=?,reason=?,updatedAt=? WHERE id=?').run(actual, reason ?? null, now, jobId);
       if (reason === CLARIFICATION_LIMIT_FALLBACK) this.db.prepare('UPDATE jobs SET provisional=NULL WHERE id=?').run(jobId);
       this.db.prepare('UPDATE job_attempts SET state=?,reason=?,endedAt=? WHERE id=?').run(actual, reason ?? null, terminal.has(actual) ? now : null, attemptId);
+      if (terminal.has(actual)) this.clearPendingSkillOutput(attemptId);
       this.event('job-state', { jobId, attemptId, state: actual, reason });
       return this.get(jobId);
     })();
@@ -657,4 +733,10 @@ function mapProviderState(state: ProviderHandle['state'], tombstone: boolean, ca
   if (state === 'running') return 'running';
   if (state === 'completed') return 'validating';
   return state;
+}
+
+/** Raw observation never crosses the public job boundary, even for legacy/corrupt handles. */
+function publicProviderHandle(handle: ProviderHandle): ProviderHandle {
+  const { rawFinalOutput: _raw, ...publicHandle } = handle;
+  return publicHandle;
 }

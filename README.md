@@ -1,70 +1,35 @@
 # Marginalia
 
-Marginalia is a reader where a human and their agent work on the same page: the page holds the document, your marks and your notes; the agent brings what it knows about you; WebMCP tools are where they meet.
+A personalized, agentic and dynamic margin, right in your browser. Your research assistant for the web.
 
-## What it does
+An agentic companion as you browse the web. It lives in the margin, so every answer stays attached to the sentence that raised it, and the page stays exactly as the author wrote it.
 
-Marginalia reads a document as an immutable source and builds a personalized margin beside it. The agent first reads the live page state: your position, known and lost marks, and confirmed knowledge. It can then propose knowledge entries, add explainers or figures, highlight a range, and fold a section with a visible reason. You can confirm, reject, expand, remove, or hide each layer.
+Read OpenAI's Navier-Stokes post with Marginalia open. Select the word viscosity and a definition written for that passage arrives in about two seconds. Select the passage about viscosity smoothing out motion and choose Simulate it: a small model arrives with sliders you can move, the equation beside it, and a plain note on what it does not claim. Step by step, Diagram, Explore and Not sure answer the same way.
 
-The included fixtures move across a century: Rutherford’s 1911 paper, a Curious Kids article on how atoms form, and Chrome’s WebMCP documentation.
+Those runs were recorded live on 18 September 2026. The current v1.1 build includes Instant help and Simulate it, along with Journeys, Activity, Daily recap, Save page, Read page later and Forget this page.
 
-## The layer rule
+Help runs through your ordinary Codex setup, including its settings and tools. No API keys or Marginalia environment variables.
 
-> “The page registers no WebMCP tool that mutates the source layer.”
+[Install the v1.1.0 alpha, four steps](https://github.com/yashgurbani/marginalia/releases/tag/v1.1.0) · [Product Hunt](https://www.producthunt.com/products/marginalia-2) · [Open the website](https://yashgurbani.github.io/marginalia/) · [Research whitepaper](https://yashgurbani.github.io/marginalia/site/Marginalia-Research-Whitepaper.pdf)
 
-Source, reader, and agent state remain separate. The full source is always available. Agent output is visible, reasoned, and removable. This is enforced by the tools the page does not register, not by an instruction that an agent can ignore.
+Marginalia keeps notes, highlights and replies beside the passage that prompted them. Your notes stay above model replies, and the source page is never rewritten. A Chrome extension provides the margin; a local helper stores your reading; a library brings saved work together.
 
-## WebMCP tools
+Select a passage to keep it or write a note. Ask when you want deeper help. Replies include definitions, worked examples, derivations, diagrams and interactive models. Saved threads retain their source context for later reading.
 
-| Name | What it does | What it refuses |
-| --- | --- | --- |
-| `get_reading_state` | Reads document structure, marks, position, layers, and knowledge. | It does not return collapsed source text unless asked. |
-| `get_section_text` | Reads one source section. | It cannot change the section. |
-| `get_knowledge` | Reads proposed and confirmed knowledge entries. | It cannot confirm an entry. |
-| `upsert_knowledge` | Proposes one reader knowledge entry. | It rejects weak evidence and does not assume mastery. |
-| `search_notes` | Searches a reader-loaded local note index. | It returns an honest empty result when no vault is loaded. |
-| `set_section_depth` | Folds or expands a section with a reason. | It rejects hidden depth without confirmed knowledge and defers the current section. |
-| `annotate` | Adds an agent-layer gloss, explainer, question, caveat, perspective, or link. | It never writes inline source text; evidence modes require sources. |
-| `highlight` | Adds a reasoned agent-layer highlight. | It rejects a range outside the source section. |
-| `insert_figure` | Adds a sanitized SVG in the margin. | It rejects scripts and external SVG references. |
+## Install it
 
-## How to run locally
+Start with the [website](https://yashgurbani.github.io/marginalia/) or the [interactive walkthrough](https://app.supademo.com/demo/cmu6m02dn00viz60jcsm56acw). The walkthrough shows the reader view captured outside Chrome, so the browser frame is missing.
 
-Use any static server from the repository root. For example:
+Installing v1.1.0 takes four manual steps: download and unzip the extension, install and start the local helper, load the extension in Chrome, then pair them with the code the helper shows. The [package guide](marginalia-v2-package/README.md#install-the-helper) has the commands. You need Node 24, Chrome 116 or newer, and Codex already installed and signed in on your machine. The [v1.1.0 release](https://github.com/yashgurbani/marginalia/releases/tag/v1.1.0) includes a prebuilt extension ZIP if you would rather not build it yourself. Development instructions and commands also live in that guide.
 
-```sh
-npx serve .
-```
+## Current stage
 
-Open the displayed local URL. No build step or credentials are required.
+This is an alpha for Chrome, built by one developer. It needs Codex installed and signed in. Local reading, persistence and reply handling have automated coverage. On 18 September 2026, live runs on public pages returned accepted replies for Define, Simulate it, Step by step, Diagram, Explore and Not sure on OpenAI's Navier-Stokes post, and Define and Give an example on a NASA page. Instant definitions returned their first text in about two seconds. A full simulation took close to three minutes, because Codex is writing a model, an equation and its limits. Deeper asks take that long by design, and some asks need a second try before a reply is accepted. Checking a claim is early and has not yet returned an accepted live reply. Observed solver confinement and complete native-browser acceptance remain open. Several library features are still being developed. The [build status](marginalia-v2-package/BUILD-STATUS.md) and [scope coverage](marginalia-v2-package/docs/SCOPE-COVERAGE.md) record the evidence and remaining work.
 
-## How to test in ChatGPT desktop in-app browser and in Chrome 149+ with chrome://flags/#enable-webmcp-testing
+In v1.1.0, a full Ask still shows the exact outgoing content and recipient before it goes. Instant help is on by default and sends each allowed open page to Codex so quick definitions and simple explanations are ready when you select text, using your own Codex subscription. Onboarding offers to turn it off. Settings lets you turn it off later, exclude sites and see today's usage. Excluded sites never send anything, and no Codex credential is stored in the browser. The current build also includes Journeys, Activity with Daily recap, Save page, Read page later and Forget this page. Read the [privacy details](https://yashgurbani.github.io/marginalia/site/privacy.html) for storage, request records and deletion behaviour.
 
-In the ChatGPT desktop app, open the live URL in the in-app browser. Ask ChatGPT to read the page state and fold a section after you confirm a knowledge entry. The tool action and its result appear on the page.
+## Project
 
-For local Chrome testing, use Chrome 149 or later. Open `chrome://flags/#enable-webmcp-testing`, enable the flag, and relaunch Chrome. Serve this repository, open its local URL, then use the Model Context Tool Inspector or a WebMCP-capable client to call the registered tools.
+The current application is in [`marginalia-v2-package/`](marginalia-v2-package/), and the website is in [`site/`](site/). The earlier competition prototype is preserved on the [`webmcp-v1` branch](https://github.com/yashgurbani/marginalia/tree/webmcp-v1).
 
-## Demo prompts
-
-1. “Read the current reading state first. Interview me about Rutherford’s scattering experiment, then record my answer as a proposed knowledge entry.”
-2. “Read the current state and confirmed knowledge first. Fold a Rutherford section that I already understand, with a reason I can see.”
-3. “Read the current state first. Add a short agent-layer explanation beside the Curious Kids section about the strong force; do not change the article.”
-
-## Prior work vs. new work
-
-Everything in this repository was written during the submission period, August 25–September 4, 2026. The project is new work using WebMCP. Its design lineage includes earlier private brainstorming with Claude, but no code was reused. FeynmanILE and Noether IRE are separate private projects, not source material for this submission.
-
-## Licenses
-
-Repository code is MIT licensed. Fixture licenses and source attribution appear in [fixtures/ATTRIBUTION.md](fixtures/ATTRIBUTION.md). Rutherford is public domain. The Conversation fixture is text-only under CC BY-ND 4.0. Chrome documentation prose is CC BY 4.0 and its code sample is Apache 2.0.
-
-## Next
-
-The submission defers the following work in this order:
-
-1. [Connections graph tab](.scratch/bridge/issues/12-connections-graph-and-connection-kind.md)
-2. [Prerequisite insets](.scratch/bridge/issues/14-prerequisite-and-reference-kinds.md)
-3. [Per-section density chips](.scratch/bridge/issues/13-pending-reshape-density-chips-batch-confirm-remove-all.md)
-4. [Export to vault](.scratch/bridge/issues/15-export-to-vault-and-copy-as-question.md)
-5. [Worker snapshot](.scratch/bridge/issues/09-stretch-worker-snapshot.md)
-6. [Sandboxed widgets](.scratch/bridge/issues/10-stretch-insert-widget-sandbox.md)
+[Whitepaper source](marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md) · [Credits](CREDITS.md) · [Third-party notices](THIRD-PARTY-NOTICES.md) · [MIT license](LICENSE)

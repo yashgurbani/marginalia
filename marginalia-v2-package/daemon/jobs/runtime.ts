@@ -1,3 +1,8 @@
+import packageInfo from '../../package.json' with { type: 'json' };
+import type { ReaderSkillsCatalog } from '../../contracts/reader-skills.ts';
+import { unavailableSkills } from '../reader-skills.ts';
+import { projectReaderSkills } from '../reader-skills.ts';
+import { resolve } from 'node:path';
 import type { JobRunner, ProviderAudit, ProviderHooks, ProviderKind, ProviderRequest, ProviderHandle, AuditedPolicy, ProviderSendBinding } from '../../contracts/job-runner.ts';
 import type { JobConsentAuthority, JobSnapshot } from '../../contracts/jobs.ts';
 import { AppServerRunner } from '../providers/app-server.ts';
@@ -9,19 +14,22 @@ import type { RpcTransport } from '../providers/stdio.ts';
 import { isDeepStrictEqual } from 'node:util';
 import { validateProviderSend } from '../providers/send-binding.ts';
 
-export type JobHostHooks = Pick<ProviderHooks, 'checkpoint' | 'validateOutput'> & {
+export type JobHostHooks = Pick<ProviderHooks, 'checkpoint' | 'validateOutput' | 'captureFinalOutput'> & {
   jobForAttempt(attemptId: string): JobSnapshot | undefined;
   finalizeSend(request: ProviderRequest, handle: ProviderHandle): ProviderHandle;
 };
 export type RunningProvider = { runner: JobRunner; close(): void; canResume?(handle: ProviderHandle): boolean };
 
 export interface AuthorizedRuntimeFactory {
-  /** Optional plan from a trusted runtime module, never a browser or provider reply. */
+  /** Optional plan from a trusted runtime factory, never a browser or provider reply. */
   readonly jobDefaults?: import('./service.ts').JobServiceOptions['defaults'];
   readonly consent: JobConsentAuthority;
   /** Static bootstrap readiness only; every attempt is still revalidated immediately before egress. */
   readonly dispatchReady: boolean;
   readonly unavailableReason?: string;
+  readonly unverified?: readonly string[];
+  readonly disclosureVersion?: string;
+  readerSkills?(workspace: string): Promise<ReaderSkillsCatalog>;
   create(job: Readonly<JobSnapshot>, attemptId: string, workspace: string, hooks: JobHostHooks): Promise<RunningProvider>;
 }
 
@@ -36,27 +44,49 @@ export interface ProviderAuthorization {
 export type CodexRuntimeOptions = {
   executable: string;
   codexHome: string;
+  homeMode?: 'dedicated' | 'ordinary';
   consent: JobConsentAuthority;
   authorization: ProviderAuthorization;
   dispatchReady: boolean;
   unavailableReason?: string;
   configOverrides?: Readonly<Record<string, unknown>>;
   configOverridesFor?: (job: Readonly<JobSnapshot>, workspace: string) => Readonly<Record<string, unknown>>;
-  readiness?: () => { ready: boolean; reasons: readonly string[] };
+  unverified?: readonly string[];
+  disclosureVersion?: string;
+  /** Host dependency seam for offline transport fixtures. */
+  launch?: typeof launchProvider;
 };
 
 export function createCodexRuntimeFactory(options: CodexRuntimeOptions): AuthorizedRuntimeFactory {
   return {
     consent: options.consent,
-    get dispatchReady() { return options.readiness?.().ready ?? options.dispatchReady; },
-    get unavailableReason() { const state = options.readiness?.(); return state && !state.ready ? state.reasons.join('; ') : options.unavailableReason; },
+    dispatchReady: options.dispatchReady,
+    unavailableReason: options.unavailableReason,
+    unverified: options.unverified, disclosureVersion: options.disclosureVersion,
+    async readerSkills(workspace) {
+      if (options.homeMode !== 'ordinary') return unavailableSkills();
+      const transport = await (options.launch ?? launchProvider)('app-server', { executable: options.executable,
+        workspace, codexHome: options.codexHome, homeMode: options.homeMode });
+      try {
+        const initialized = await transport.request('initialize', { clientInfo: { name: 'marginalia', version: packageInfo.version }, capabilities: { experimentalApi: true } });
+        if (resolve(initialized.codexHome ?? '') !== resolve(options.codexHome)) return unavailableSkills();
+        transport.notify('initialized');
+        return projectReaderSkills(await transport.request('skills/list', { cwds: [workspace], forceReload: true }), workspace, options.codexHome);
+      } catch { return unavailableSkills(); } finally { transport.close(); }
+    },
     async create(job, _attemptId, workspace, host): Promise<RunningProvider> {
       if (!options.consent.withProviderPreparation) throw new Error('non-consuming-provider-preparation-required');
-      const transport = await launchProvider(job.provider, { executable: options.executable, workspace, codexHome: options.codexHome,
+      const transport = await (options.launch ?? launchProvider)(job.provider, { executable: options.executable, workspace, codexHome: options.codexHome,
+        homeMode: options.homeMode,
         configOverrides: options.configOverridesFor?.(job, workspace) ?? options.configOverrides });
       try {
         const audit = await inspect(job.provider, transport, workspace, options.codexHome, options.authorization);
         bindLaunchAudit(audit, transport);
+        if (job.context.readerSkill) {
+          const catalog = options.homeMode === 'ordinary' ? projectReaderSkills(audit.skills, workspace, options.codexHome) : unavailableSkills();
+          if (catalog.status !== 'ready' || catalog.revision !== job.context.readerSkill.catalogRevision ||
+              !catalog.skills.some(skill => skill.name === job.context.readerSkill!.name)) throw new Error('Reader skill catalog changed. Review this skill request again.');
+        }
         const policies = new Map<string, AuditedPolicy>();
         const sends = new Map<string, { request: ProviderRequest; handle: ProviderHandle; audit: ProviderAudit; wire: ProviderSendBinding }>();
         let alive = true;
@@ -65,6 +95,7 @@ export function createCodexRuntimeFactory(options: CodexRuntimeOptions): Authori
         const hooks: ProviderHooks = {
           checkpoint: host.checkpoint,
           validateOutput: host.validateOutput,
+          captureFinalOutput: host.captureFinalOutput,
           authorize: async (request, observed, stage) => {
             const job = requiredJob(host, request.jobId);
             const policy = await prepare(job, request.jobId, () => options.authorization.authorize(job, request, observed, stage));
@@ -92,7 +123,6 @@ export function createCodexRuntimeFactory(options: CodexRuntimeOptions): Authori
               !isDeepStrictEqual(exact, { request, handle, audit: observed, wire })) throw new Error('provider-send-not-prepared-or-changed');
             validateProviderSend(request, handle, policy, wire);
             assertLaunchCurrent(observed);
-            if (options.readiness && !options.readiness().ready) throw new Error('provider-host-readiness-changed');
             return host.finalizeSend(request, handle);
           },
           authorizeRecovery: (handle, observed) => options.authorization.authorizeRecovery(requiredJob(host, handle.jobId), handle, observed),

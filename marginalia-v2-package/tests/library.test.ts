@@ -107,6 +107,18 @@ test('library search waits for submission, preserves the typed draft and opens i
   button(h.host, 'Open cited passage').click(); await settle(); assert.deepEqual(opened, searchResult());
 });
 
+test('Read later distinguishes pages and passages and resumes their source pages', async t => {
+  const page = { ...thread('page'), state: 'parked' as const, anchor: { kind: 'whole-page' as const, exact: '', prefix: '', suffix: '', start: 0, end: 0 } };
+  const passage = { ...thread('passage'), state: 'parked' as const };
+  const resumed: string[] = [];
+  const h = setup(t, { listThreads: async () => [page, passage], onResumePage: value => { resumed.push(value.sourceUrl); } });
+  await settle(); button(h.host, 'Read later').click();
+  assert.match(h.host.textContent, /Saved page\. Read later/); assert.match(h.host.textContent, /Saved passage\. Read later/);
+  assert.match(h.host.textContent, /reading position can return on this browser/); assert.match(h.host.textContent, /saved passage can reopen on this browser/);
+  keyed(h.host, 'resume-page').click(); await settle(); keyed(h.host, 'resume-passage').click(); await settle();
+  assert.deepEqual(resumed, ['https://example.com/page', 'https://example.com/passage']);
+});
+
 test('new search owns results and a destroyed library ignores pending completions', async t => {
   const first = deferred<LibrarySearchResult[]>(), second = deferred<LibrarySearchResult[]>(); let calls = 0;
   const h = setup(t, { search: () => ++calls === 1 ? first.promise : second.promise, onOpenPassage() {} });
@@ -455,4 +467,22 @@ test('synchronous permission failures release ownership and leave section retrie
   button(h.host, 'Exclude site').click(); await settle();
   assert.match(section(h.host, 'Permissions and exclusions').textContent, /exclusion unavailable/);
   button(h.host, 'Library').click(); await h.settings(); assert.equal(reads, 2);
+});
+
+test('instant help settings detect stale revisions and reject unsupported choices without fallback', async t => {
+  const { ReaderStore, ConflictError } = await import('../daemon/store.ts');
+  const { LibrarySettingsService } = await import('../daemon/library.ts');
+  const reader = new ReaderStore(':memory:'); t.after(() => reader.close());
+  const service = new LibrarySettingsService(reader), defaults = service.instantHelp();
+  assert.deepEqual([defaults.enabled, defaults.model, defaults.effort, defaults.tokenBudget.limit, defaults.warmPages, defaults.idleMinutes], [true, 'gpt-5.6-luna', 'medium', 100_000, 8, 15]);
+  const change = { ...defaults, expectedRevision: 0, warmPages: 12, idleMinutes: 30, tokenBudget: { ...defaults.tokenBudget, limit: 200_000 } };
+  const saved = service.saveInstantHelp(change);
+  assert.equal(saved.revision, 1); assert.equal(saved.warmPages, 12); assert.equal(saved.idleMinutes, 30); assert.equal(saved.tokenBudget.limit, 200_000);
+  assert.throws(() => service.saveInstantHelp(change), ConflictError);
+  for (const patch of [{ model: 'unknown' }, { effort: 'low' }, { tokenBudget: { ...defaults.tokenBudget, timezone: 'invalid' } }, { warmPages: 0 }, { idleMinutes: -1 }]) {
+    assert.throws(() => service.saveInstantHelp({ ...change, expectedRevision: 1, ...patch } as Parameters<typeof service.saveInstantHelp>[0]));
+    assert.deepEqual(service.instantHelp(), saved);
+  }
+  reader.db.prepare('UPDATE settings SET value=? WHERE key=?').run(JSON.stringify({ ...saved, effort: 'low' }), 'library.instant-help.v1');
+  assert.throws(() => service.instantHelp(), /effort is not supported/);
 });
