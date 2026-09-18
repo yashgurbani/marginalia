@@ -126,6 +126,13 @@ const intents = new Set<Intent>(['define', 'simulate', 'instantiate', 'derive', 
 const statuses = new Set<ReplyStatus>(['partial', 'complete']);
 const relations = new Set<SourceRelation>(['quoted', 'computed', 'interpreted', 'analogy', 'fetched']);
 const capabilities = new Set<ReplyCapability>(['samples', 'solver', 'media.audio', 'media.image', 'media.video', 'network.citations', 'network.shelf']);
+
+export function capabilitiesForIntent(intent: Intent): readonly ReplyCapability[] {
+  if (intent === 'evidence') return ['samples', 'network.citations'];
+  if (intent === 'explore') return ['samples', 'network.shelf'];
+  return ['samples'];
+}
+
 const blockTypes = new Set(['text', 'equation', 'model', 'plot', 'derived', 'classification', 'table', 'diagram', 'steps', 'compare', 'question', 'turn', 'citations', 'shelf', 'samples', 'solver', 'media']);
 const identifier = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const criterionName = /^[a-z][a-z0-9-]{0,63}$/;
