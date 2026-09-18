@@ -46,6 +46,12 @@
 .ml-vocabulary__meta { color: var(--m-ink-3); font-size: var(--m-t-1); }
 .ml__permissions .m-consent-settings { background: transparent; border: 0; box-shadow: none; padding: 0; }
 .ml__permissions .m-consent-settings > h2 { display: none; }
+.m-retained-copies dl { display: grid; gap: 1rem; margin: .75rem 0 0; }
+.m-retained-copies__intro { max-width: 68ch; }
+.m-retained-copies__item { border-top: 1px solid var(--m-rule); display: grid; gap: .25rem; padding-top: .75rem; }
+.m-retained-copies dt { font-weight: 650; }
+.m-retained-copies dd { margin: 0; max-width: 72ch; }
+.m-retained-copies__location { color: var(--m-ink-2); font-size: var(--m-t0); }
 .ml__skeleton { display: grid; gap: var(--m-s2); margin: var(--m-s4) 0; }
 .ml__skeleton span { background: var(--m-sunken); border-radius: 2px; display: block; height: .75rem; width: min(100%, 34rem); }
 .ml__skeleton span:nth-child(2) { width: min(74%, 26rem); }

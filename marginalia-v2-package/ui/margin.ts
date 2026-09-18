@@ -8,6 +8,7 @@ import type { JobSnapshot } from '../contracts/jobs.ts';
 import { HelperClient, documentHelper, forgetPairingIfCurrent } from './helper.ts';
 import { mountHelperManagement } from './helper-management.ts';
 import { mountNoteEditor } from './note-editor.ts';
+import { retainedCopiesSection } from './retained-copies.ts';
 import { createT08Mount, type AskingMountFactory, type AskingSelection } from './asking-host.ts';
 import type { MountedReply } from '../renderer/index.ts';
 import { canonicalReplyData, capabilitiesForIntent, validateReply, type SourceBinding } from '../contracts/reply.ts';
@@ -1133,7 +1134,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     for (const value of ['system', 'light', 'dark']) { const option = el('option', value[0].toUpperCase() + value.slice(1)); option.value = value; theme.append(option); }
     theme.value = document.documentElement.dataset.theme ?? 'system';
     theme.addEventListener('change', () => { if (theme.value === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme.value; void track(persistence.write('theme', theme.value)).catch(fail); });
-    settingsBody.append(label('Theme', theme), el('p', 'Model choices, actual grants, exclusions and vocabulary are managed in the local library and settings.', 'm-meta'),
+    settingsBody.append(label('Theme', theme), el('p', 'Model choices, actual grants, exclusions and vocabulary are managed in the local library and settings.', 'm-meta'), retainedCopiesSection(),
       button(denied ? 'Allow question previews here' : 'Block question previews here', () => safely(async () => { const next = !denied; await persistence.write('denied:' + new URL(capture.url).origin, next); denied = next; renderSettings(); announce('Local preview preference saved. Helper permission records are unchanged.'); })),
       button('Close settings', () => { setup.hidden = true; updateManagement(); settingsButton.focus({ preventScroll: true }); }));
     for (const conflict of sourceBoundJournal(journal.state, capture.url).conflicts) {
