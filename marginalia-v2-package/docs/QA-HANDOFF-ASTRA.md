@@ -703,3 +703,11 @@ Give Yash screenshots and a one-line question each. Do not pre-grade his answers
 - Whether a gate passes on inference rather than evidence.
 - Whether to change source, tests, configuration or documentation.
 - Whether a defect is worth fixing. That is Fable's call after Yash sets priority.
+
+## 13. Fable addendum, 2026-09-18 (supersedes the header and section 2 where they differ)
+
+- Head at hand-off: `f8df90b` plus the commit that adds this addendum and `docs/STATE-AND-PLAN-2026-09-18.md`. Later merges are listed in that file's section 1.
+- Suite at head: 717 tests, 714 pass, 3 skipped. One case in `tests/journey-e2e.test.ts` (added in 3ddff9d) fails on roughly half the runs on the development host. Run `npm test` three times and record all three totals; the flake is a defect to file, not to fix here.
+- T20-P4 is merged: a saved solver can be recomputed from an explicit reader click. Add the T20 recompute script (section 10) to the pass; the click is the only send, and the slider sends nothing.
+- Known copy defect: `ui/solver-recompute.ts:118` uses the word "sandbox" in reader-facing text. A fix is in flight; if it lands before the pass, the test at `tests/solver-recompute.test.ts:147` will reflect the new wording.
+- The way workers were run (Codex CLI with per-account homes) does not affect any QA step.
