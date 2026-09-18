@@ -3,7 +3,14 @@ import type Database from 'better-sqlite3';
 import type { ProviderHandle } from '../../contracts/job-runner.ts';
 import { canonicalReplyData, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
 import type { FrozenJobContext, JobAttempt, JobConsentAuthority, JobSnapshot, JobState, StartJobInput } from '../../contracts/jobs.ts';
+import type { SolverArtifactBinding } from '../../contracts/solver.ts';
 import type { ReaderStore } from '../store.ts';
+
+export type SolverBindingCommit = SolverArtifactBinding & {
+  solverId: string;
+  workspaceDev: string;
+  workspaceIno: string;
+};
 
 type JobRow = {
   id: string; threadId: string; idempotencyKey: string; packetDigest: string; requestDigest: string; preparedPayloadDigest: string; provider: JobSnapshot['provider']; model: string;
@@ -53,6 +60,13 @@ export class JobStore {
         CREATE TABLE IF NOT EXISTS job_preparations(
           jobId TEXT PRIMARY KEY, planDigest TEXT NOT NULL, bindingDigest TEXT NOT NULL,
           createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL, consumedAt TEXT
+        );
+        CREATE TABLE IF NOT EXISTS solver_artifact_bindings(
+          replyVersionId TEXT NOT NULL REFERENCES reply_versions(id), solverId TEXT NOT NULL,
+          jobId TEXT NOT NULL REFERENCES jobs(id), attemptId TEXT NOT NULL REFERENCES job_attempts(id),
+          workspace TEXT NOT NULL, workspaceDev TEXT NOT NULL, workspaceIno TEXT NOT NULL, workspaceGeneration TEXT NOT NULL,
+          solverRelativePath TEXT NOT NULL, solverSha256 TEXT NOT NULL, runtimeExecutable TEXT NOT NULL, runtimeSha256 TEXT,
+          PRIMARY KEY(replyVersionId,solverId)
         );
         INSERT OR IGNORE INTO migrations(version) VALUES(3);
       `);
@@ -172,6 +186,14 @@ export class JobStore {
     const row = this.db.prepare('SELECT capabilities FROM jobs WHERE id=?').get(jobId) as { capabilities: string } | undefined;
     return row ? JSON.parse(row.capabilities) : [];
   }
+  solverArtifactBinding(replyVersionId: string, solverId: string): SolverArtifactBinding | undefined {
+    const row = this.db.prepare(`SELECT jobId,attemptId,workspace,workspaceGeneration,solverRelativePath,solverSha256,runtimeExecutable,runtimeSha256
+      FROM solver_artifact_bindings WHERE replyVersionId=? AND solverId=?`).get(replyVersionId, solverId) as (SolverArtifactBinding & { runtimeSha256: string | null }) | undefined;
+    if (!row) return;
+    return { jobId: row.jobId, attemptId: row.attemptId, workspace: row.workspace, workspaceGeneration: row.workspaceGeneration,
+      solverRelativePath: row.solverRelativePath, solverSha256: row.solverSha256, runtimeExecutable: row.runtimeExecutable,
+      ...(row.runtimeSha256 ? { runtimeSha256: row.runtimeSha256 } : {}) };
+  }
   checkpoint(attemptId: string, incoming: ProviderHandle): ProviderHandle {
     return this.db.transaction(() => {
       const a = this.db.prepare('SELECT * FROM job_attempts WHERE id=?').get(attemptId) as AttemptRow | undefined;
@@ -288,7 +310,7 @@ export class JobStore {
       this.event('job-provisional', { jobId, attemptId, status: 'partial' });
     })();
   }
-  succeed(jobId: string, attemptId: string, expectedRevision: number, reply: CandidateReply) {
+  succeed(jobId: string, attemptId: string, expectedRevision: number, reply: CandidateReply, solverBindings: readonly SolverBindingCommit[] = []) {
     return this.db.transaction(() => {
       const job = this.get(jobId), attempt = job?.attempts.find(a => a.id === attemptId);
       if (!job || !attempt) throw new Error('This work is unavailable.');
@@ -297,6 +319,15 @@ export class JobStore {
         attempt.revision !== expectedRevision || attempt.providerHandle?.state !== 'completed') throw new JobConflictError('This attempt is no longer eligible to commit.');
       const committed = this.reader.commitReply({ id: `${job.id}-reply`, threadId: job.threadId, reply,
         parentId: job.context.parentReplyId, answeredNote: job.context.answeredNote && { noteId: job.context.answeredNote.noteId, revision: job.context.answeredNote.revision } }, this.capabilities(job.id));
+      const insertBinding = this.db.prepare(`INSERT INTO solver_artifact_bindings
+        (replyVersionId,solverId,jobId,attemptId,workspace,workspaceDev,workspaceIno,workspaceGeneration,solverRelativePath,solverSha256,runtimeExecutable,runtimeSha256)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`);
+      for (const binding of solverBindings) {
+        if (binding.jobId !== job.id || binding.attemptId !== attemptId) throw new JobConflictError('A saved solver binding does not belong to the committing attempt.');
+        insertBinding.run(committed.id, binding.solverId, binding.jobId, binding.attemptId, binding.workspace,
+          binding.workspaceDev, binding.workspaceIno, binding.workspaceGeneration, binding.solverRelativePath,
+          binding.solverSha256, binding.runtimeExecutable, binding.runtimeSha256 ?? null);
+      }
       const now = new Date().toISOString();
       this.db.prepare("UPDATE jobs SET state='succeeded',replyVersionId=?,provisional=NULL,reason=NULL,updatedAt=? WHERE id=?").run(committed.id, now, job.id);
       this.db.prepare("UPDATE job_attempts SET state='succeeded',endedAt=?,reason=NULL WHERE id=?").run(now, attemptId);
