@@ -15,6 +15,7 @@ import { fitOutgoingPacket, utf8Prefix } from './outgoing-budget.ts';
 import { frozenFollowup } from './followup-context.ts';
 import { buildProviderPacket } from './packet.ts';
 import { loadHostInstructions } from './host-instructions.ts';
+import { commitSucceededReplyWithSolverBindings } from './solver-bindings.ts';
 
 const ID = /^[\w-]{1,100}$/;
 const CAPABILITIES = new Set<ReplyCapability>(['samples', 'solver', 'media.audio', 'media.image', 'media.video', 'network.citations', 'network.shelf']);
@@ -454,7 +455,8 @@ export class JobService {
       const latest = this.store.get(jobId)?.attempts.find(a => a.id === attemptId);
       if (!latest || latest.revision !== expectedRevision || latest.providerHandle?.state !== 'completed') return;
       const accepted = reply;
-      this.factory!.consent.withResultAcceptance(job, attemptId, () => this.store.succeed(jobId, attemptId, expectedRevision, accepted));
+      await commitSucceededReplyWithSolverBindings({ store: this.store, authority: this.factory!.consent, job, attemptId,
+        expectedRevision, reply: accepted, workspace: this.workspaces.get(attemptId) ?? latest.providerHandle.workspace });
     } catch (error) {
       if (this.currentSettlement(jobId, attemptId, expectedRevision)) this.store.setState(jobId, attemptId, 'failed', safeReason(error));
     } finally {

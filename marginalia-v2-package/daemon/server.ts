@@ -14,6 +14,10 @@ import type { FollowupJobInput, PrepareFollowupJobInput, PrepareJobInput, Prepar
 import { runHostChecks } from '../contracts/host-checks.ts';
 import { LibrarySettingsService } from './library.ts';
 import { ConsentSessionService, handleConsentDecision, handleConsentSettingsChange, handleConsentSettingsRead, prepareConsentForTrustedHost } from './consent/index.ts';
+import { createSolverRoutes, SolverExecutionService, createConsentSolverAuthority, createStoreSolverContextSource,
+  unavailableSolverEvidence, unavailableSolverExecutionGate } from './solver/index.ts';
+import { createJobSolverArtifactBindings } from './jobs/solver-bindings.ts';
+import { randomUUID } from 'node:crypto';
 
 export async function startServer(options: { database: string; port?: number; webRoot?: string; diagnostics?: (refresh?: boolean) => unknown;
   jobWorkspaceRoot?: string; runtimeFactory?: AuthorizedRuntimeFactory;
@@ -30,6 +34,16 @@ export async function startServer(options: { database: string; port?: number; we
   }
   const jobs = new JobService({ reader: store, workspaceRoot: options.jobWorkspaceRoot ?? resolve(dirname(options.database), 'jobs'),
     runtimeFactory, defaults: options.jobDefaults ?? runtimeFactory?.jobDefaults, timeoutMs: options.jobTimeoutMs, library });
+  const solver = new SolverExecutionService({
+    context: createStoreSolverContextSource({ replies: store, jobs: jobs.store,
+      bindings: createJobSolverArtifactBindings(jobs.store), limits: { timeoutMs: 5_000, maxOutputBytes: 65_536 } }),
+    authority: createConsentSolverAuthority({ permissions: consent, jobs: jobs.store }),
+    gate: unavailableSolverExecutionGate('No durable saved-solver execution gate is mounted.'),
+    evidence: unavailableSolverEvidence('No saved-solver confinement evidence collector is mounted.'),
+    codexHome: resolve(dirname(options.database), 'solver-codex-home'), auditId: randomUUID(),
+    unavailableReason: 'Saved-solver execution has no mounted command transport or durable execution gate.',
+  });
+  const handleSolverRoute = createSolverRoutes(solver);
   void jobs.recover().catch(() => { /* Per-job recovery records its own honest outcome. */ });
   const pairing = new Pairing(store);
   const challenge = pairing.issue();
@@ -115,6 +129,30 @@ export async function startServer(options: { database: string; port?: number; we
         if (!requireCurrentPairing()) return send(response, 401, { error: 'Pair with the local helper to reopen saved work.' });
         const principal = { surface: authOrigin === origin ? 'localhost-settings' as const : 'browser-owned-margin' as const,
           pairingId: token, origin: authOrigin! };
+        // --- T20 saved-solver route mount: principal fields are host-derived. ---
+        if (url.pathname.startsWith('/api/solver/')) {
+          const solverBody = request.method === 'POST' ? await body(request) : undefined;
+          let paired = pairing.session(token, authOrigin!);
+          if (!paired) return send(response, 401, { error: 'Pair with the local helper to recompute saved work.' });
+          const action = url.pathname.slice('/api/solver/'.length);
+          if (action === 'prepare' || action === 'recompute') {
+            const replyVersionId = solverBody && typeof solverBody === 'object' && !Array.isArray(solverBody)
+              ? (solverBody as { replyVersionId?: unknown }).replyVersionId : undefined;
+            const reply = typeof replyVersionId === 'string' ? store.reply(replyVersionId) : undefined;
+            if (!reply || reply.deletedAt || store.get(reply.threadId)?.deletedAt) {
+              return send(response, 404, { error: 'This reply is unavailable.' });
+            }
+            paired = pairing.bindThread(token, authOrigin!, reply.threadId);
+            if (!paired) return send(response, 403, { error: 'This reply belongs to a different paired thread context.' });
+          }
+          const solverPrincipal = paired.threadId
+            ? { siteOrigin: authOrigin!, threadId: paired.threadId, sessionId: paired.sessionId }
+            : undefined;
+          const handled = await handleSolverRoute({ method: request.method ?? 'GET', pathname: url.pathname,
+            search: url.searchParams, body: solverBody, principal: solverPrincipal });
+          if (handled) return send(response, handled.status, handled.body);
+        }
+        // --- End T20 saved-solver route mount. ---
         // Explicit read transports preserve browser-generated Origin on extension
         // POSTs. They do not reinterpret methods on any mutation endpoint.
         let readOperation: 'threads' | 'replies' | 'reply-view' | undefined;
@@ -324,7 +362,7 @@ export async function startServer(options: { database: string; port?: number; we
     }
   }, 100);
   delivery.unref();
-  return { origin, challenge, store, jobs, library, consent, pairing, close: async () => { clearInterval(delivery); for (const client of sockets.clients) client.terminate(); sockets.close(); await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); await jobs.close(); store.close(); } };
+  return { origin, challenge, store, jobs, solver, library, consent, pairing, close: async () => { clearInterval(delivery); solver.close(); for (const client of sockets.clients) client.terminate(); sockets.close(); await new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())); await jobs.close(); store.close(); } };
 }
 
 function validateReplyParameters(declared: { name: string; min: number; max: number }[], value: unknown): asserts value is Record<string, number> {
