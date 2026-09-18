@@ -105,8 +105,8 @@ button { cursor: pointer; } button:disabled { cursor: default; }
 @media(max-width: 899px) {
  .m-workspace,.m-saved-workspace { display: block; }.m-source { padding: 36px 68px 80px 24px; font-size: 17px; }
  .m-source h1 { font-size: 30px; }.m-source h2 { font-size: 22px; }
- .mg { position: fixed; inset: 0 0 0 auto; width: min(440px, 100%); z-index: var(--m-z-float); }
- .mg.is-collapsed { width: 40px; }.m-panel { width: auto; }.m-captured-source { padding-inline-end: 56px; }
+ .mg { position: fixed; inset: 0 0 0 auto; width: min(440px, 100%); z-index: var(--m-z-float); box-shadow: -12px 0 32px rgb(20 24 28 / 18%); transition: width 160ms ease, box-shadow 160ms ease; }
+ .mg.is-collapsed { width: 40px; box-shadow: -1px 0 0 var(--m-rule); }.m-panel { width: auto; }.m-captured-source { padding-inline-end: 56px; }
 }
 @media(max-width: 420px) { .m-bar { padding-left: 12px; }.m-head,.m-status { padding-inline: 12px; }.m-scroll,.m-settings { padding-inline: 12px; }.m-wordmark { font-size: 13px; } }
 @media(prefers-reduced-motion: reduce) { *,*::before,*::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }

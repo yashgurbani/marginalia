@@ -29,6 +29,7 @@ async function refresh() {
       current = next;
       mounted = await mountMargin(root, {
         capture: next.capture, sections: next.sections, helperOrigin: origin ?? DEFAULT_HELPER_ORIGIN, storageName: 'marginalia-extension-reader', initialOpen: true, allowHelper: !embedded && !!origin,
+        onLibrary: origin ? () => { void browser.tabs.create({ url: new URL('/', origin).href }).catch(() => { status.textContent = 'The Library could not be opened. Your reading remains here.'; }); } : undefined,
         captureCurrentPage: async () => {
           const snapshot: unknown = await send('read');
           if (!validSnapshot(snapshot) || snapshot.document !== next.document || snapshot.capture.url !== next.capture.url) throw new Error('The page changed. Reopen its margin to look again.');
