@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const css = readFileSync(new URL('../ui/tokens.css', import.meta.url), 'utf8');
+const marginCss = readFileSync(new URL('../ui/margin.css', import.meta.url), 'utf8');
 function luminance(l: number, c: number, h: number) {
   const a = c * Math.cos(h * Math.PI / 180), b = c * Math.sin(h * Math.PI / 180);
   const x = (l + .3963377774 * a + .2158037573 * b) ** 3;
@@ -19,4 +20,11 @@ for (const theme of ['light', 'dark']) test(`${theme} note, metadata, and contro
     const ratio = (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
     assert.ok(ratio >= minimum, `${ink}/${background}: ${ratio.toFixed(2)} needs ${minimum}`);
   }
+});
+
+test('collapsed rail dots keep a 24px target and visible keyboard focus', () => {
+  const target = marginCss.match(/\.m-rail \.m-rail-thread,\s*\.m-rail \.m-activity\s*\{([^}]+)\}/)?.[1] ?? '';
+  assert.match(target, /min-width:\s*24px/);
+  assert.match(target, /min-height:\s*24px/);
+  assert.match(marginCss, /\.m-rail :is\(\.m-rail-thread, \.m-activity\):focus-visible\s*\{[^}]*outline:/);
 });
