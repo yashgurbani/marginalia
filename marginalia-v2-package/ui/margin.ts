@@ -51,6 +51,23 @@ export type MarginOptions = {
 type Draft = MarginDraft;
 type RetainedRequest = { jobId: string; selection: AskingSelection };
 
+/** Facts available from the durable job record. A provider handoff is not an
+ * observation of physical transmission, and reviewed bytes are not wire bytes. */
+export function egressMeasurements(job: JobSnapshot) {
+  const attempt = job.latestAttemptId
+    ? job.attempts.find(value => value.id === job.latestAttemptId)
+    : job.attempts.at(-1);
+  const reviewedBytes = attempt?.sentContent
+    ? attempt.sentContent.reduce((total, part) => total + new TextEncoder().encode(part.text).byteLength, 0)
+    : null;
+  return {
+    reviewedBytes,
+    handoffRecorded: attempt?.handoffMarked === true,
+    observedSentBytes: null,
+    transmissionObserved: false,
+  } as const;
+}
+
 export function sectionIndexAt(sections: MarginSection[], position: number): number {
   const found = sections.findIndex(section => position >= section.start && position < section.end);
   if (found >= 0) return found;
@@ -123,7 +140,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const questionArea = el('section', undefined, 'm-question'); questionArea.hidden = true;
   const egressSheet = el('section', undefined, 'm-question-slot'); egressSheet.hidden = true;
   egressSheet.setAttribute('role', 'region'); egressSheet.setAttribute('aria-label', 'What was sent');
-  let egressGeneration = 0, activityJobId: string | undefined;
+  let egressGeneration = 0, activityGeneration = 0, activityJobId: string | undefined;
   const questionForm = el('div'), askingHost = el('div'); askingHost.hidden = true; questionArea.append(questionForm, askingHost);
   let askingMount: ReturnType<AskingMountFactory> | undefined;
   const threadList = el('div', undefined, 'm-threads');
@@ -279,16 +296,40 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   map.append(railThreads);
   const activityButton = button('Work status', () => { void openEgress(); });
   activityButton.className = 'm-activity'; activityButton.hidden = true; map.append(activityButton);
-  function updateActivity(value: { phase: string; sending?: boolean; elapsedSeconds?: number }) {
+  function showActivity(text: string, sending: boolean, elapsedSeconds?: number) {
     if (!alive()) return;
-    const sending = value.sending ?? value.phase === 'sending';
-    const working = ['queued', 'working', 'provisional', 'validating', 'loading-reply', 'cancel_requested'].includes(value.phase);
-    const text = sending ? 'Sending' : working ? 'Working' : value.phase === 'committed' ? 'Ready' : value.phase === 'unknown' || value.phase === 'timed_out' ? 'Outcome unconfirmed' : value.phase === 'failed' ? 'Failed' : value.phase === 'cancelled' ? 'Cancelled' : '';
     // Closing the question does not erase the last job's record.
     if (!text && activityJobId) return;
     activityButton.hidden = !text; activityButton.dataset.sending = String(sending);
-    activityButton.setAttribute('aria-label', 'Open What was sent: ' + (text || 'work status') + (value.elapsedSeconds !== undefined && value.elapsedSeconds >= 30 ? `, ${Math.floor(value.elapsedSeconds)} seconds` : '') + '.');
+    activityButton.setAttribute('aria-label', 'Open What was sent: ' + (text || 'work status') + (elapsedSeconds !== undefined && elapsedSeconds >= 30 ? `, ${Math.floor(elapsedSeconds)} seconds` : '') + '.');
     activityButton.title = text; activityButton.textContent = text;
+  }
+  function flowActivity(value: { phase: string; elapsedSeconds?: number }) {
+    const working = ['queued', 'sending', 'working', 'provisional', 'validating', 'loading-reply', 'cancel_requested'].includes(value.phase);
+    return { text: working ? 'Working' : value.phase === 'committed' ? 'Ready' : value.phase === 'unknown' || value.phase === 'timed_out' ? 'Outcome unconfirmed' : value.phase === 'failed' ? 'Failed' : value.phase === 'cancelled' ? 'Cancelled' : '', elapsedSeconds: value.elapsedSeconds };
+  }
+  function updateActivity(value: { phase: string; sending?: boolean; elapsedSeconds?: number }) {
+    if (!alive()) return;
+    const generation = ++activityGeneration;
+    const fallback = flowActivity(value);
+    // Asking-flow state describes work, not network observation. It may never
+    // light the sending indicator on its own.
+    showActivity(fallback.text, false, fallback.elapsedSeconds);
+    const jobId = activityJobId;
+    if (!jobId) return;
+    void (async () => {
+      try {
+        const client = trustedHelper(), epoch = client.connectionVersion;
+        const job = await client.request('/api/jobs/' + encodeURIComponent(jobId), undefined, signal) as JobSnapshot;
+        if (!alive() || generation !== activityGeneration || helper !== client || epoch !== client.connectionVersion || job.id !== jobId) return;
+        const measured = egressMeasurements(job);
+        const activeHandoff = measured.handoffRecorded && job.state === 'sending';
+        showActivity(activeHandoff ? 'Request passed to Codex' : flowActivity({ ...value, phase: job.state === 'running' ? 'working' : job.state === 'succeeded' ? 'committed' : job.state }).text,
+          false, value.elapsedSeconds);
+      } catch {
+        if (alive() && generation === activityGeneration) showActivity('Sending status is unavailable', false, value.elapsedSeconds);
+      }
+    })();
   }
   function closeEgress() { ++egressGeneration; egressSheet.hidden = true; egressSheet.replaceChildren(); activityButton.focus(); }
   async function openEgress() {
@@ -305,7 +346,16 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       if (!alive() || generation !== egressGeneration || helper !== client || epoch !== client.connectionVersion) return;
       if (job.id !== jobId) throw new Error('The stored record does not match this activity.');
       const record = egressRecord(job);
+      const measured = egressMeasurements(job);
       content.replaceChildren(el('p', record.summary));
+      content.append(el('h3', 'Size of reviewed content'), el('p', measured.reviewedBytes === null
+        ? 'Unknown for this record. No measurement is backfilled.'
+        : `${measured.reviewedBytes} UTF-8 bytes. This is reviewed content size, not bytes transmitted.`));
+      content.append(el('h3', 'Provider handoff'), el('p', measured.handoffRecorded
+        ? 'Recorded in the durable attempt record.'
+        : 'No durable provider handoff is recorded.'));
+      content.append(el('h3', 'Observed transmission'), el('p',
+        'Not observed. This record can establish provider handoff, but it does not prove physical transmission.'));
       for (const [label, value] of record.fields) content.append(el('h3', label), el('p', value));
       const packet = el('pre', canonicalReplyData(record.packet));
       packet.style.whiteSpace = 'pre-wrap'; packet.style.overflowWrap = 'anywhere';
