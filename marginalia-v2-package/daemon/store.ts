@@ -123,6 +123,19 @@ export class ReaderStore {
           if (this.db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Source migration would leave invalid references.');
       })();
     }
+    if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=33001').get()) {
+      this.db.exec(`
+        ALTER TABLE source_versions ADD COLUMN author TEXT;
+        ALTER TABLE source_versions ADD COLUMN publicationDate TEXT;
+        ALTER TABLE source_versions ADD COLUMN venue TEXT;
+        DROP INDEX source_versions_material_identity;
+        CREATE UNIQUE INDEX source_versions_material_identity ON source_versions(
+          sourceId,hash,extractionVersion,sections,metadataStatus,
+          title IS NULL,COALESCE(title,''),pageType IS NULL,COALESCE(pageType,''),
+          author IS NULL,COALESCE(author,''),publicationDate IS NULL,COALESCE(publicationDate,''),venue IS NULL,COALESCE(venue,''));
+        INSERT INTO migrations(version) VALUES(33001);
+      `);
+    }
     if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=7002').get()) {
       this.db.exec(`ALTER TABLE sources ADD COLUMN position TEXT; INSERT INTO migrations(version) VALUES(7002);`);
     }
@@ -138,6 +151,36 @@ export class ReaderStore {
         ${hasReplies ? 'CREATE INDEX IF NOT EXISTS replies_by_thread ON reply_versions(threadId,createdAt,id);' : ''}
         INSERT INTO migrations(version) VALUES(7004);
       `);
+    }
+    if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=22001').get()) {
+      const alreadyUpgraded = (this.db.prepare('PRAGMA table_info(vocabulary)').all() as { name: string }[]).some(column => column.name === 'termKey');
+      if (!alreadyUpgraded) {
+        this.db.transaction(() => {
+          const historical = this.db.prepare('SELECT term,origin,status,firstSeen,lastSeen FROM vocabulary').all() as Array<{ term: string; origin: string; status: string; firstSeen: string; lastSeen: string }>;
+          this.db.exec(`
+            CREATE TABLE vocabulary_v2(termKey TEXT PRIMARY KEY,term TEXT NOT NULL,status TEXT NOT NULL,firstSeen TEXT NOT NULL,lastSeen TEXT NOT NULL);
+            CREATE TABLE vocabulary_origins(operationId TEXT PRIMARY KEY,termKey TEXT NOT NULL REFERENCES vocabulary_v2(termKey) ON DELETE CASCADE,origin TEXT NOT NULL,observedAt TEXT NOT NULL,sourceKind TEXT NOT NULL,sourceId TEXT,sourceRevision INTEGER);
+            CREATE INDEX vocabulary_origins_by_term ON vocabulary_origins(termKey,observedAt,operationId);
+            CREATE TABLE vocabulary_operations(operationId TEXT PRIMARY KEY,digest TEXT NOT NULL,termKey TEXT REFERENCES vocabulary_v2(termKey) ON DELETE SET NULL,createdAt TEXT NOT NULL,deletedAt TEXT);
+          `);
+          for (const row of historical) {
+            const term = normalizeHistoricalVocabularyTerm(row.term), termKey = vocabularyTermKey(term);
+            const current = this.db.prepare('SELECT status,firstSeen,lastSeen FROM vocabulary_v2 WHERE termKey=?').get(termKey) as { status: string; firstSeen: string; lastSeen: string } | undefined;
+            if (!current) this.db.prepare('INSERT INTO vocabulary_v2 VALUES(?,?,?,?,?)').run(termKey, term, row.status, row.firstSeen, row.lastSeen);
+            else if (current.status !== row.status) throw new Error('Historical vocabulary statuses conflict after normalization. Nothing was migrated.');
+            else this.db.prepare('UPDATE vocabulary_v2 SET firstSeen=?,lastSeen=? WHERE termKey=?').run(row.firstSeen < current.firstSeen ? row.firstSeen : current.firstSeen, row.lastSeen > current.lastSeen ? row.lastSeen : current.lastSeen, termKey);
+            // Older builds used the shorter lookup/note labels. Preserve those
+            // attributable observations before dropping the legacy table; only
+            // an origin we cannot interpret becomes legacy.
+            const origin = row.origin === 'lookup' ? 'looked-up' : row.origin === 'note' ? 'used'
+              : ['used', 'looked-up', 'stated', 'legacy'].includes(row.origin) ? row.origin : 'legacy';
+            const operationId = `legacy-${digest(JSON.stringify([row.term, row.firstSeen, row.lastSeen, row.origin]))}`;
+            this.db.prepare('INSERT OR IGNORE INTO vocabulary_origins VALUES(?,?,?,?,?,?,?)').run(operationId, termKey, origin, row.firstSeen, 'reader', null, null);
+          }
+          this.db.exec(`DROP TABLE vocabulary; ALTER TABLE vocabulary_v2 RENAME TO vocabulary;`);
+        })();
+      }
+      this.db.prepare('INSERT INTO migrations(version) VALUES(22001)').run();
     }
   }
   close() { this.db.close(); }
@@ -206,25 +249,29 @@ export class ReaderStore {
       : [];
     const sections = normalizedSections.length ? JSON.stringify(normalizedSections) : '';
     const title = provided ? capture.title : null, pageType = provided ? capture.pageType : null;
+    const author = provided ? capture.author ?? null : null;
+    const publicationDate = provided ? capture.publicationDate ?? null : null;
+    const venue = provided ? capture.venue ?? null : null;
     const metadataStatus = provided ? 'provided' : 'unavailable';
     // Reuse old IDs only when their actual immutable metadata also matches. Capture time
     // alone does not create a new version, and legacy/unavailable facts are never upgraded.
-    const existing = this.db.prepare(`SELECT id FROM source_versions WHERE sourceId=? AND hash=? AND extractionVersion=? AND sections=? AND metadataStatus=? AND title IS ? AND pageType IS ?`)
-      .get(sourceId, hash, extractionVersion, sections, metadataStatus, title, pageType) as { id: string } | undefined;
+    const existing = this.db.prepare(`SELECT id FROM source_versions WHERE sourceId=? AND hash=? AND extractionVersion=? AND sections=? AND metadataStatus=? AND title IS ? AND pageType IS ? AND author IS ? AND publicationDate IS ? AND venue IS ?`)
+      .get(sourceId, hash, extractionVersion, sections, metadataStatus, title, pageType, author, publicationDate, venue) as { id: string } | undefined;
     const versionId = existing?.id ?? digest(canonicalReplyData([
       'source-version-metadata-v1', sourceId, hash, extractionVersion, normalizedSections, metadataStatus, title, pageType,
+      ...(author !== null || publicationDate !== null || venue !== null ? [author, publicationDate, venue] : []),
     ]));
     if (provided) this.db.prepare('INSERT OR IGNORE INTO sources(id,url,title,pageType) VALUES(?,?,?,?)').run(sourceId, capture.url, capture.title, capture.pageType);
-    this.db.prepare('INSERT OR IGNORE INTO source_versions(id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections) VALUES(?,?,?,?,?,?,?,?,?,?)')
-      .run(versionId, sourceId, hash, capture.text, provided ? capture.capturedAt : '', extractionVersion, title, pageType, metadataStatus, sections);
+    this.db.prepare('INSERT OR IGNORE INTO source_versions(id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections,author,publicationDate,venue) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(versionId, sourceId, hash, capture.text, provided ? capture.capturedAt : '', extractionVersion, title, pageType, metadataStatus, sections, author, publicationDate, venue);
     this.db.prepare('INSERT INTO search(entityId,kind,content) SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM search WHERE entityId=? AND kind=?)').run(versionId, 'source', capture.text, versionId, 'source');
     return versionId;
   }
   sourceVersion(id: string): SourceVersion | undefined {
-    const row = this.db.prepare('SELECT * FROM source_versions WHERE id=?').get(id) as (Omit<SourceVersion, 'sections'> & { sections: string }) | undefined;
+    const row = this.db.prepare('SELECT * FROM source_versions WHERE id=?').get(id) as (Omit<SourceVersion, 'sections' | 'author' | 'publicationDate' | 'venue'> & { sections: string; author: string | null; publicationDate: string | null; venue: string | null }) | undefined;
     if (!row) return;
-    const { sections, ...version } = row;
-    return { ...version, capturedAt: version.capturedAt || null, extractionVersion: version.extractionVersion || null, ...(sections ? { sections: JSON.parse(sections) as SourceSection[] } : {}) };
+    const { sections, author, publicationDate, venue, ...version } = row;
+    return { ...version, ...(author !== null ? { author } : {}), ...(publicationDate !== null ? { publicationDate } : {}), ...(venue !== null ? { venue } : {}), capturedAt: version.capturedAt || null, extractionVersion: version.extractionVersion || null, ...(sections ? { sections: JSON.parse(sections) as SourceSection[] } : {}) };
   }
   readerPosition(url: string): QuoteAnchor | undefined {
     const row = this.db.prepare('SELECT position FROM sources WHERE url=?').get(url) as { position: string | null } | undefined;
@@ -351,7 +398,19 @@ export class ReaderStore {
     const row = this.db.prepare('SELECT * FROM reply_versions WHERE id=?').get(id) as (Omit<ReplyVersion, 'reply' | 'validation' | 'answeredNote'> & { json: string; validation: string; answeredNote: string | null }) | undefined;
     if (!row) return;
     const { json, validation, answeredNote, ...record } = row;
-    return { ...record, reply: JSON.parse(json), validation: JSON.parse(validation), answeredNote: answeredNote ? JSON.parse(answeredNote) : null };
+    // UNION deduplicates shared ancestry and terminates even for damaged cyclic data.
+    // Superseding a descendant does not prove that its inherited dependencies were repaired.
+    const corrections = this.db.prepare(`WITH RECURSIVE lineage(id) AS (
+      SELECT id FROM reply_versions WHERE id=?
+      UNION
+      SELECT parent.id FROM reply_versions child JOIN lineage ON child.id=lineage.id
+        JOIN reply_versions parent ON parent.id=child.parentId OR parent.id=child.supersedes
+    ) SELECT ancestor.id AS ancestorId, json_extract(ancestor.json,'$.title') AS ancestorTitle,
+      correction.id AS correctionId, correction.createdAt AS correctedAt
+      FROM lineage JOIN reply_versions ancestor ON ancestor.id=lineage.id
+      JOIN reply_versions correction ON correction.supersedes=ancestor.id
+      ORDER BY correction.createdAt,correction.id,ancestor.id`).all(id) as NonNullable<ReplyVersion['corrections']>;
+    return { ...record, reply: JSON.parse(json), validation: JSON.parse(validation), answeredNote: answeredNote ? JSON.parse(answeredNote) : null, corrections };
   }
   replies(threadId: string, includeRemoved = false): ReplyVersion[] {
     const rows = this.db.prepare('SELECT id FROM reply_versions WHERE threadId=? ORDER BY createdAt,id').all(threadId) as { id: string }[];
@@ -526,9 +585,16 @@ function exportRequest(serialized: string): HistoryRow {
 }
 
 // Membership, not MAX(version): T06/T13 share this database but own their migrations.
-const READER_MIGRATIONS = [1, 2, 4, 7001, 7002, 7004] as const;
+function normalizeHistoricalVocabularyTerm(value: string): string {
+  const term = typeof value === 'string' ? value.normalize('NFC').trim().replace(/\s+/gu, ' ') : '';
+  if (!term) throw new Error('A historical vocabulary term is invalid. Nothing was migrated.');
+  return term;
+}
+function vocabularyTermKey(value: string): string { return value.normalize('NFC').trim().replace(/\s+/gu, ' '); }
+
+const READER_MIGRATIONS = [1, 2, 4, 7001, 7002, 7004, 22001, 33001] as const;
 const KNOWN_MIGRATIONS = new Set<number>([...READER_MIGRATIONS, 3, 13]);
-type ReaderSchema = { versions: number[]; hasSchema: boolean };
+type ReaderSchema = { versions: number[]; hasSchema: boolean; vocabularyV2: boolean };
 type BackupManifest = { schema: 'marginalia.reader-backup.v1'; createdAt: string; versions: number[]; sha256: string };
 
 export class UnsupportedReaderSchemaError extends Error {
@@ -555,7 +621,7 @@ function inspectReaderSchema(db: Database.Database): ReaderSchema {
   const hasSchema = objects.length > 0;
   if (!objects.some(object => object.name === 'migrations' && object.type === 'table')) {
     if (hasSchema) throw new UnsupportedReaderSchemaError('This database has no recognized migration history. Nothing was migrated.');
-    return { versions: [], hasSchema: false };
+    return { versions: [], hasSchema: false, vocabularyV2: false };
   }
   const columns = db.prepare('PRAGMA table_info(migrations)').all() as { name: string; type: string; pk: number }[];
   if (columns.length !== 1 || columns[0].name !== 'version' || columns[0].type.toUpperCase() !== 'INTEGER' || columns[0].pk !== 1) {
@@ -565,10 +631,13 @@ function inspectReaderSchema(db: Database.Database): ReaderSchema {
   if (versions.some(version => !Number.isSafeInteger(version) || !KNOWN_MIGRATIONS.has(version)) || (!versions.length && objects.some(object => object.name !== 'migrations'))) {
     throw new UnsupportedReaderSchemaError('This database contains a newer or unknown migration. Open it with a compatible build. Nothing was migrated.');
   }
-  return { versions, hasSchema };
+  const vocabularyV2 = objects.some(object => object.name === 'vocabulary' && object.type === 'table')
+    && (db.prepare('PRAGMA table_info(vocabulary)').all() as { name: string }[]).some(column => column.name === 'termKey');
+  if (versions.includes(22001) && !vocabularyV2) throw new UnsupportedReaderSchemaError('The vocabulary migration marker does not match its schema. Nothing was migrated.');
+  return { versions, hasSchema, vocabularyV2 };
 }
 function needsReaderMigration(schema: ReaderSchema) {
-  return READER_MIGRATIONS.some(version => !schema.versions.includes(version));
+  return READER_MIGRATIONS.some(version => !schema.versions.includes(version)) || !schema.vocabularyV2;
 }
 function verifySqliteIntegrity(db: Database.Database) {
   const rows = db.prepare('PRAGMA integrity_check').all() as { integrity_check: string }[];

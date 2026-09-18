@@ -1,7 +1,7 @@
-import { validateSourceCapture, type ReaderMutation, type ReattachRequest, type ReattachResponse, type Thread, type ReplyVersion, type ReplyViewState, type SourceVersion } from '../contracts/reader.ts';
+import { validateSourceCapture, type ReaderMutation, type ReattachRequest, type ReattachResponse, type Thread, type ReplyVersion, type ReplyViewState, type SourceVersion, type ReplyRemovalChange } from '../contracts/reader.ts';
 import type { HostCheckReport } from '../contracts/host-checks.ts';
 import type { ConsentGrant, SiteExclusion } from '../contracts/consent.ts';
-import type { ModelSettings, VocabularyEntry } from '../contracts/library.ts';
+import type { LibrarySearchResult, ModelSettings, VocabularyEntry, VocabularyObservation, VocabularyObservationResult } from '../contracts/library.ts';
 import type { SolverExecuteRequest, SolverOutcome, SolverPlanOutcome, SolverPlanRequest } from '../contracts/solver.ts';
 import type { ReplyViewChange } from './persistence.ts';
 
@@ -9,6 +9,8 @@ const readRoutes = new Map([
   ['/api/threads', '/api/read/threads'],
   ['/api/replies', '/api/read/replies'],
   ['/api/reply-view', '/api/read/reply-view'],
+  ['/api/library-search', '/api/read/library-search'],
+  ['/api/library-related', '/api/read/library-related'],
 ]);
 
 export class HelperTransportError extends Error {
@@ -169,12 +171,15 @@ export class HelperClient {
     return validateReattachResponse(result, snapshot);
   }
   async list(): Promise<Thread[]> { return (await this.read('/api/threads?removed=true')).threads; }
+  async searchLibrary(query: string): Promise<LibrarySearchResult[]> { return (await this.read('/api/library-search?q=' + encodeURIComponent(query))).results; }
+  async relatedLibrary(threadId: string): Promise<LibrarySearchResult[]> { return (await this.read('/api/library-related?thread=' + encodeURIComponent(threadId))).results; }
   async exportThread(id: string): Promise<{ thread: Thread; source: SourceVersion; replies: ReplyVersion[]; replyViews: ReplyViewState[]; [key: string]: unknown }> {
     return this.request('/api/export?thread=' + encodeURIComponent(id));
   }
   async models(): Promise<ModelSettings> { return (await this.request('/api/settings/models')).models; }
   async saveModels(change: { fast: string; deep: string; expectedRevision: number }): Promise<ModelSettings> { return (await this.request('/api/settings/models', change)).models; }
   async vocabulary(): Promise<VocabularyEntry[]> { return (await this.request('/api/vocabulary')).vocabulary; }
+  async observeVocabulary(observation: VocabularyObservation): Promise<VocabularyObservationResult> { return this.request('/api/vocabulary/observe', observation); }
   async deleteVocabulary(term: string): Promise<void> { await this.request('/api/vocabulary/delete', { term }); }
   async permissions(signal: AbortSignal): Promise<{ grants: ConsentGrant[]; exclusions: SiteExclusion[] }> { return this.request('/api/consent/settings', undefined, signal); }
   async revokeGrant(grant: ConsentGrant, signal: AbortSignal): Promise<ConsentGrant> {
@@ -191,6 +196,9 @@ export class HelperClient {
   }
   async saveReplyView(threadId: string, change: ReplyViewChange): Promise<ReplyViewState> {
     return (await this.request('/api/reply-view', { threadId, ...change })).view;
+  }
+  async setReplyRemoved(change: ReplyRemovalChange): Promise<ReplyVersion> {
+    return (await this.request('/api/reply-removal', change)).reply;
   }
   async checkReply(threadId: string, replyVersionId: string, parameters: Readonly<Record<string, number>>): Promise<HostCheckReport> {
     return (await this.request('/api/reply-check', { threadId, replyVersionId, parameters })).report;
@@ -219,11 +227,13 @@ export function documentHelper(namespace: string, origin: string): HelperClient 
 export function libraryAdapters(
   connection: () => HelperClient,
   restore: (client: HelperClient, thread: Thread) => Promise<Thread>,
-  callbacks: Pick<import('./library/index.ts').MountLibraryOptions, 'onOpenThread' | 'onClose'>,
+  callbacks: Pick<import('./library/index.ts').MountLibraryOptions, 'onOpenThread' | 'onClose' | 'onOpenPassage'>,
 ): import('./library/index.ts').MountLibraryOptions {
   return {
     ...callbacks,
     listThreads: () => connection().list(),
+    search: query => connection().searchLibrary(query),
+    related: threadId => connection().relatedLibrary(threadId),
     exportThread: id => connection().exportThread(id),
     restoreThread: thread => restore(connection(), thread),
     loadModels: () => connection().models(),

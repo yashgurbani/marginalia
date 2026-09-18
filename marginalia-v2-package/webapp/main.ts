@@ -3,7 +3,10 @@ import { mountMargin, threadContentKey } from '../ui/margin.ts';
 import { localPersistence } from '../ui/persistence.ts';
 import { libraryAdapters } from '../ui/helper.ts';
 import { mountLibrary, type LibraryMount } from './library/index.ts';
-import { validateSourceCapture, type Thread, type SourceCapture } from '../contracts/reader.ts';
+import type { Thread } from '../contracts/reader.ts';
+import type { LibrarySearchResult } from '../contracts/library.ts';
+import { focusSavedPassage, validateSavedPassage } from '../ui/library/passage.ts';
+import { sourceCaptureFromVersion } from '../ui/library-entry.ts';
 import '../ui/margin.css';
 import '../ui/helper-management.css';
 
@@ -50,6 +53,11 @@ function openLibrary() {
       return persistence.library.restore(client.origin, thread, async mutation => { current(); await client.change(mutation); }, async () => { current(); return client.list(); });
     }, {
       onClose: closeLibrary,
+      onOpenPassage: async (thread, result, isCurrentSearch) => {
+        if (opening.has(thread.id)) return;
+        opening.add(thread.id);
+        try { await openSavedThread(thread, request, connection, result, isCurrentSearch); } finally { opening.delete(thread.id); }
+      },
       onOpenThread: async thread => {
         if (opening.has(thread.id)) return;
         opening.add(thread.id);
@@ -65,28 +73,30 @@ function openLibrary() {
       };
     }
     library = mountLibrary(libraryHost, adapters);
-    status.textContent = 'Saved helper threads and settings. Other reading drafts remain open. Full-library search is not available here.';
+    status.textContent = 'Saved helper threads, local passage search and settings. Other reading drafts remain open.';
     libraryHost.querySelector<HTMLElement>('button')?.focus();
   })().catch(error => { status.textContent = error instanceof Error ? error.message : 'The library is unavailable. Your reading draft is retained.'; });
 }
-async function openSavedThread(thread: Thread, request: number, connection: () => ReturnType<Awaited<ReturnType<typeof mountMargin>>['connection']>) {
+async function openSavedThread(thread: Thread, request: number, connection: () => ReturnType<Awaited<ReturnType<typeof mountMargin>>['connection']>, result?: LibrarySearchResult, isCurrentSearch: () => boolean = () => true) {
   if (request !== generation || thread.deletedAt) throw new Error('Restore a removed thread deliberately before opening it.');
   const client = connection(), epoch = client.connectionVersion;
   const bundle = await client.exportThread(thread.id);
-  const current = () => request === generation && client === connection() && epoch === client.connectionVersion;
+  const current = () => request === generation && isCurrentSearch() && client === connection() && epoch === client.connectionVersion;
   if (!current()) return;
   if (bundle.thread.id !== thread.id || bundle.thread.deletedAt || bundle.thread.sourceUrl !== thread.sourceUrl || bundle.thread.sourceVersionId !== thread.sourceVersionId || !bundle.source || bundle.source.id !== bundle.thread.sourceVersionId) throw new Error('The helper did not return the current nonremoved thread and original source. Reload the library.');
   const version = bundle.source;
+  if (result) validateSavedPassage(result, version, thread.id);
   if (!version.capturedAt || !version.extractionVersion || version.title === null || version.pageType === null || version.metadataStatus !== 'provided') throw new Error('This saved source has incomplete capture metadata. JSON export remains available; opening it needs the legacy-source contract.');
   const retained = savedViews.get(thread.id);
   if (retained) {
     if (retained.sourceId !== version.id || threadContentKey(retained.margin.getThread(thread.id) ?? bundle.thread) !== threadContentKey(bundle.thread)) throw new Error('This thread changed while its editor was open. The connected editor and inputs are retained; synchronize them explicitly before reopening.');
-    library?.destroy(); library = undefined; libraryHost.hidden = true; hideSaved(); retained.root.hidden = false; retained.margin.resume(); activeSaved = retained.root; retained.margin.focusThread(thread.id); return;
+    library?.destroy(); library = undefined; libraryHost.hidden = true; hideSaved(); retained.root.hidden = false; retained.margin.resume(); activeSaved = retained.root; retained.margin.focusThread(thread.id);
+    if (result) focusSavedPassage(retained.root.querySelector<HTMLElement>('.m-captured-text')!, result);
+    return;
   }
   await persistence.replies.refresh(client.origin, thread.id, () => persistence.replies.cache(client.origin, thread.id, version, bundle.replies, bundle.replyViews));
   if (!current()) return;
-  const capture: SourceCapture = { url: bundle.thread.sourceUrl, title: version.title, pageType: version.pageType, text: version.text, capturedAt: version.capturedAt, extractionVersion: version.extractionVersion, ...(version.sections ? { sections: structuredClone(version.sections) } : {}) };
-  validateSourceCapture(capture); // No fabricated dates, selectors, or unsafe source URL.
+  const capture = sourceCaptureFromVersion(bundle.thread.sourceUrl, version);
   const root = document.createElement('section'); root.className = 'm-saved-workspace'; root.hidden = true;
   const article = document.createElement('article'); article.className = 'm-captured-source';
   const label = document.createElement('p'); label.textContent = 'Saved source capture, not a newly fetched page.';
@@ -102,5 +112,6 @@ async function openSavedThread(thread: Thread, request: number, connection: () =
   if (!current()) { mounted.suspend(); return; }
   library?.destroy(); library = undefined; libraryHost.hidden = true; hideSaved(); root.hidden = false; mounted.resume(); activeSaved = root; reading.hidden = true;
   mounted.focusThread(thread.id); status.textContent = 'Opened original saved work. Other drafts remain connected. Nothing was synchronized or asked automatically.';
+  if (result) { focusSavedPassage(source, result); status.textContent = 'Opened and selected the cited passage in the saved source capture.'; }
 }
 if (import.meta.env?.PROD && 'serviceWorker' in navigator) void navigator.serviceWorker.register('/sw.js').catch(() => {});

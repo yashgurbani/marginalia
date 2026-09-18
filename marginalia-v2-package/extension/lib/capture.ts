@@ -1,9 +1,35 @@
 import * as position from 'dom-anchor-text-position';
 import * as quote from 'dom-anchor-text-quote';
-import { attachQuote, type QuoteAnchor } from '../../contracts/reader.ts';
+import { attachQuote, validPublicationDate, type QuoteAnchor } from '../../contracts/reader.ts';
 import { MAX_TEXT, pageIdentity, type Snapshot } from './protocol.ts';
 
 export type SectionMarker = { heading: Element; start: number };
+
+const metadataNames = {
+  author: ['author', 'article:author', 'citation_author', 'dc.creator', 'byl'],
+  publicationDate: ['article:published_time', 'date', 'datepublished', 'citation_publication_date', 'citation_date', 'dc.date'],
+  venue: ['citation_journal_title', 'citation_conference_title', 'og:site_name', 'publisher'],
+} as const;
+
+/** Reads only metadata already present in this document. It performs no lookup and
+ * does not derive facts from the URL, title, prose, or page type. */
+export function extractPageMetadata(source: Pick<Document, 'querySelectorAll'> = document) {
+  const observed = new Map<string, string[]>();
+  for (const element of Array.from(source.querySelectorAll('meta'))) {
+    const name = (element.getAttribute('name') ?? element.getAttribute('property') ?? element.getAttribute('itemprop') ?? '').trim().toLowerCase();
+    const content = (element.getAttribute('content') ?? '').replace(/\s+/g, ' ').trim();
+    if (!name || !content) continue;
+    const values = observed.get(name) ?? [];
+    values.push(content); observed.set(name, values);
+  }
+  const first = (names: readonly string[], valid: (value: string) => boolean = () => true) => {
+    for (const name of names) for (const value of observed.get(name) ?? []) if (valid(value)) return value;
+  };
+  const author = first(metadataNames.author, value => value.length <= 500 && !/[\u0000-\u001f\u007f]/.test(value));
+  const publicationDate = first(metadataNames.publicationDate, validPublicationDate);
+  const venue = first(metadataNames.venue, value => value.length <= 500 && !/[\u0000-\u001f\u007f]/.test(value));
+  return { ...(author ? { author } : {}), ...(publicationDate ? { publicationDate } : {}), ...(venue ? { venue } : {}) };
+}
 
 const excluded = 'script,style,noscript,template,form,input,textarea,select,button,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"],[hidden],[inert],[aria-hidden="true"],[id^="marginalia-host-"]';
 export function safeNode(node: Node): boolean {
@@ -64,7 +90,7 @@ export function captureSelection(documentId: string, revision: number, requireSe
     } else if (requireSelection) return null;
   }
   onSections?.(projection.markers);
-  return { document: documentId, revision, anchor, position: anchor?.start ?? 0, sections: projection.sections, capture: { url: pageIdentity(location.href), title: document.title.slice(0, 500), pageType: location.hostname.endsWith('arxiv.org') ? 'Paper' : 'Web page', text: projection.text, capturedAt: new Date().toISOString(), extractionVersion: 'dom-safe-text-v1', sections: projection.sections } };
+  return { document: documentId, revision, anchor, position: anchor?.start ?? 0, sections: projection.sections, capture: { url: pageIdentity(location.href), title: document.title.slice(0, 500), pageType: location.hostname.endsWith('arxiv.org') ? 'Paper' : 'Web page', ...extractPageMetadata(), text: projection.text, capturedAt: new Date().toISOString(), extractionVersion: 'dom-safe-text-v1', sections: projection.sections } };
 }
 export function locate(anchor: QuoteAnchor): Range | null {
   const projection = projectPage(), attachment = attachQuote(anchor, projection.text);

@@ -24,7 +24,7 @@ function gridReply(): CandidateReply {
 }
 const solver: SolverBlock = { id: 'saved-solver', type: 'solver', path: 'solver/main.js', inputNames: ['gamma', 'f', 'y0'], outputBlocks: ['grid'] };
 
-test('Stage 0 selection, Move it, reviewed explicit send, saved grid, local slider and explicit solver preparation', async t => {
+test('Stage 0 selection, See it, reviewed explicit send, saved grid, local slider and explicit solver preparation', async t => {
   const localFetch = globalThis.fetch;
   const e = { ...dom(t), ...storage(t) }, namespace = crypto.randomUUID();
   replaceGlobals(t, { fetch: localFetch });
@@ -36,7 +36,7 @@ test('Stage 0 selection, Move it, reviewed explicit send, saved grid, local slid
   let mounted: ReturnType<typeof mountReply> | undefined;
   try {
     const daemon = await trip.start('stage0');
-    api.select(mutation.anchor); button(e.root, 'Ask').click(); button(e.root, 'Move it').click(); await api.drain();
+    api.select(mutation.anchor); button(e.root, 'Ask').click(); button(e.root, 'See it').click(); await api.drain();
     const draft = [...e.data(namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as AskingSelection;
     assert.equal(draft.intent, 'simulate'); assert.deepEqual(draft.anchor, mutation.anchor);
     assert.equal((await trip.calls()).length, 0);

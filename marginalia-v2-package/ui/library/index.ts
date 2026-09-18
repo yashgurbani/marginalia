@@ -1,10 +1,11 @@
 import type { ConsentGrant, SiteExclusion } from '../../contracts/consent.ts';
-import type { ModelSettings, VocabularyEntry } from '../../contracts/library.ts';
+import { vocabularyOriginLabels, type LibrarySearchResult, type ModelSettings, type VocabularyEntry, type VocabularyOriginKind } from '../../contracts/library.ts';
 import { providerCapabilities } from '../../contracts/provider-capabilities.ts';
 import type { Thread, ThreadState } from '../../contracts/reader.ts';
 import { mountConsentSettings } from '../consent.ts';
-import { wholeLibraryExport, type LibraryThreadExport } from './export.ts';
 import { retainedCopiesSection } from '../retained-copies.ts';
+import { wholeLibraryExport, type LibraryThreadExport } from './export.ts';
+import { mountLibrarySearch } from './search.ts';
 
 export type LibraryPermissions = {
   load(signal: AbortSignal): Promise<{ grants: ConsentGrant[]; exclusions: SiteExclusion[] }>;
@@ -16,6 +17,9 @@ export type MountLibraryOptions = {
   listThreads(): Promise<Thread[]>;
   exportThread(id: string): Promise<unknown>;
   onOpenThread(thread: Thread): void | Promise<void>;
+  search?(query: string): Promise<LibrarySearchResult[]>;
+  related?(threadId: string): Promise<LibrarySearchResult[]>;
+  onOpenPassage?(thread: Thread, result: LibrarySearchResult, current: () => boolean): void | Promise<void>;
   onClose(): void | Promise<void>;
   onManagePermissions?(): void | Promise<void>;
   restoreThread?(thread: Thread): Promise<Thread>;
@@ -54,6 +58,17 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
   const live = el('p', undefined, 'ml__live'); live.setAttribute('role', 'status'); live.setAttribute('aria-live', 'polite');
   const permissionsHost = el('div', undefined, 'ml__permissions');
   const libraryHost = el('div'), settingsHost = el('div'), providersHost = el('div'), modelsHost = el('div'), vocabularyHost = el('div');
+  const searchHost = el('div');
+  const searchMount = options.search && options.onOpenPassage ? mountLibrarySearch(searchHost, {
+    search: options.search, related: options.related,
+    open: async (result, isCurrentSearch) => {
+      const latest = await owned(() => options.listThreads());
+      if (!current() || !isCurrentSearch()) return;
+      const thread = latest.find(value => value.id === result.threadId);
+      if (!thread || thread.deletedAt || thread.sourceVersionId !== result.sourceVersionId) throw new Error('This search result is no longer available. Search again.');
+      await options.onOpenPassage!(thread, result, isCurrentSearch);
+    },
+  }) : undefined;
   const lede = el('p', undefined, 'ml__lede');
   const viewControls: Array<[View, HTMLButtonElement]> = [];
   host.replaceChildren(root);
@@ -78,13 +93,14 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
     if (!current()) return;
     lede.textContent = view === 'library' ? 'The work you kept beside what you read.' : 'Choices for help, privacy, and your words.';
     for (const [page, control] of viewControls) control.setAttribute('aria-current', view === page ? 'page' : 'false');
-    libraryHost.hidden = view !== 'library'; settingsHost.hidden = view !== 'settings';
+    libraryHost.hidden = view !== 'library'; searchHost.hidden = view !== 'library'; settingsHost.hidden = view !== 'settings';
     if (view === 'library') replaceFocused(libraryHost, renderLibrary());
     live.textContent = status;
   };
   const changeView = (next: View, text = '') => {
     if (!current() || view === next) return;
     navigation++; exportLoad++; exportPreview = undefined;
+    searchMount?.cancel();
     view = next; announce(text); render();
     if (next === 'settings') loadSettings();
   };
@@ -132,7 +148,10 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
       const restore = button('Restore and open', () => void restoreAndOpen(thread), '', `restore-${thread.id}`);
       if (!options.restoreThread) { restore.disabled = true; restore.title = 'Restore is unavailable until the local helper is updated.'; }
       actions.append(restore);
-    } else actions.append(button('Open', () => void openThread(thread), '', `open-${thread.id}`));
+    } else {
+      actions.append(button('Open', () => void openThread(thread), '', `open-${thread.id}`));
+      if (searchMount && options.related) actions.append(button('Related saved passages', () => searchMount.related(thread.id, thread.sourceTitle), 'ml__quiet'));
+    }
     actions.append(button('Export JSON', () => void exportOne(thread), 'ml__quiet', `export-${thread.id}`));
     item.append(copy, actions); return item;
   };
@@ -245,7 +264,9 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
     const list = el('ul', undefined, 'ml-vocabulary');
     for (const entry of vocabulary) {
       const item = el('li'); const copy = el('span');
-      copy.append(el('strong', entry.term), el('span', `${originLabel(entry.origin)} · ${statusLabel(entry.status)}`, 'ml-vocabulary__meta'));
+      const visibleOrigins = entry.origins?.length ? entry.origins : [{ origin: legacyOrigin(entry.origin), observedAt: entry.firstSeen }];
+      copy.append(el('strong', entry.term), el('span', statusLabel(entry.status), 'ml-vocabulary__meta'));
+      for (const origin of visibleOrigins) copy.append(el('span', `${originLabel(origin.origin)} · ${dateLabel(origin.observedAt)}`, 'ml-vocabulary__meta'));
       const actions = el('span', undefined, 'ml-vocabulary__actions');
       vocabularyActions(entry, actions);
       item.append(copy, actions); list.append(item);
@@ -450,10 +471,10 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
   heading.append(titleWrap, close);
   const nav = el('nav', undefined, 'ml__nav'); nav.setAttribute('aria-label', 'Library pages');
   nav.append(viewButton('Library', 'library'), viewButton('Settings', 'settings'));
-  settingsHost.append(renderSettings()); root.append(heading, nav, live, libraryHost, settingsHost);
+  settingsHost.append(renderSettings()); root.append(heading, nav, live, searchHost, libraryHost, settingsHost);
   const mount: LibraryMount = { destroy() {
     if (destroyed) return;
-    destroyed = true; permissionMount?.destroy(); abort.abort(); deletingTerms.clear(); root.remove();
+    destroyed = true; searchMount?.destroy(); permissionMount?.destroy(); abort.abort(); deletingTerms.clear(); root.remove();
     if (mounts.get(host) === mount) mounts.delete(host);
   } };
   mounts.set(host, mount);
@@ -471,8 +492,9 @@ function cap(value: string) { return value.charAt(0).toUpperCase() + value.slice
 function emptyCopy(filter: Filter) { return filter === 'removed' ? 'Removed threads stay here until you deliberately restore one.' : `No ${filter} threads. Work you mark ${filter} will appear here.`; }
 function locationLabel(value: string) { try { const url = new URL(value); return `${url.hostname}${url.pathname === '/' ? '' : url.pathname}`; } catch { return value; } }
 function dateLabel(value: string) { const date = new Date(value); return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(date) : 'Date unavailable'; }
-function originLabel(value: string) { return value === 'lookup' || value === 'looked-up' ? 'Looked up' : value === 'note' || value === 'used' ? 'Used in your writing' : value === 'familiar' ? 'Marked familiar' : value; }
-function statusLabel(value: string) { return value === 'familiar' ? 'Familiar' : value === 'active' ? 'Remembered' : cap(value); }
+function legacyOrigin(value: string | undefined): VocabularyOriginKind { return value === 'lookup' || value === 'looked-up' ? 'looked-up' : value === 'note' || value === 'used' ? 'used' : value === 'stated' ? 'stated' : 'legacy'; }
+function originLabel(value: string) { return vocabularyOriginLabels[value as VocabularyOriginKind] ?? vocabularyOriginLabels.legacy; }
+function statusLabel(value: string) { return value === 'active' ? 'Remembered' : 'Saved entry'; }
 function safeFile(value: string) { return value.normalize('NFKD').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'marginalia-thread'; }
 function message(error: unknown, fallback: string) { return error instanceof Error && error.message ? error.message : fallback; }
 function download(content: string, type: string, filename: string) {

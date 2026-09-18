@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isDigest } from '../contracts/digest.ts';
-import type { ModelSelection, ModelSettings, ModelSettingsChange, ModelTier, VocabularyEntry } from '../contracts/library.ts';
+import type { LibraryMatchKind, LibrarySearchResult, ModelSelection, ModelSettings, ModelSettingsChange, ModelTier, RelatedLibraryResult, VocabularyEntry, VocabularyObservation, VocabularyObservationResult, VocabularyOrigin, VocabularyOriginKind, VocabularySourceReference } from '../contracts/library.ts';
 import type { Thread } from '../contracts/reader.ts';
 import { ConflictError, type ReaderStore } from './store.ts';
 
@@ -28,6 +28,67 @@ export class LibrarySettingsService {
   exportThread(id: string): unknown {
     requireId(id, 'thread');
     return this.reader.exportThread(id);
+  }
+
+  search(query: string, limit = 20): LibrarySearchResult[] {
+    const terms = searchTerms(query);
+    const bounded = resultLimit(limit);
+    if (!terms.length) return [];
+    return this.searchTerms(terms, bounded, false);
+  }
+
+  related(threadId: string, limit = 5): RelatedLibraryResult[] {
+    requireId(threadId, 'thread');
+    const thread = this.reader.get(threadId);
+    if (!thread || thread.deletedAt) throw new Error('This thread is unavailable.');
+    // Inspect only the first 300 characters of the saved anchor, at most eight terms.
+    const terms = searchTerms(thread.anchor.exact.slice(0, 300), 150).filter(term => term.length >= 4 && !RELATED_STOP_WORDS.has(term)).slice(0, 8);
+    if (!terms.length) return [];
+    return this.searchTerms(terms, resultLimit(limit, 8), true, thread.sourceVersionId)
+      .filter((result): result is RelatedLibraryResult => result.kind === 'source')
+      .map(result => ({ ...result, explanation: `Local word overlap with this saved passage: ${quotedTerms(result.matchedTerms)}. Up to eight words from its first 300 characters are compared; this does not establish a supporting source.` }));
+  }
+
+  private searchTerms(terms: string[], limit: number, sourceOnly: boolean, excludeSourceVersionId?: string): LibrarySearchResult[] {
+    const expression = terms.map(term => `"${term.replaceAll('"', '""')}"`).join(sourceOnly ? ' OR ' : ' AND ');
+    const rows = this.reader.db.prepare(`SELECT entityId,kind,content FROM search WHERE search MATCH ? ${sourceOnly ? "AND kind='source'" : ''}
+      AND ((kind='source' AND EXISTS(SELECT 1 FROM threads t JOIN anchors a ON a.id=t.anchorId WHERE a.sourceVersionId=search.entityId AND t.deletedAt IS NULL))
+        OR (kind='note' AND EXISTS(SELECT 1 FROM notes n JOIN threads t ON t.id=n.threadId WHERE n.id=search.entityId AND n.deletedAt IS NULL AND t.deletedAt IS NULL))
+        OR (kind='reply' AND EXISTS(SELECT 1 FROM reply_versions r JOIN threads t ON t.id=r.threadId WHERE r.id=search.entityId AND r.deletedAt IS NULL AND t.deletedAt IS NULL)))
+      ORDER BY rank,kind,entityId LIMIT ?`)
+      .all(expression, Math.max(limit * 6, limit)) as { entityId: string; kind: LibraryMatchKind; content: string }[];
+    const results: LibrarySearchResult[] = [];
+    for (const row of rows) {
+      const context = this.resolveSearchRow(row);
+      if (!context || context.thread.deletedAt || context.thread.sourceVersionId === excludeSourceVersionId) continue;
+      const source = this.reader.sourceVersion(context.thread.sourceVersionId);
+      if (!source) continue;
+      const sourceLocation = row.kind === 'source' ? locatePassage(source.text, terms) : locateAnchor(source.text, context.thread.anchor.exact, context.thread.anchor.start);
+      if (!sourceLocation) continue;
+      const matchedTerms = terms.filter(term => wordLocations(row.kind === 'source' ? sourceLocation.passage : row.content, term).length > 0);
+      if (!matchedTerms.length) continue;
+      const matchLocation = locatePassage(row.content, terms) ?? { passage: row.content.slice(0, 240), start: 0, end: Math.min(row.content.length, 240) };
+      const evidenceLabel = row.kind === 'source' ? 'source passage' : row.kind === 'note' ? 'reader note' : 'saved reply — not source evidence';
+      results.push({ threadId: context.thread.id, sourceVersionId: context.thread.sourceVersionId,
+        sourceTitle: context.thread.sourceTitle, sourceUrl: context.thread.sourceUrl, kind: row.kind,
+        passage: sourceLocation.passage, start: sourceLocation.start, end: sourceLocation.end,
+        matchExcerpt: matchLocation.passage, matchedTerms,
+        explanation: row.kind === 'source'
+          ? `Local text match in the saved source: ${quotedTerms(matchedTerms)}.`
+          : `Local match in a ${evidenceLabel}; the cited passage is the source anchor, not generated evidence.`,
+        evidenceLabel });
+      if (results.length >= limit) break;
+    }
+    return results;
+  }
+
+  private resolveSearchRow(row: { entityId: string; kind: LibraryMatchKind }) {
+    let threadId: string | undefined;
+    if (row.kind === 'source') threadId = (this.reader.db.prepare(`SELECT t.id FROM threads t JOIN anchors a ON a.id=t.anchorId
+      WHERE a.sourceVersionId=? AND t.deletedAt IS NULL ORDER BY t.updatedAt DESC,t.id LIMIT 1`).get(row.entityId) as { id: string } | undefined)?.id;
+    else if (row.kind === 'note') threadId = (this.reader.db.prepare(`SELECT threadId AS id FROM notes WHERE id=? AND deletedAt IS NULL`).get(row.entityId) as { id: string } | undefined)?.id;
+    else threadId = (this.reader.db.prepare(`SELECT threadId AS id FROM reply_versions WHERE id=? AND deletedAt IS NULL`).get(row.entityId) as { id: string } | undefined)?.id;
+    return threadId ? { thread: this.reader.get(threadId)! } : undefined;
   }
 
   models(): ModelSettings {
@@ -77,15 +138,40 @@ export class LibrarySettingsService {
   }
 
   vocabulary(): VocabularyEntry[] {
-    return this.reader.db.prepare('SELECT term,origin,status,firstSeen,lastSeen FROM vocabulary ORDER BY term COLLATE NOCASE,term').all() as VocabularyEntry[];
+    const entries = this.reader.db.prepare('SELECT termKey,term,status,firstSeen,lastSeen FROM vocabulary ORDER BY term COLLATE NOCASE,term').all() as Array<Omit<VocabularyEntry, 'origins'> & { termKey: string }>;
+    const origins = this.reader.db.prepare('SELECT operationId,termKey,origin,observedAt,sourceKind,sourceId,sourceRevision FROM vocabulary_origins ORDER BY observedAt,operationId').all() as VocabularyOriginRow[];
+    return entries.map(({ termKey, ...entry }) => ({ ...entry, origins: origins.filter(origin => origin.termKey === termKey).map(readOrigin) }));
+  }
+
+  recordVocabularyObservation(input: VocabularyObservation): VocabularyObservationResult {
+    const observation = validateObservation(input), termKey = observation.term;
+    const fingerprint = digest(['marginalia.vocabulary-observation.v1', observation]);
+    return this.reader.db.transaction(() => {
+      const previous = this.reader.db.prepare('SELECT digest,termKey,deletedAt FROM vocabulary_operations WHERE operationId=?').get(observation.operationId) as { digest: string; termKey: string | null; deletedAt: string | null } | undefined;
+      if (previous) {
+        if (previous.digest !== fingerprint) throw new ConflictError('This vocabulary action identifier was already used for different content.');
+        if (!previous.termKey || previous.deletedAt) return { recorded: false, deleted: true };
+        return { recorded: false, deleted: false, entry: this.vocabulary().find(entry => vocabularyKey(entry.term) === previous.termKey) };
+      }
+      validateVocabularySource(this.reader, observation.source, observation.term);
+      const existing = this.reader.db.prepare('SELECT termKey,firstSeen,lastSeen FROM vocabulary WHERE termKey=?').get(termKey) as { termKey: string; firstSeen: string; lastSeen: string } | undefined;
+      if (!existing) this.reader.db.prepare('INSERT INTO vocabulary VALUES(?,?,?,?,?)').run(termKey, observation.term, 'active', observation.observedAt, observation.observedAt);
+      else this.reader.db.prepare('UPDATE vocabulary SET firstSeen=?,lastSeen=? WHERE termKey=?').run(observation.observedAt < existing.firstSeen ? observation.observedAt : existing.firstSeen, observation.observedAt > existing.lastSeen ? observation.observedAt : existing.lastSeen, termKey);
+      const stored = storeSource(observation.source);
+      this.reader.db.prepare('INSERT INTO vocabulary_origins VALUES(?,?,?,?,?,?,?)').run(observation.operationId, termKey, observation.origin, observation.observedAt, stored.kind, stored.id, stored.revision);
+      this.reader.db.prepare('INSERT INTO vocabulary_operations VALUES(?,?,?,?,NULL)').run(observation.operationId, fingerprint, termKey, observation.observedAt);
+      this.reader.db.prepare('INSERT INTO events(kind,payload,createdAt) VALUES(?,?,?)').run('vocabulary-observed', JSON.stringify({ operationId: observation.operationId }), observation.observedAt);
+      return { recorded: true, deleted: false, entry: this.vocabulary().find(entry => vocabularyKey(entry.term) === termKey)! };
+    })();
   }
 
   deleteVocabulary(term: string): { deleted: boolean; term: string } {
-    const normalized = validateTerm(term);
+    const normalized = normalizeTerm(term), termKey = vocabularyKey(normalized);
     return this.reader.db.transaction(() => {
-      const result = this.reader.db.prepare('DELETE FROM vocabulary WHERE term=?').run(normalized);
-      if (result.changes) this.reader.db.prepare('INSERT INTO events(kind,payload,createdAt) VALUES(?,?,?)')
-        .run('vocabulary-deleted', JSON.stringify({ term: normalized }), new Date().toISOString());
+      const now = new Date().toISOString();
+      this.reader.db.prepare('UPDATE vocabulary_operations SET termKey=NULL,deletedAt=? WHERE termKey=?').run(now, termKey);
+      const result = this.reader.db.prepare('DELETE FROM vocabulary WHERE termKey=?').run(termKey);
+      if (result.changes) this.reader.db.prepare('INSERT INTO events(kind,payload,createdAt) VALUES(?,?,?)').run('vocabulary-deleted', JSON.stringify({ deleted: true }), now);
       return { deleted: result.changes > 0, term: normalized };
     })();
   }
@@ -99,12 +185,99 @@ function validateStoredModels(value: StoredModels): void {
   validateModel(value.fast); validateModel(value.deep);
   if (!Number.isSafeInteger(value.revision) || value.revision < 1 || typeof value.updatedAt !== 'string' || !Number.isFinite(Date.parse(value.updatedAt))) throw new Error('Invalid model settings.');
 }
-function validateTerm(value: string): string {
-  if (typeof value !== 'string' || value !== value.trim() || value.length < 1 || value.length > 300 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error('Invalid vocabulary term.');
-  return value;
+function normalizeTerm(value: string): string {
+  if (typeof value !== 'string' || /\p{Cc}/u.test(value)) throw new Error('Invalid vocabulary term.');
+  const normalized = value.normalize('NFC').trim().replace(/\s+/gu, ' ');
+  if ([...normalized].length < 1 || [...normalized].length > 300) throw new Error('Invalid vocabulary term.');
+  return normalized;
+}
+function vocabularyKey(value: string): string { return normalizeTerm(value); }
+function validateObservation(value: VocabularyObservation): VocabularyObservation {
+  if (!value || typeof value !== 'object') throw new Error('Invalid vocabulary observation.');
+  requireExactKeys(value as unknown as Record<string, unknown>, ['operationId', 'term', 'origin', 'observedAt', 'source'], 'vocabulary observation');
+  requireId(value.operationId, 'vocabulary action');
+  if (value.origin !== 'stated') throw new Error('Only an explicit Remember action can add vocabulary.');
+  if (typeof value.observedAt !== 'string' || !Number.isFinite(Date.parse(value.observedAt))) throw new Error('Invalid vocabulary observation time.');
+  if (!value.source || typeof value.source !== 'object' || !['reader', 'note', 'definition'].includes(value.source.kind)) throw new Error('Invalid vocabulary source reference.');
+  return { ...value, term: normalizeTerm(value.term), source: structuredClone(value.source) };
+}
+function validateVocabularySource(reader: ReaderStore, source: VocabularySourceReference, term: string): void {
+  if (source.kind === 'reader') {
+    if (Object.keys(source).length !== 1) throw new Error('Invalid reader vocabulary source.');
+    return;
+  }
+  if (source.kind === 'note') {
+    requireExactKeys(source as unknown as Record<string, unknown>, ['kind', 'noteId', 'revision'], 'note vocabulary source');
+    requireId(source.noteId, 'note');
+    if (!Number.isSafeInteger(source.revision) || source.revision < 1) throw new Error('Invalid note revision.');
+    const note = reader.noteVersion({ noteId: source.noteId, revision: source.revision });
+    if (!note || !note.text.normalize('NFC').includes(term)) throw new Error('The saved note version does not contain this term.');
+    return;
+  }
+  requireExactKeys(source as unknown as Record<string, unknown>, ['kind', 'jobId', 'replyVersionId'], 'definition vocabulary source');
+  requireId(source.jobId, 'job'); requireId(source.replyVersionId, 'reply');
+  if (!reader.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs'").get()) throw new Error('The succeeded definition result could not be verified.');
+  const row = reader.db.prepare("SELECT state,replyVersionId FROM jobs WHERE id=?").get(source.jobId) as { state: string; replyVersionId: string | null } | undefined;
+  const reply = reader.reply(source.replyVersionId);
+  if (!row || row.state !== 'succeeded' || row.replyVersionId !== source.replyVersionId || reply?.reply.intent !== 'define') throw new Error('The succeeded definition result could not be verified.');
+}
+type VocabularyOriginRow = { operationId: string; termKey: string; origin: string; observedAt: string; sourceKind: string; sourceId: string | null; sourceRevision: number | null };
+function readOrigin(row: VocabularyOriginRow): VocabularyOrigin {
+  const origin: VocabularyOriginKind = ['used', 'looked-up', 'stated', 'legacy'].includes(row.origin) ? row.origin as VocabularyOriginKind : 'legacy';
+  let source: VocabularySourceReference = { kind: 'reader' };
+  if (row.sourceKind === 'note' && row.sourceId && Number.isSafeInteger(row.sourceRevision)) source = { kind: 'note', noteId: row.sourceId, revision: row.sourceRevision! };
+  else if (row.sourceKind === 'definition' && row.sourceId) {
+    try { const value = JSON.parse(row.sourceId) as { jobId: string; replyVersionId: string }; source = { kind: 'definition', jobId: value.jobId, replyVersionId: value.replyVersionId }; } catch { /* Historical unreadable references remain reader-visible legacy origins. */ }
+  }
+  return { operationId: row.operationId, origin, observedAt: row.observedAt, source };
+}
+function storeSource(source: VocabularySourceReference): { kind: string; id: string | null; revision: number | null } {
+  if (source.kind === 'reader') return { kind: source.kind, id: null, revision: null };
+  if (source.kind === 'note') return { kind: source.kind, id: source.noteId, revision: source.revision };
+  return { kind: source.kind, id: JSON.stringify({ jobId: source.jobId, replyVersionId: source.replyVersionId }), revision: null };
+}
+function requireExactKeys(value: Record<string, unknown>, keys: string[], label: string): void {
+  const actual = Object.keys(value).sort(), expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) throw new Error(`Invalid ${label}.`);
 }
 function requireId(value: string, label: string): void {
   if (typeof value !== 'string' || !/^[\w-]{1,100}$/.test(value)) throw new Error(`Invalid ${label} identifier.`);
+}
+
+const RELATED_STOP_WORDS = new Set(['about', 'after', 'again', 'also', 'because', 'before', 'being', 'between', 'could', 'from', 'have', 'into', 'more', 'other', 'should', 'their', 'there', 'these', 'they', 'this', 'those', 'through', 'were', 'what', 'when', 'where', 'which', 'while', 'with', 'would', 'your']);
+function searchTerms(value: string, maximum = 12): string[] {
+  if (typeof value !== 'string' || value.length > 300) throw new Error('Search must be 300 characters or fewer.');
+  return [...new Set(value.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu) ?? [])].slice(0, maximum);
+}
+function resultLimit(value: number, maximum = 50): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) throw new Error(`Result limit must be between 1 and ${maximum}.`);
+  return value;
+}
+function quotedTerms(terms: string[]): string { return terms.slice(0, 4).map(term => `“${term}”`).join(', ') || 'the search words'; }
+function locateAnchor(text: string, exact: string, expected: number) {
+  const start = text.slice(expected, expected + exact.length) === exact ? expected : text.indexOf(exact);
+  return start < 0 ? undefined : excerpt(text, start, start + Math.min(exact.length, 280));
+}
+function locatePassage(text: string, terms: string[]) {
+  const locations = terms.flatMap(term => wordLocations(text, term).slice(0, 1)).sort((a, b) => a.at - b.at);
+  if (!locations.length) return undefined;
+  const first = locations[0], nearby = locations.filter(value => value.at - first.at < 280), last = nearby[nearby.length - 1];
+  return excerpt(text, first.at, last.at + last.length);
+}
+function wordLocations(text: string, term: string) {
+  // Match SQLite's case/diacritic-insensitive words without losing original UTF-16 offsets.
+  const normalize = (value: string) => value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  const target = normalize(term);
+  for (const match of text.matchAll(/[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu)) {
+    if (normalize(match[0]) === target) return [{ at: match.index, length: match[0].length }];
+  }
+  return [];
+}
+function excerpt(text: string, matchStart: number, matchEnd: number) {
+  let start = Math.max(0, matchStart - 100), end = Math.min(text.length, Math.max(matchEnd + 100, start + 160));
+  const before = text.lastIndexOf('\n', matchStart); if (before >= start) start = before + 1;
+  const after = text.indexOf('\n', matchEnd); if (after >= 0 && after <= end) end = after;
+  return { passage: text.slice(start, end), start, end };
 }
 function withCompatibility(value: { fast: string; deep: string; revision: number; updatedAt: string | null }): ModelSettings {
   return { ...value, compatibilityKey: digest(['marginalia.models.v1', value.fast, value.deep, value.revision]) };

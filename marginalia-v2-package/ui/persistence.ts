@@ -1,14 +1,65 @@
 import { ReaderJournal, type Persistence, type JournalState } from './journal.ts';
-import type { QuoteAnchor, ReaderMutation, SourceCapture, Thread, ReplyVersion, ReplyViewState, SourceVersion } from '../contracts/reader.ts';
+import type { QuoteAnchor, ReaderMutation, SourceCapture, Thread, ReplyVersion, ReplyViewState, SourceVersion, ReplyRemovalChange } from '../contracts/reader.ts';
 import type { AskingSelection } from './asking-host.ts';
 import type { HostCheckReport } from '../contracts/host-checks.ts';
 import type { SampleGenerationRecord } from '../contracts/sample-provenance.ts';
 import { canonicalReplyData } from '../contracts/reply.ts';
 
+export const SUGGESTION_POLICY_VERSION = 'marginalia.suggestions.v1' as const;
+export type SuggestionExposureResolution = 'chosen' | 'dismissed' | 'replaced' | 'page-closed';
+export type SuggestionExposureRecord = {
+  exposureId: string;
+  policyVersion: typeof SUGGESTION_POLICY_VERSION;
+  contextHash: string;
+  eligible: string[];
+  shown: { intent: string; label: string; position: number }[];
+  shownAt: string;
+  resolvedAt: string | null;
+  choice: string | null;
+  resolution: SuggestionExposureResolution | null;
+  latencyMs: number | null;
+  resultingId?: string;
+  eventualOutcome: string | 'unknown';
+};
+export const SUGGESTION_PAGE_SIZE = 64;
+const suggestionIntents = new Set(['define', 'simulate', 'evidence', 'instantiate', 'derive', 'diagram', 'explore', 'unsure']);
+const boundedString = (value: unknown, max: number): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
+const exposureTime = (value: unknown): value is string => boundedString(value, 40) && Number.isFinite(Date.parse(value));
+function onlyFields(value: object, allowed: readonly string[]) {
+  let count = 0;
+  for (const key in value) { if (++count > allowed.length || !Object.hasOwn(value, key) || !allowed.includes(key)) return false; }
+  return true;
+}
+/** Validate bounded fields before cloning/stringifying untrusted local data. */
+export function validSuggestionExposure(value: unknown): value is SuggestionExposureRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const r = value as SuggestionExposureRecord;
+  const allowed = ['exposureId', 'policyVersion', 'contextHash', 'eligible', 'shown', 'shownAt', 'resolvedAt', 'choice', 'resolution', 'latencyMs', 'resultingId', 'eventualOutcome'];
+  if (!onlyFields(r, allowed) || !boundedString(r.exposureId, 128) || !/^[\w-]+$/.test(r.exposureId) || r.policyVersion !== SUGGESTION_POLICY_VERSION || typeof r.contextHash !== 'string' || !/^[a-f0-9]{64}$/.test(r.contextHash)) return false;
+  if (!Array.isArray(r.eligible) || r.eligible.length > 8 || r.eligible.some(intent => !suggestionIntents.has(intent)) || new Set(r.eligible).size !== r.eligible.length) return false;
+  if (!Array.isArray(r.shown) || r.shown.length > 3 || r.shown.some((entry, index) => !entry || typeof entry !== 'object' || !onlyFields(entry, ['intent', 'label', 'position']) || !r.eligible.includes(entry.intent) || !boundedString(entry.label, 160) || entry.position !== index + 1) || new Set(r.shown.map(entry => entry.intent)).size !== r.shown.length) return false;
+  if (!exposureTime(r.shownAt) || (r.resultingId !== undefined && !boundedString(r.resultingId, 128)) || !boundedString(r.eventualOutcome, 80)) return false;
+  if (r.resolution === null) return r.resolvedAt === null && r.choice === null && r.latencyMs === null;
+  if (!['chosen', 'dismissed', 'replaced', 'page-closed'].includes(r.resolution) || !exposureTime(r.resolvedAt) || Date.parse(r.resolvedAt) < Date.parse(r.shownAt)) return false;
+  if (r.latencyMs !== null && (!Number.isSafeInteger(r.latencyMs) || r.latencyMs < 0)) return false;
+  return r.resolution === 'chosen' ? r.shown.some(entry => entry.intent === r.choice) : r.choice === null;
+}
+// Exact failed writes survive a same-document remount. Session receipts also survive
+// reload in the same tab where sessionStorage is available; no durability is claimed
+// if both stores refuse writes.
+const pendingExposures = new Map<string, SuggestionExposureRecord>();
+const knownExposures = new Map<string, SuggestionExposureRecord>();
+
 export type ReplyState = Pick<ReplyViewState, 'parameters' | 'view'>;
 export type ReplyViewChange = ReplyState & { id: string; replyVersionId: string; expectedRevision: number };
 type RecoveredView = { id?: string; state: ReplyState; savedAt: string };
 type ReplyHistory = { kind: 'recovered'; value: RecoveredView } | { kind: 'rejected'; value: ReplyViewChange };
+export type ReplyRemovalRecord = {
+  operationId: string; replyVersionId: string; desiredRemoved: boolean; expectedRevision: number;
+  status: 'local' | 'pending' | 'acknowledged' | 'conflict';
+  /** Local choice made while this exact request still has an unknown outcome. */
+  queuedRemoved?: boolean;
+};
 export type CachedReply = {
   origin: string; version: ReplyVersion; source: SourceVersion;
   remoteView: ReplyViewState; local: ReplyState; localRevision: number; dirty: boolean;
@@ -17,7 +68,11 @@ export type CachedReply = {
   sampleGenerationRecords?: Record<string, SampleGenerationRecord>;
   recovered?: RecoveredView[];
   rejected?: ReplyViewChange[];
+  /** Latest reader intent; acknowledged predecessors remain exportable in removalHistory. */
+  removal?: ReplyRemovalRecord;
+  removalHistory?: ReplyRemovalRecord[];
 };
+export const replyIsRemoved = (record: CachedReply) => record.removal?.queuedRemoved ?? record.removal?.desiredRemoved ?? !!record.version.deletedAt;
 const replyQueues = new Map<string, Promise<unknown>>();
 // A failed IndexedDB write must survive a same-document unmount. These snapshots
 // remain explicitly unsaved and exportable; they are not claimed as durable.
@@ -287,6 +342,88 @@ export function localPersistence(name = 'marginalia-reader') {
     });
   }
   const journal: Persistence = { load: () => read('journal'), save: value => write('journal', value) };
+  const suggestionKey = (scope: string, exposureId: string) => `suggestion-exposure:${scope}:${exposureId}`;
+  const suggestionPrefix = (scope: string) => `suggestion-exposure:${scope}:`;
+  const pendingKey = (key: string) => JSON.stringify([name, key]);
+  const receiptKey = (key: string) => 'marginalia-suggestion-pending:' + pendingKey(key);
+  const rememberExposure = (key: string, record: SuggestionExposureRecord) => {
+    pendingExposures.set(pendingKey(key), structuredClone(record));
+    try { sessionStorage.setItem(receiptKey(key), JSON.stringify(record)); } catch { /* Memory-only recovery remains available. */ }
+  };
+  const pendingExposure = (key: string): SuggestionExposureRecord | undefined => {
+    const memory = pendingExposures.get(pendingKey(key));
+    if (memory) return memory;
+    try {
+      const raw = sessionStorage.getItem(receiptKey(key));
+      if (!raw || raw.length > 4096) return;
+      const saved: unknown = JSON.parse(raw);
+      if (validSuggestionExposure(saved) && key.endsWith(':' + saved.exposureId)) return saved;
+    } catch { /* Malformed receipts cannot interrupt reading. */ }
+  };
+  async function persistExposure(key: string, record: SuggestionExposureRecord) {
+    await write(key, record);
+    if (record.resolvedAt) knownExposures.delete(pendingKey(key));
+    if (JSON.stringify(pendingExposures.get(pendingKey(key))) === JSON.stringify(record)) pendingExposures.delete(pendingKey(key));
+    try {
+      if (sessionStorage.getItem(receiptKey(key)) === JSON.stringify(record)) sessionStorage.removeItem(receiptKey(key));
+    } catch { /* A stale identical receipt is idempotent. */ }
+  }
+  async function exposurePage(scope: string, after?: string) {
+    const db = await database, prefix = suggestionPrefix(scope);
+    if (after !== undefined && !after.startsWith(prefix)) throw new Error('Invalid exposure page cursor.');
+    return new Promise<{ key: string; value: unknown }[]>((resolve, reject) => {
+      const store = db.transaction('reader').objectStore('reader');
+      const range = IDBKeyRange.bound(after ?? prefix, prefix + '\uffff', after !== undefined);
+      const keys = store.getAllKeys(range, SUGGESTION_PAGE_SIZE), rows = store.getAll(range, SUGGESTION_PAGE_SIZE);
+      let keyData: IDBValidKey[] | undefined, rowData: unknown[] | undefined;
+      const done = () => { if (keyData && rowData) resolve(keyData.map((key, index) => ({ key: String(key), value: rowData![index] }))); };
+      keys.onsuccess = () => { keyData = keys.result; done(); }; rows.onsuccess = () => { rowData = rows.result; done(); };
+      keys.onerror = () => reject(keys.error); rows.onerror = () => reject(rows.error);
+    });
+  }
+  const suggestions = {
+    async record(scope: string, record: SuggestionExposureRecord): Promise<void> {
+      if (!validSuggestionExposure(record)) throw new Error('The suggestion exposure is invalid.');
+      const key = suggestionKey(scope, record.exposureId);
+      knownExposures.set(pendingKey(key), structuredClone(record));
+      rememberExposure(key, record);
+      await persistExposure(key, record);
+    },
+    async resolve(scope: string, exposureId: string, resolution: SuggestionExposureResolution, choice: string | null, resolvedAt: string, latencyMs: number | null): Promise<SuggestionExposureRecord | undefined> {
+      const key = suggestionKey(scope, exposureId), current = pendingExposure(key) ?? knownExposures.get(pendingKey(key)) ?? await read<unknown>(key);
+      if (!validSuggestionExposure(current) || current.exposureId !== exposureId) throw new Error('The saved suggestion exposure is invalid.');
+      if (current.resolvedAt) { if (pendingExposure(key)) await persistExposure(key, current); return current; }
+      const resolved = { ...current, resolvedAt, choice, resolution, latencyMs };
+      if (!validSuggestionExposure(resolved)) throw new Error('The suggestion resolution is invalid.');
+      rememberExposure(key, resolved);
+      knownExposures.set(pendingKey(key), resolved);
+      await persistExposure(key, resolved);
+      return resolved;
+    },
+    unsaved(scope: string) { return [...pendingExposures].filter(([key]) => { const [namespace, storageKey] = JSON.parse(key); return namespace === name && storageKey.startsWith(suggestionPrefix(scope)); }).map(([, record]) => structuredClone(record)); },
+    async retry(scope: string) {
+      for (const record of suggestions.unsaved(scope)) await persistExposure(suggestionKey(scope, record.exposureId), record);
+    },
+    async recover(scope: string, resolvedAt: string, after?: string) {
+      const recovered: SuggestionExposureRecord[] = [];
+      const page = await exposurePage(scope, after);
+      let invalid = 0, failed = 0;
+      for (const { key, value } of page) {
+        if (!validSuggestionExposure(value) || key !== suggestionKey(scope, value.exposureId)) { invalid++; continue; }
+        if (Date.parse(value.shownAt) >= Date.parse(resolvedAt)) continue;
+        const pending = pendingExposure(key);
+        if (value.resolvedAt && !pending) continue;
+        const resolved = pending?.resolvedAt ? pending : { ...(pending ?? value), resolvedAt, choice: null, resolution: 'page-closed' as const, latencyMs: null };
+        if (!validSuggestionExposure(resolved)) { invalid++; continue; }
+        rememberExposure(key, resolved);
+        try { await persistExposure(key, resolved); recovered.push(resolved); } catch { failed++; }
+      }
+      return { recovered, invalid, failed, next: page.length === SUGGESTION_PAGE_SIZE ? page.at(-1)!.key : undefined };
+    },
+    async list(scope: string, after?: string): Promise<SuggestionExposureRecord[]> {
+      return (await exposurePage(scope, after)).filter(({ key, value }) => validSuggestionExposure(value) && key === suggestionKey(scope, value.exposureId)).map(({ value }) => value as SuggestionExposureRecord);
+    },
+  };
   const replyKey = (origin: string, threadId: string, replyId: string) => 'reply:' + JSON.stringify([origin, threadId, replyId]);
   const withReply = <T>(key: string, operation: () => Promise<T>) => replyLock(name + ':' + key, operation);
   const historyPrefix = (key: string) => 'reply-history:' + key + ':';
@@ -350,7 +487,15 @@ export function localPersistence(name = 'marginalia-reader') {
           const prior = await read<CachedReply>(key);
           if (prior && (prior.version.hash !== version.hash || prior.source.id !== source.id || prior.source.hash !== source.hash)) throw new Error('The saved reply identity changed. Cached work was preserved.');
           const record: CachedReply = prior ?? { origin, version, source, remoteView, local: { parameters: remoteView.parameters, view: remoteView.view }, localRevision: 1, dirty: false };
-          if (version.revision >= record.version.revision) record.version = version;
+          // Lineage warnings are monotonic: an older response or helper cannot erase them.
+          const corrections = new Map([...(record.version.corrections ?? []), ...(version.corrections ?? [])]
+            .map(item => [JSON.stringify([item.ancestorId, item.correctionId]), item]));
+          if (version.revision >= record.version.revision) {
+            if (version.revision > record.version.revision && record.removal?.status === 'acknowledged' &&
+              !!version.deletedAt !== record.removal.desiredRemoved) record.removal.status = 'conflict';
+            record.version = { ...version, corrections: [...corrections.values()] };
+          }
+          else record.version = { ...record.version, corrections: [...corrections.values()] };
           if (remoteView.revision >= record.remoteView.revision) {
             // Do not silently replace a live editor's backing view during a read.
             // Adoption is the explicit useRemote operation; local CAS stays valid.
@@ -440,6 +585,80 @@ export function localPersistence(name = 'marginalia-reader') {
         await writeReply(key, latest);
       });
     },
+    async setRemoved(record: CachedReply, removed: boolean): Promise<CachedReply> {
+      const key = replyKey(record.origin, record.version.threadId, record.version.id);
+      return withReply(key, async () => {
+        const latest = await read<CachedReply>(key);
+        if (!latest) throw new Error('This saved reply is unavailable.');
+        if (replyIsRemoved(latest) === removed) return latest;
+        const previous = latest.removal;
+        if (previous?.status === 'pending') {
+          // Keep the sent body intact until its receipt is recovered explicitly.
+          previous.queuedRemoved = removed;
+          await writeReply(key, latest);
+          return latest;
+        }
+        // Undo of an unsent operation cancels that local intent. No helper revision
+        // or operation identity was consumed, so there is no restore to upload.
+        if (previous?.status === 'local' && previous.desiredRemoved !== removed) {
+          delete latest.removal;
+          await writeReply(key, latest);
+          return latest;
+        }
+        if (previous) (latest.removalHistory ??= []).push(structuredClone(previous));
+        latest.removal = {
+          operationId: crypto.randomUUID(), replyVersionId: latest.version.id,
+          desiredRemoved: removed, expectedRevision: latest.version.revision, status: 'local',
+        };
+        await writeReply(key, latest);
+        return latest;
+      });
+    },
+    async syncRemoval(record: CachedReply, send: (change: ReplyRemovalChange) => Promise<ReplyVersion>): Promise<CachedReply> {
+      const key = replyKey(record.origin, record.version.threadId, record.version.id);
+      return withReply(key, async () => {
+        const latest = await read<CachedReply>(key);
+        if (!latest?.removal || latest.removal.status === 'acknowledged') return latest ?? record;
+        if (latest.removal.status === 'conflict') throw Object.assign(new Error('This reply changed elsewhere. Your choice is kept here.'), { name: 'Conflict' });
+        while (latest.removal.status !== 'acknowledged') {
+          latest.removal.status = 'pending';
+          await writeReply(key, latest);
+          const operation: ReplyRemovalRecord = structuredClone(latest.removal);
+          let remote: ReplyVersion;
+          try {
+            remote = await send({ id: operation.operationId, threadId: latest.version.threadId,
+              replyVersionId: operation.replyVersionId, removed: operation.desiredRemoved,
+              expectedRevision: operation.expectedRevision });
+          } catch (error) {
+            if (error instanceof Error && (error.name === 'Conflict' || error.name === 'ConflictError')) {
+              latest.removal.status = 'conflict';
+              await writeReply(key, latest);
+            }
+            throw error;
+          }
+          if (remote.id !== latest.version.id || remote.threadId !== latest.version.threadId ||
+            remote.revision <= operation.expectedRevision || !!remote.deletedAt !== operation.desiredRemoved) {
+            throw new Error('The helper returned a different reply removal. Your choice is kept here.');
+          }
+          if (remote.revision < latest.version.revision) {
+            latest.removal.status = 'conflict';
+            await writeReply(key, latest);
+            throw Object.assign(new Error('This reply changed elsewhere. Your choice is kept here.'), { name: 'Conflict' });
+          }
+          latest.version = remote;
+          latest.removal.status = 'acknowledged';
+          const queued: boolean | undefined = latest.removal.queuedRemoved;
+          delete latest.removal.queuedRemoved;
+          if (queued !== undefined && queued !== operation.desiredRemoved) {
+            (latest.removalHistory ??= []).push(structuredClone(latest.removal));
+            latest.removal = { operationId: crypto.randomUUID(), replyVersionId: remote.id,
+              desiredRemoved: queued, expectedRevision: remote.revision, status: 'local' };
+          }
+          await writeReply(key, latest);
+        }
+        return latest;
+      });
+    },
     async report(record: CachedReply, parameters: Readonly<Record<string, number>>, report: HostCheckReport, isCurrent: () => boolean) {
       const key = replyKey(record.origin, record.version.threadId, record.version.id);
       const parameterKey = canonicalReplyData(parameters);
@@ -473,5 +692,5 @@ export function localPersistence(name = 'marginalia-reader') {
       });
     },
   };
-  return { read, write, values, journal, replies, library };
+  return { read, write, values, journal, suggestions, replies, library };
 }

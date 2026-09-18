@@ -36,6 +36,10 @@ button { cursor: pointer; } button:disabled { cursor: default; }
 .m-bar .m-actions { gap: 0; font-size: var(--m-t-1); margin: 0; }
 .m-head { padding: 10px 16px 8px; max-height: 25%; overflow: auto; flex-shrink: 0; }
 .m-head h1 { overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.m-headline { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.m-headline h1 { flex: 1; min-width: 0; }
+.m-head-toggle { flex-shrink: 0; font-size: var(--m-t-1); }
+.m-head-compact h1 { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .m-meta { color: var(--m-ink-3); font-size: var(--m-t-1); line-height: 1.5; }
 .m-head .m-meta { margin-top: 4px; }
 .m-compose { padding: 8px 0 12px; border-bottom: 1px solid var(--m-rule); scroll-margin-block: 12px; }

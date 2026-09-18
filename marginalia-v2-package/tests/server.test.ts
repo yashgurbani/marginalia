@@ -110,6 +110,31 @@ test('reply-check accepts only exact finite parameters within the declared range
   } finally { await helper.close(); }
 });
 
+test('reply removal route tombstones only the named reply and revision-checks Undo', async () => {
+  const helper = await startServer({ database: ':memory:', port: 0, diagnostics });
+  try {
+    helper.store.apply(keep);
+    helper.store.apply({ id: 'reply-route-note', kind: 'note', threadId: keep.threadId, noteId: 'reply-route-note', text: 'Question that stays.', expectedRevision: 0 });
+    const reply: CandidateReply = { schema: 'marginalia.reply.v1', intent: 'define', status: 'complete', title: 'Removable reply',
+      summary: 'A saved reply.', sourceBindings: [], parameters: [], assumptions: [], limitations: [],
+      blocks: [{ id: 'text', type: 'text', md: 'A source passage.' }], checks: [], staticFallback: 'A saved reply.' };
+    helper.store.commitReply({ id: 'removable-reply', threadId: keep.threadId, reply: withFixtureOrigins(reply) });
+    helper.store.commitReply({ id: 'reply-that-stays', threadId: keep.threadId, reply: withFixtureOrigins(reply) });
+    const token = await pair(helper), headers = { Origin: extensionOrigin, Authorization: `Bearer ${token}` };
+    const post = (value: unknown) => fetch(helper.origin + '/api/reply-removal', { method: 'POST', headers, body: JSON.stringify(value) });
+    const removal = { id: 'remove-one-reply', threadId: keep.threadId, replyVersionId: 'removable-reply', removed: true, expectedRevision: 1 };
+    const removed = await post(removal); assert.equal(removed.status, 200);
+    assert.equal(((await removed.json()) as { reply: { revision: number; deletedAt: string | null } }).reply.revision, 2);
+    assert.equal(helper.store.get(keep.threadId)?.notes[0].text, 'Question that stays.');
+    assert.equal(helper.store.get(keep.threadId)?.highlighted, false);
+    assert.equal(helper.store.replies(keep.threadId).map(item => item.id).join(','), 'reply-that-stays');
+    assert.equal((await post({ ...removal, id: 'stale-undo', removed: false })).status, 409);
+    const restored = await post({ ...removal, id: 'restore-one-reply', removed: false, expectedRevision: 2 });
+    assert.equal(restored.status, 200); assert.equal(helper.store.replies(keep.threadId).length, 2);
+    assert.equal((await post({ ...removal, id: 'wrong-membership', threadId: 'other-thread' })).status, 400);
+  } finally { await helper.close(); }
+});
+
 test('same-origin browser GET authentication requires Fetch Metadata plus an origin-bound token', async () => {
   const helper = await startServer({ database: ':memory:', port: 0, diagnostics });
   try {

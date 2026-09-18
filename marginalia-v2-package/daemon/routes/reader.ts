@@ -1,5 +1,5 @@
 import type { WebSocket } from 'ws';
-import type { ReaderMutation } from '../../contracts/reader.ts';
+import { validateReplyRemovalChange, type ReaderMutation, type ReplyRemovalChange } from '../../contracts/reader.ts';
 import { runHostChecks } from '../../contracts/host-checks.ts';
 import type { ReaderStore } from '../store.ts';
 import type { Pairing } from '../pairing.ts';
@@ -21,11 +21,13 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       if (typeof value?.url !== 'string' || value.url.length > 8000) throw new Error('A page address is required.');
       send(response, 200, { anchor: store.readerPosition(value.url) ?? null }); return true;
     }
-    let readOperation: 'threads' | 'replies' | 'reply-view' | undefined;
+    let readOperation: 'threads' | 'replies' | 'reply-view' | 'library-search' | 'library-related' | undefined;
     if (url.pathname.startsWith('/api/read/')) {
       if (url.pathname === '/api/read/threads') readOperation = 'threads';
       else if (url.pathname === '/api/read/replies') readOperation = 'replies';
       else if (url.pathname === '/api/read/reply-view') readOperation = 'reply-view';
+      else if (url.pathname === '/api/read/library-search') readOperation = 'library-search';
+      else if (url.pathname === '/api/read/library-related') readOperation = 'library-related';
       else { send(response, 404, { error: 'Unknown read operation.' }); return true; }
       if (request.method !== 'POST') { send(response, 405, { error: 'Use POST for this read operation.' }); return true; }
       if (!requestOrigin) { send(response, 401, { error: 'Origin required.' }); return true; }
@@ -35,6 +37,8 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       if (url.pathname === '/api/threads') readOperation = 'threads';
       else if (url.pathname === '/api/replies') readOperation = 'replies';
       else if (url.pathname === '/api/reply-view') readOperation = 'reply-view';
+      else if (url.pathname === '/api/library-search') readOperation = 'library-search';
+      else if (url.pathname === '/api/library-related') readOperation = 'library-related';
     }
     if (url.pathname === '/api/revoke' && request.method === 'POST') {
       await emptyBody(request);
@@ -44,6 +48,8 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       send(response, 200, { revoked: true }); return true;
     }
     if (readOperation === 'threads') { send(response, 200, { threads: store.list(url.searchParams.get('url') ?? undefined, url.searchParams.get('removed') === 'true') }); return true; }
+    if (readOperation === 'library-search') { send(response, 200, { results: library.search(url.searchParams.get('q') ?? '') }); return true; }
+    if (readOperation === 'library-related') { send(response, 200, { results: library.related(url.searchParams.get('thread') ?? '') }); return true; }
     if (url.pathname === '/api/change' && request.method === 'POST') {
       const value = await body(request) as ReaderMutation;
       if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to reopen saved work.' }); return true; }
@@ -83,6 +89,15 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       const view = store.saveReplyView({ id: value.id, replyVersionId: reply.id, expectedRevision: value.expectedRevision, parameters: value.parameters, view: value.view });
       send(response, 200, { view }); return true;
     }
+    if (url.pathname === '/api/reply-removal' && request.method === 'POST') {
+      const value = await body(request) as ReplyRemovalChange;
+      if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to save reply changes.' }); return true; }
+      validateReplyRemovalChange(value);
+      const reply = store.reply(value.replyVersionId);
+      if (!reply || reply.threadId !== value.threadId || store.get(value.threadId)?.deletedAt) throw new Error('The reply removal does not match an active thread.');
+      const { id, replyVersionId, removed, expectedRevision } = value;
+      send(response, 200, { reply: store.setReplyRemoved({ id, replyVersionId, removed, expectedRevision }) }); return true;
+    }
     if (url.pathname === '/api/reply-check' && request.method === 'POST') {
       const value = await body(request), reply = store.reply(value?.replyVersionId);
       if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to check this reply.' }); return true; }
@@ -97,6 +112,11 @@ export function createReaderRoutes(input: { store: ReaderStore; pairing: Pairing
       send(response, 200, { models: library.saveModels(value) }); return true;
     }
     if (url.pathname === '/api/vocabulary' && request.method === 'GET') { send(response, 200, { vocabulary: library.vocabulary() }); return true; }
+    if (url.pathname === '/api/vocabulary/observe' && request.method === 'POST') {
+      const value = await body(request);
+      if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to remember a word.' }); return true; }
+      send(response, 200, library.recordVocabularyObservation(value)); return true;
+    }
     if (url.pathname === '/api/vocabulary/delete' && request.method === 'POST') {
       const value = await body(request);
       if (!requireCurrentPairing()) { send(response, 401, { error: 'Pair with the local helper to change vocabulary.' }); return true; }

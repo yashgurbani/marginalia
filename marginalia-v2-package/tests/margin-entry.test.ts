@@ -21,6 +21,23 @@ function cached(thread: Thread, intent = 'define', replyId = 'reply') {
     view: { replyVersionId: replyId, parameters: { x: 1 }, view: {}, revision: 1, updatedAt: capture.capturedAt } } as any;
 }
 
+test('E38 cached correction warning names its ancestor and survives an older helper response with local controls intact', async t => {
+  const e = env(t), seeded = await threadFixture(e.namespace, true);
+  const reply = cached(seeded.thread);
+  reply.version.corrections = [{ ancestorId: 'ancestor', ancestorTitle: 'Earlier calculation', correctionId: 'corrected', correctedAt: capture.capturedAt }];
+  await seeded.persistence.replies.cache(e.document.location.origin, seeded.thread.id, reply.source, [reply.version], [reply.view]);
+  const older = structuredClone(reply.version); delete older.corrections;
+  await seeded.persistence.replies.cache(e.document.location.origin, seeded.thread.id, reply.source, [older], [reply.view]);
+  const records = await seeded.persistence.replies.list(seeded.thread.id);
+  assert.equal(records[0].version.corrections?.[0].ancestorId, 'ancestor');
+  assert.deepEqual(records[0].local, { parameters: { x: 1 }, view: {} });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  await api.drain();
+  assert.match(e.root.textContent, /Earlier calculation.*ancestor.*corrected/);
+  assert.match(e.root.textContent, /Original reader note/);
+  api.destroy(); await api.drain();
+});
+
 for (const outcome of ['succeeded', 'cancelled', 'failed', 'outcome_unknown', 'cancelled-after-handoff']) {
   test(`activity record reads stored ${outcome} work without writes`, async t => {
     const e = env(t); await threadFixture(e.namespace, true);
@@ -400,7 +417,7 @@ test('selection and question typing never send; explicit local context save pres
   const e = env(t); let opens = 0;
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: () => ({ open() { opens++; }, setVisible() {}, destroy() {} }) });
   api.select(anchor()); button(e.root, 'Ask').click(); let q = e.root.querySelector('[aria-label="Your question"]')!; q.value = 'My question'; q.fire('input');
-  button(e.root, 'Close question').click(); api.select(anchor(15, 30)); button(e.root, 'Ask').click(); q = e.root.querySelector('[aria-label="Your question"]')!;
+  button(e.root, 'Close question').click(); api.select(anchor(15, 30)); button(e.root, 'Keep').click(); button(e.root, 'Ask').click(); q = e.root.querySelector('[aria-label="Your question"]')!;
   assert.equal(q.value, 'My question'); assert.equal(opens, 0);
   button(e.root, 'Keep this context on this device').click(); await api.drain();
   const journal = e.data(e.namespace).get('journal') as JournalState; assert.equal(journal.threads[0].anchor.start, 0); assert.equal(journal.pending.length, 1); assert.equal(opens, 0);
@@ -439,6 +456,125 @@ test('Keep and explicit Highlight preserve selection, source-node identity and r
   assert.equal(source.textContent, capture.text);
   api.destroy(); await api.drain();
   assert.deepEqual(projections.at(-1), []);
+});
+
+test('a replacement selection keeps or switches a note draft only after the explicit choice and survives reopen', async t => {
+  const e = env(t), { journal } = await threadFixture(e.namespace); let askingMounts = 0;
+  let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false,
+    asking: () => { askingMounts++; return { open() {}, setVisible() {}, destroy() {} }; } });
+  button(e.root, 'Edit note').click();
+  let field = e.root.querySelector('[aria-label="Your note"]')!;
+  field.value = 'Exact revised note text'; field.fire('input'); await api.drain();
+
+  const original = anchor(), replacement = anchor(15, 30), originalRevision = journal.state.threads[0].notes[0].revision;
+  api.select(replacement);
+  let choice = e.root.querySelector('.m-selection')!;
+  assert.equal(choice.textContent, 'Attach to the new passage?KeepSwitch');
+  assert.deepEqual(choice.querySelectorAll('button').map(node => node.textContent), ['Keep', 'Switch']);
+  let stored = [...e.data(e.namespace)].find(([key]) => key.startsWith('draft:'))![1] as any;
+  assert.deepEqual(stored.anchor, original); assert.equal(stored.text, field.value); assert.equal(stored.revision, originalRevision);
+  button(choice, 'Keep').click(); await api.drain();
+  stored = [...e.data(e.namespace)].find(([key]) => key.startsWith('draft:'))![1] as any;
+  assert.deepEqual(stored.anchor, original); assert.equal(stored.text, field.value); assert.equal(stored.revision, originalRevision);
+
+  api.destroy(); await api.drain();
+  api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false,
+    asking: () => { askingMounts++; return { open() {}, setVisible() {}, destroy() {} }; } });
+  field = e.root.querySelector('[aria-label="Your note"]')!;
+  assert.equal(field.value, 'Exact revised note text'); assert.match(e.root.textContent, /Note on "First · passage\."/);
+  api.select(replacement); choice = e.root.querySelector('.m-selection')!; button(choice, 'Switch').click(); await api.drain();
+  stored = [...e.data(e.namespace)].find(([key]) => key.startsWith('draft:'))![1] as any;
+  assert.deepEqual(stored.anchor, replacement); assert.deepEqual(stored.source, capture); assert.equal(stored.text, 'Exact revised note text');
+  assert.equal(stored.threadId, undefined); assert.equal(stored.noteId, undefined); assert.equal(stored.revision, undefined);
+  assert.equal(journal.state.threads[0].anchor.start, original.start); assert.equal(journal.state.threads[0].notes[0].text, 'Original reader note');
+
+  api.destroy(); await api.drain();
+  api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false,
+    asking: () => { askingMounts++; return { open() {}, setVisible() {}, destroy() {} }; } });
+  assert.equal(e.root.querySelector('[aria-label="Your note"]')!.value, 'Exact revised note text');
+  assert.match(e.root.textContent, /Note on "Second · passage\."/); assert.equal(askingMounts, 0);
+  api.destroy(); await api.drain();
+});
+
+test('a replacement selection keeps or switches a question draft locally with exact context across reopen', async t => {
+  const e = env(t); let askingMounts = 0;
+  const options = { capture, storageName: e.namespace, allowHelper: false,
+    asking: () => { askingMounts++; return { open() {}, setVisible() {}, destroy() {} }; } };
+  let api = await mountMargin(asHost(e.root), options);
+  const original = anchor(), replacement = anchor(15, 30);
+  api.select(original); button(e.root.querySelector('.m-selection')!, 'Ask').click();
+  let question = e.root.querySelector('[aria-label="Your question"]')!, context = e.root.querySelector('[aria-label="Context to attach"]')!;
+  question.value = 'Exact retained question?'; question.fire('input'); context.value = 'Exact reader context'; context.fire('input'); await api.drain();
+
+  api.select(replacement);
+  let choice = e.root.querySelector('.m-selection')!;
+  assert.equal(choice.textContent, 'Attach to the new passage?KeepSwitch');
+  assert.deepEqual(choice.querySelectorAll('button').map(node => node.textContent), ['Keep', 'Switch']);
+  button(choice, 'Keep').click(); await api.drain();
+  let stored = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
+  assert.deepEqual(stored.anchor, original); assert.equal(stored.question, question.value); assert.equal(stored.context, context.value);
+
+  api.destroy(); await api.drain(); api = await mountMargin(asHost(e.root), options);
+  button(e.root, 'Return to retained question').click();
+  question = e.root.querySelector('[aria-label="Your question"]')!; context = e.root.querySelector('[aria-label="Context to attach"]')!;
+  assert.equal(question.value, 'Exact retained question?'); assert.equal(context.value, 'Exact reader context');
+  assert.equal(e.root.querySelector('.m-question blockquote')!.textContent, original.exact);
+  api.select(replacement); choice = e.root.querySelector('.m-selection')!; button(choice, 'Switch').click(); await api.drain();
+  stored = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
+  assert.deepEqual(stored.anchor, replacement); assert.deepEqual(stored.capture, capture);
+  assert.equal(stored.question, 'Exact retained question?'); assert.equal(stored.context, 'Exact reader context');
+  assert.equal(e.root.querySelector('.m-question blockquote')!.textContent, replacement.exact);
+
+  api.destroy(); await api.drain(); api = await mountMargin(asHost(e.root), options);
+  button(e.root, 'Return to retained question').click();
+  assert.equal(e.root.querySelector('.m-question blockquote')!.textContent, replacement.exact);
+  assert.equal(e.root.querySelector('[aria-label="Your question"]')!.value, 'Exact retained question?');
+  assert.equal(e.root.querySelector('[aria-label="Context to attach"]')!.value, 'Exact reader context');
+  assert.equal(askingMounts, 0);
+  api.destroy(); await api.drain();
+});
+
+test('a failed note Switch keeps the visible B draft, retries explicitly, and reopens on B', async t => {
+  const e = env(t); let failDraftWrites = false;
+  e.onWrite(async key => { if (failDraftWrites && key.startsWith('draft:')) throw new Error('draft quota'); });
+  let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  const original = anchor(), replacement = anchor(15, 30);
+  api.select(original); button(e.root, 'Write a note').click();
+  let field = e.root.querySelector('[aria-label="Your note"]')!; field.value = 'Exact note after failed switch'; field.fire('input'); await api.drain();
+  failDraftWrites = true; api.select(replacement); button(e.root.querySelector('.m-selection')!, 'Switch').click(); await api.drain();
+  field = e.root.querySelector('[aria-label="Your note"]')!;
+  assert.equal(field.value, 'Exact note after failed switch'); assert.match(e.root.textContent, /Note on "Second · passage\."/); assert.match(e.root.textContent, /draft quota/);
+  field.value = 'Exact note edited after failed switch'; field.fire('input'); await api.drain();
+  button(e.root, 'Settings').click(); assert.ok(e.root.querySelectorAll('button').some(node => node.textContent === 'Retry saving'));
+  failDraftWrites = false; button(e.root, 'Retry saving').click(); await api.drain();
+  const stored = [...e.data(e.namespace)].find(([key]) => key.startsWith('draft:'))![1] as any;
+  assert.deepEqual(stored.anchor, replacement); assert.equal(stored.text, 'Exact note edited after failed switch');
+  api.destroy(); await api.drain(); api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  field = e.root.querySelector('[aria-label="Your note"]')!; assert.equal(field.value, 'Exact note edited after failed switch'); assert.match(e.root.textContent, /Note on "Second · passage\."/);
+  api.destroy(); await api.drain();
+});
+
+test('a failed question Switch keeps the visible B draft, retries explicitly, and reopens on B', async t => {
+  const e = env(t); let failQuestionWrites = false;
+  e.onWrite(async key => { if (failQuestionWrites && key.startsWith('question:')) throw new Error('question quota'); });
+  let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  const original = anchor(), replacement = anchor(15, 30);
+  api.select(original); button(e.root, 'Ask').click();
+  let question = e.root.querySelector('[aria-label="Your question"]')!, context = e.root.querySelector('[aria-label="Context to attach"]')!;
+  question.value = 'Exact question after failed switch?'; question.fire('input'); context.value = 'Exact context after failed switch'; context.fire('input'); await api.drain();
+  failQuestionWrites = true; api.select(replacement); button(e.root.querySelector('.m-selection')!, 'Switch').click(); await api.drain();
+  question = e.root.querySelector('[aria-label="Your question"]')!; context = e.root.querySelector('[aria-label="Context to attach"]')!;
+  assert.equal(question.value, 'Exact question after failed switch?'); assert.equal(context.value, 'Exact context after failed switch');
+  assert.equal(e.root.querySelector('.m-question blockquote')!.textContent, replacement.exact); assert.match(e.root.textContent, /question quota/);
+  question.value = 'Exact question edited after failed switch?'; question.fire('input'); await api.drain();
+  button(e.root, 'Settings').click(); assert.ok(e.root.querySelectorAll('button').some(node => node.textContent === 'Retry saving'));
+  failQuestionWrites = false; button(e.root, 'Retry saving').click(); await api.drain();
+  const stored = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
+  assert.deepEqual(stored.anchor, replacement); assert.equal(stored.question, 'Exact question edited after failed switch?'); assert.equal(stored.context, 'Exact context after failed switch');
+  api.destroy(); await api.drain(); api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  button(e.root, 'Return to retained question').click(); question = e.root.querySelector('[aria-label="Your question"]')!; context = e.root.querySelector('[aria-label="Context to attach"]')!;
+  assert.equal(question.value, 'Exact question edited after failed switch?'); assert.equal(context.value, 'Exact context after failed switch'); assert.equal(e.root.querySelector('.m-question blockquote')!.textContent, replacement.exact);
+  api.destroy(); await api.drain();
 });
 test('explicit helper review invokes injected T08 only for acknowledged context; closing retains its question', async t => {
   const e = env(t), seeded = await threadFixture(e.namespace, true); e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
@@ -531,7 +667,7 @@ test('actual reply-cache failures retain unsaved inputs and competing sessions r
   const final = (await seeded.persistence.replies.list(seeded.thread.id))[0]; assert.equal(final.local.parameters.x, 3); assert.equal(final.recovered![0].state.parameters.x, 4);
 });
 
-for (const [label, intent] of [['Move it', 'simulate'], ['Check this', 'evidence']] as const) {
+for (const [label, intent] of [['See it', 'simulate'], ['What supports this', 'evidence']] as const) {
   test(`${label} saves a selection draft without opening asking or sending`, async t => {
     const e = env(t), requests: string[] = []; let opened = 0;
     replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected outbound request'); } });

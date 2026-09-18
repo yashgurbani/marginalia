@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { mountLibrary, type MountLibraryOptions } from '../ui/library/index.ts';
 import type { Thread } from '../contracts/reader.ts';
-import type { ModelSettings, VocabularyEntry } from '../contracts/library.ts';
+import type { LibrarySearchResult, ModelSettings, VocabularyEntry } from '../contracts/library.ts';
 import type { ConsentGrant, SiteExclusion } from '../contracts/consent.ts';
 
 // Dependency-free DOM surface for the repository's node:test harness. This runs
@@ -91,6 +91,47 @@ function setup(t: TestContext, options: Partial<MountLibraryOptions> = {}) {
   t.after(() => { mount.destroy(); if (previous) Object.defineProperty(globalThis, 'document', previous); else Reflect.deleteProperty(globalThis, 'document'); });
   return { host, doc, adapters, destroy: () => mount.destroy(), remount: (next: Partial<MountLibraryOptions>) => { mount = mountLibrary(host as unknown as HTMLElement, { ...adapters, ...next }); }, live: () => host.querySelector('.ml__live')?.textContent ?? '', settings: async () => { button(host, 'Settings').click(); await settle(); } };
 }
+
+const searchResult = (passage = 'a passage'): LibrarySearchResult => ({ threadId: 'one', sourceVersionId: 'source-one', sourceTitle: 'Saved source', sourceUrl: 'https://example.com/one', kind: 'source', passage, start: 0, end: passage.length, matchExcerpt: passage, matchedTerms: ['passage'], explanation: 'Local text match.', evidenceLabel: 'source passage' });
+
+test('library search waits for submission, preserves the typed draft and opens its cited passage', async t => {
+  const queries: string[] = [], pending = deferred<LibrarySearchResult[]>(); let opened: LibrarySearchResult | undefined;
+  const h = setup(t, { search: query => { queries.push(query); return pending.promise; }, onOpenPassage: (_thread, result) => { opened = result; } });
+  await settle(); const input = keyed(h.host, 'library-query');
+  edit(input, 'passage'); assert.deepEqual(queries, []);
+  button(h.host, 'Search').click(); await settle(); assert.deepEqual(queries, ['passage']);
+  edit(input, 'new draft'); input.focus(); input.setSelectionRange(2, 5);
+  pending.resolve([searchResult()]); await settle();
+  assert.equal(keyed(h.host, 'library-query'), input); assert.equal(input.value, 'new draft');
+  assert.equal(h.doc.activeElement, input); assert.equal(input.selectionStart, 2);
+  button(h.host, 'Open cited passage').click(); await settle(); assert.deepEqual(opened, searchResult());
+});
+
+test('new search owns results and a destroyed library ignores pending completions', async t => {
+  const first = deferred<LibrarySearchResult[]>(), second = deferred<LibrarySearchResult[]>(); let calls = 0;
+  const h = setup(t, { search: () => ++calls === 1 ? first.promise : second.promise, onOpenPassage() {} });
+  await settle(); edit(keyed(h.host, 'library-query'), 'first'); button(h.host, 'Search').click();
+  edit(keyed(h.host, 'library-query'), 'second'); button(h.host, 'Search').click();
+  second.resolve([searchResult('new match')]); await settle(); first.resolve([searchResult('stale match')]); await settle();
+  assert.match(h.host.textContent, /new match/); assert.doesNotMatch(h.host.textContent, /stale match/);
+  h.destroy(); assert.equal(h.host.textContent, '');
+});
+
+test('related results are deliberate and removed search targets cannot open', async t => {
+  let calls = 0, opened = 0, removed = false;
+  const h = setup(t, { listThreads: async () => [thread('one', removed)], search: async () => [searchResult()], related: async id => { assert.equal(id, 'one'); calls++; return [searchResult()]; }, onOpenPassage: () => { opened++; } });
+  await settle(); assert.equal(calls, 0); button(h.host, 'Related saved passages').click(); await settle(); assert.equal(calls, 1);
+  removed = true; button(h.host, 'Open cited passage').click(); await settle();
+  assert.equal(opened, 0); assert.match(h.host.textContent, /no longer available/);
+});
+
+test('leaving library fences a pending cited-passage open', async t => {
+  let reads = 0, opened = 0; const refresh = deferred<Thread[]>();
+  const h = setup(t, { listThreads: () => ++reads === 1 ? Promise.resolve([thread()]) : refresh.promise, search: async () => [searchResult()], onOpenPassage: () => { opened++; } });
+  await settle(); edit(keyed(h.host, 'library-query'), 'passage'); button(h.host, 'Search').click(); await settle();
+  button(h.host, 'Open cited passage').click(); await settle(); await h.settings(); refresh.resolve([thread()]); await settle();
+  assert.equal(opened, 0);
+});
 
 test('section results publish independently even when other settings never settle', async t => {
   const waiting = deferred<ModelSettings>();

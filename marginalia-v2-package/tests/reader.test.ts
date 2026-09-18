@@ -315,12 +315,12 @@ test('T07 continuation SQLite backup includes committed WAL data and predates th
     const writer = new Database(filename);
     try {
       writer.pragma('wal_autocheckpoint = 0');
-      writer.exec('DELETE FROM migrations WHERE version=7001; DROP INDEX source_versions_material_identity; INSERT OR IGNORE INTO migrations VALUES(3),(13)');
+      writer.exec('DELETE FROM migrations WHERE version=7004; DROP INDEX threads_list; INSERT OR IGNORE INTO migrations VALUES(3),(13)');
       writer.prepare('INSERT INTO settings VALUES(?,?)').run('wal-proof', 'committed before snapshot');
       const before = writer.prepare('SELECT * FROM source_versions').all();
       const migrated = new ReaderStore(filename);
       try {
-        assert.equal(migrated.db.prepare('SELECT version FROM migrations WHERE version=7001').get() !== undefined, true);
+        assert.equal(migrated.db.prepare('SELECT version FROM migrations WHERE version=7004').get() !== undefined, true);
         assert.deepEqual(migrated.db.prepare('SELECT * FROM source_versions').all(), before);
         assert.deepEqual(migrated.db.prepare('PRAGMA foreign_key_check').all(), []);
       } finally { migrated.close(); }
@@ -331,7 +331,7 @@ test('T07 continuation SQLite backup includes committed WAL data and predates th
       const check = new Database(snapshot, { readonly: true, fileMustExist: true });
       try {
         assert.deepEqual(check.prepare('PRAGMA integrity_check').all(), [{ integrity_check: 'ok' }]);
-        assert.equal(check.prepare('SELECT version FROM migrations WHERE version=7001').get(), undefined);
+        assert.equal(check.prepare('SELECT version FROM migrations WHERE version=7004').get(), undefined);
         assert.deepEqual(check.prepare('SELECT value FROM settings WHERE key=?').get('wal-proof'), { value: 'committed before snapshot' });
         assert.deepEqual(check.prepare('SELECT * FROM source_versions').all(), before);
       } finally { check.close(); }
@@ -345,8 +345,8 @@ test('T07 continuation SQLite retains two routine backups and protects failure r
   await migrationFixture(({ ReaderStore, Database, filename, root }) => {
     const seed = new ReaderStore(filename); seed.apply(continuationKeep('source')); seed.close();
     const setup = new Database(filename);
-    setup.exec(`DELETE FROM migrations WHERE version=7001; DROP INDEX source_versions_material_identity;
-      CREATE TRIGGER fail_upgrade BEFORE INSERT ON migrations WHEN NEW.version=7001 BEGIN SELECT RAISE(ABORT,'migration interrupted'); END;`);
+    setup.exec(`DELETE FROM migrations WHERE version=7004; DROP INDEX threads_list;
+      CREATE TRIGGER fail_upgrade BEFORE INSERT ON migrations WHEN NEW.version=7004 BEGIN SELECT RAISE(ABORT,'migration interrupted'); END;`);
     setup.close();
     let protectedPath = '';
     assert.throws(() => new ReaderStore(filename), (error: unknown) => {
@@ -355,14 +355,14 @@ test('T07 continuation SQLite retains two routine backups and protects failure r
       protectedPath = failure.backupPath; return true;
     });
     const failed = new Database(filename);
-    assert.equal(failed.prepare('SELECT version FROM migrations WHERE version=7001').get(), undefined);
-    assert.equal(failed.prepare("SELECT name FROM sqlite_master WHERE name='source_versions_material_identity'").get(), undefined);
+    assert.equal(failed.prepare('SELECT version FROM migrations WHERE version=7004').get(), undefined);
+    assert.equal(failed.prepare("SELECT name FROM sqlite_master WHERE name='threads_list'").get(), undefined);
     assert.equal((failed.prepare('SELECT count(*) AS n FROM threads').get() as { n: number }).n, 1);
     failed.exec('DROP TRIGGER fail_upgrade'); failed.close();
     const protectedDigest = sha256File(join(protectedPath, 'reader.sqlite'));
     for (let i = 0; i < 4; i++) {
       const writer = new Database(filename);
-      writer.exec('DELETE FROM migrations WHERE version=7001; DROP INDEX IF EXISTS source_versions_material_identity');
+      writer.exec('DELETE FROM migrations WHERE version=7004; DROP INDEX IF EXISTS threads_list');
       writer.prepare('INSERT OR REPLACE INTO settings VALUES(?,?)').run('generation', String(i)); writer.close();
       new ReaderStore(filename).close();
       assert.ok(backups(root, 'routine-').length <= 2);

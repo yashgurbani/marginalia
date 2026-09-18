@@ -90,7 +90,7 @@ export function dom(t: TestContext) {
   replaceGlobals(t, { document, HTMLElement: TestElement, HTMLInputElement: Input, HTMLTextAreaElement: Textarea,
     window: new TestElement('window', document), location: document.location, CSS: {}, innerHeight: 900,
     matchMedia: () => ({ matches: false }), requestAnimationFrame: (callback: () => void) => setImmediate(callback),
-    sessionStorage: { getItem: (key: string) => session.get(key) ?? null, setItem: (key: string, value: string) => session.set(key, value) },
+    sessionStorage: { getItem: (key: string) => session.get(key) ?? null, setItem: (key: string, value: string) => session.set(key, value), removeItem: (key: string) => session.delete(key) },
   });
   return { document, root };
 }

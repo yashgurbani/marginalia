@@ -2,7 +2,7 @@ import { followupQuestion } from './asking/surfaces.ts';
 import type { QuoteAnchor, ReaderMutation, SourceCapture, Thread } from '../contracts/reader.ts';
 import { wholePageAnchor, attachQuote } from '../contracts/reader.ts';
 import { el, button } from './dom.ts';
-import { localPersistence, documentJournal, documentDraft, documentQuestion, unsavedDrafts, unsavedQuestions, sourceBoundJournal, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle, type MarginDraft, type CachedReply } from './persistence.ts';
+import { localPersistence, documentJournal, documentDraft, documentQuestion, unsavedDrafts, unsavedQuestions, sourceBoundJournal, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle, replyIsRemoved, SUGGESTION_POLICY_VERSION, type SuggestionExposureResolution, type MarginDraft, type CachedReply } from './persistence.ts';
 import { anchorAt, readingAnchorAt, orderedThreads, outgoingPreview, sourceLocation, pageDefinition, displayPosition, egressRecord } from './margin-model.ts';
 import type { JobSnapshot } from '../contracts/jobs.ts';
 import { HelperClient, attachmentTextHash, documentHelper, forgetPairingIfCurrent } from './helper.ts';
@@ -14,11 +14,19 @@ import type { MountedReply } from '../renderer/index.ts';
 import { canonicalReplyData, capabilitiesForIntent, validateReply, type SourceBinding } from '../contracts/reply.ts';
 import { mountSolverRecompute } from './solver-recompute.ts';
 import { diagnosticsSection, loadReaderDiagnostics, type ReaderDiagnostics } from './diagnostics.ts';
+import type { VocabularyObservation, VocabularyObservationResult } from '../contracts/library.ts';
 
 const selectionSuggestions = [
-  { intent: 'simulate', label: 'Move it', question: 'Help me explore this passage by moving its inputs.' },
-  { intent: 'evidence', label: 'Check this', question: 'Check the evidence for this passage.' },
+  { intent: 'simulate', label: 'See it', time: 'about a minute', question: 'Help me see how this passage works.' },
+  { intent: 'evidence', label: 'What supports this', question: 'What supports this passage?' },
+  { intent: 'define', label: 'Define this', question: 'Define this passage in context.' },
 ] as const;
+const wholePageSuggestions = [
+  { intent: 'define', label: 'Define this', question: 'Define this passage in context.' },
+  { intent: 'instantiate', label: 'Show me an example', question: 'Show a worked example of this passage.' },
+  { intent: 'derive', label: 'Explain step by step', question: 'Explain this passage step by step.' },
+] as const;
+type QuestionDraft = AskingSelection & { suggestionExposureId?: string };
 
 export type MarginSection = { title: string; start: number; end: number };
 export type MarginOptions = {
@@ -50,6 +58,8 @@ export type MarginOptions = {
   readPosition?: (sourceUrl: string) => Promise<QuoteAnchor | undefined>;
   writePosition?: (anchor: QuoteAnchor) => Promise<void>;
   positionDebounceMs?: number;
+  /** Test/host seam for the explicit local Remember observation only. */
+  rememberVocabulary?: (observation: VocabularyObservation) => Promise<VocabularyObservationResult>;
 };
 type Draft = MarginDraft;
 type RetainedRequest = { jobId: string; selection: AskingSelection };
@@ -105,6 +115,7 @@ const mountedMargins = new WeakMap<HTMLElement, { destroy(): void; drain(): Prom
 
 /** Mount in a trusted local or extension document. No remote page receives private note markup. */
 export async function mountMargin(root: HTMLElement, options: MarginOptions = {}) {
+  const exposureRecoveryTime = new Date().toISOString();
   const previous = mountedMargins.get(root); previous?.destroy();
   const predecessorDrain = previous?.drain() ?? Promise.resolve();
   let destroyed = false;
@@ -138,7 +149,28 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const panel = el('div', undefined, 'm-panel');
   const bar = el('div', undefined, 'm-bar');
   const heading = el('header', undefined, 'm-head');
-  heading.append(el('h1', capture.title), el('p', `${capture.pageType} · ${new URL(capture.url).hostname}`, 'm-meta'));
+  const sourceTitle = el('h1', capture.title); sourceTitle.id = instance + '-source-title';
+  heading.setAttribute('role', 'region'); heading.setAttribute('aria-labelledby', sourceTitle.id);
+  const sourceMetadata = el('p', [capture.pageType, capture.author, capture.publicationDate, capture.venue].filter(Boolean).join(' · '), 'm-meta');
+  sourceMetadata.id = instance + '-source-metadata';
+  let headerCollapsed = false, headerChosen = false, readingBegan = false;
+  const headerToggle = button('Hide', () => { headerChosen = true; setHeaderCollapsed(!headerCollapsed); });
+  headerToggle.className = 'm-head-toggle'; headerToggle.setAttribute('aria-controls', sourceMetadata.id);
+  function setHeaderCollapsed(value: boolean) {
+    headerCollapsed = value; heading.classList.toggle('m-head-compact', value); sourceMetadata.hidden = value;
+    headerToggle.textContent = value ? 'Details' : 'Hide';
+    headerToggle.setAttribute('aria-expanded', String(!value));
+    headerToggle.setAttribute('aria-label', `${value ? 'Show' : 'Hide'} source details: ${capture.title}`);
+  }
+  function beginReading() {
+    readingBegan = true;
+    if (!headerChosen && !heading.contains(document.activeElement)) setHeaderCollapsed(true);
+  }
+  heading.addEventListener('focusout', () => { queueMicrotask(() => {
+    if (alive() && readingBegan && !headerChosen && !heading.contains(document.activeElement)) setHeaderCollapsed(true);
+  }); }, { signal });
+  const headline = el('div', undefined, 'm-headline'); headline.append(sourceTitle, headerToggle);
+  heading.append(headline, sourceMetadata); setHeaderCollapsed(false);
   const compose = el('div', undefined, 'm-compose');
   const map = el('nav', undefined, 'm-map'); map.setAttribute('aria-label', 'Page map: sections, notes and reading position');
   const reading = el('div', undefined, 'm-reading');
@@ -161,9 +193,11 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const management = options.helperManagement && options.allowHelper !== false ? mountHelperManagement(managementHost) : undefined;
   let suspended = false, readingPosition = 0, hydrationFinished = false, editorGeneration = 0;
   let alignedReadingPosition = -1;
-  let pairingDraft = '', questionDraft: AskingSelection | undefined, retainedRequests: RetainedRequest[] = [];
+  let pairingDraft = '', questionDraft: QuestionDraft | undefined, retainedRequests: RetainedRequest[] = [];
   const updateManagement = () => { if (!suspended && !setup.hidden && !shell.classList.contains('is-collapsed')) management?.open(); else management?.close(); };
   let sectionIndex = 0, held = false, draft: Draft | undefined, selected: QuoteAnchor | undefined;
+  let replacementSelection: { anchor: QuoteAnchor; target: 'note' | 'question' } | undefined;
+  let draftAttachmentSaveFailed = false, questionAttachmentSaveFailed = false;
   let helper: HelperClient | undefined, storageReady = false, saving = false;
   let positionTimer: ReturnType<typeof setTimeout> | undefined, positionDirty = false, lastPositionWrite = 0, restoredPosition = false;
   let resumePosition: number | undefined, resumeLine: HTMLButtonElement | undefined;
@@ -175,6 +209,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   let needsReconciliation = false;
   let lastOpener: HTMLElement | null = null;
   let panelOpener: HTMLElement | null = null;
+  let rememberObservation: VocabularyObservation | undefined, rememberPending = false;
   const narrowViewport = () => matchMedia('(max-width: 899px)').matches;
   const expanded = new Set<string>();
   const expandedKey = 'expanded:' + capture.url;
@@ -201,7 +236,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   // Preserve the established source-bound key so existing question drafts
   // remain readable across this reconciliation.
   const questionKey = 'question:' + draftKey;
-  const questionBuffer = documentQuestion(namespace, questionKey, capture.url, { read: () => persistence.read<AskingSelection>(questionKey), write: value => persistence.write(questionKey, value) });
+  const questionBuffer = documentQuestion(namespace, questionKey, capture.url, { read: () => persistence.read<QuestionDraft>(questionKey), write: value => persistence.write(questionKey, value) });
+  const suggestionScope = draftKey;
   draft = draftBuffer.get(); pendingNoteMutation = draft?.mutation; questionDraft = questionBuffer.get();
   const threadsNow = () => {
     const saved = options.savedThread;
@@ -220,7 +256,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const items = sectionMarkers.map((node, index) => ({ node: node as HTMLElement, position: sections[index].start, rank: 0 }));
     items.push({ node: compose, position: composerOffset(draft, readingPosition), rank: 1 });
-    items.push({ node: selectionCard, position: selected ? displayPosition(selected, capture) ?? readingPosition : readingPosition, rank: 1.2 });
+    const selectionPosition = replacementSelection?.target === 'note' && draft ? composerOffset(draft, readingPosition)
+      : replacementSelection?.target === 'question' && questionDraft ? displayPosition(questionDraft.anchor, capture) ?? readingPosition
+      : selected ? displayPosition(selected, capture) ?? readingPosition : readingPosition;
+    items.push({ node: selectionCard, position: selectionPosition, rank: 1.2 });
     const questionParent = questionDraft?.threadId ? threadNodes.get(questionDraft.threadId)?.node.querySelector<HTMLElement>('.m-thread-body') : undefined;
     if (questionParent) { if (questionArea.parentElement !== questionParent) questionParent.append(questionArea); }
     else items.push({ node: questionArea, position: questionDraft ? displayPosition(questionDraft.anchor, capture) ?? readingPosition : readingPosition, rank: 1.5 });
@@ -458,7 +497,13 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     for (const child of [density, marks, cue]) child.setAttribute('aria-hidden', 'true');
     segment.append(density, marks, cue); map.append(segment);
   });
-  function persistDraft() { if (draft && alive()) { editorGeneration++; void track(draftBuffer.save(draft)).catch(error => { draftSaveFailed = true; fail(error); }); } }
+  function persistDraft() {
+    if (!draft || !alive()) return;
+    editorGeneration++;
+    void track(draftBuffer.save(draft)).then(() => {
+      if (!draftBuffer.unsaved()) { draftAttachmentSaveFailed = false; draftSaveFailed = false; if (alive()) renderCompose(); }
+    }).catch(error => { draftSaveFailed = true; fail(error); });
+  }
   function beginDraft(explicitAnchor?: QuoteAnchor, thread?: Thread, noteId?: string) {
     if (!alive()) return;
     if (!hydrationFinished) { announce('Restoring saved work. The editor will be available when the read finishes.'); return; }
@@ -475,7 +520,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     noteEditor.update(draft ? { text: draft.text,
       attachment: draft.anchor.kind === 'whole-page' ? 'Note on the whole page' : `Note on "${excerpt(displayAnchor(draft.anchor), 66)}"`,
       saving, locked: pendingNoteCommitted || !!draft.mutation, canChange: !draft.threadId,
-      message: !storageReady ? 'Local storage is unavailable. Export this memory-only draft before closing.' : draft.source && draft.source.text !== capture.text ? 'The original captured passage is retained. Change explicitly adopts the current capture.' : draft.mutation ? 'This exact change is retained. Retry saving or resolve its conflict before editing.' : '' } : undefined);
+       message: !storageReady ? 'Local storage is unavailable. Export this memory-only draft before closing.' : draftAttachmentSaveFailed ? 'This attachment change is not saved yet. Retry saving in Settings; your text is retained.' : draft.source && draft.source.text !== capture.text ? 'The original captured passage is retained. Change explicitly adopts the current capture.' : draft.mutation ? 'This exact change is retained. Retry saving or resolve its conflict before editing.' : '' } : undefined);
     placeItems(); if (focus && draft) noteEditor.focus();
   }
   function saveDraft() { return track(saveDraftNow()); }
@@ -515,14 +560,48 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       announce(parked ? 'Passage parked on this device.' : 'Passage kept on this device.');
     });
   }
+  function renderSelectionActions(anchor: QuoteAnchor) {
+    replacementSelection = undefined;
+    rememberObservation = { operationId: id(), term: displayAnchor(anchor), origin: 'stated', observedAt: new Date().toISOString(), source: { kind: 'reader' } }; rememberPending = false;
+    const definition = pageDefinition(anchor.exact, capture.text);
+    const remember = button('Remember', () => { void safely(async () => {
+      if (rememberPending) return;
+      rememberPending = true; remember.disabled = true;
+      try {
+        const observation = structuredClone(rememberObservation!);
+        const result = options.rememberVocabulary ? await options.rememberVocabulary(observation) : await trustedHelper().observeVocabulary(observation);
+        if (!alive() || rememberObservation?.operationId !== observation.operationId) return;
+        announce(result.deleted ? 'This earlier Remember action was deleted. Choose Remember again to add a new entry.' : `${observation.term} is in Vocabulary. This records your choice, not what you know.`);
+        remember.textContent = result.deleted ? 'Remember again' : 'Remembered';
+        if (result.deleted) rememberObservation = { ...observation, operationId: id(), observedAt: new Date().toISOString() };
+      } finally { rememberPending = false; if (alive() && !selectionCard.hidden) remember.disabled = false; }
+    }); });
+    selectionCard.replaceChildren(el('blockquote', displayAnchor(anchor)), el('p', definition ? `${definition} · from this page` : 'No definition found for this selection. Ask about a word or phrase.', 'm-meta'), actions(button('Keep', () => keep(anchor)), button('Highlight', () => highlightSelection(anchor)), button('Ask', () => ask(anchor)), remember, button('Park', () => keep(anchor, true)), button('Write a note', () => beginDraft(anchor)), button('Close selection', closeSelection)), el('p', 'Nothing sent. Remember only records your explicit choice.', 'm-meta'));
+    placeItems();
+  }
   function showSelection(anchor: QuoteAnchor) {
     if (!alive()) return;
     if (!anchor.exact.trim()) return;
     selected = structuredClone(anchor); lastOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     hold(sectionFor(anchor.start)); showPanel(); selectionCard.hidden = false;
-    const definition = pageDefinition(anchor.exact, capture.text);
-    selectionCard.replaceChildren(el('blockquote', displayAnchor(anchor)), el('p', definition ? `${definition} · from this page` : 'No definition found for this selection. Ask about a word or phrase.', 'm-meta'), actions(button('Keep', () => keep(anchor)), button('Highlight', () => highlightSelection(anchor)), button('Ask', () => ask(anchor)), button('Park', () => keep(anchor, true)), button('Write a note', () => beginDraft(anchor)), button('Close selection', closeSelection)), el('p', 'Nothing sent.', 'm-meta'));
-    placeItems(); announce('Selection in the margin. Nothing sent.');
+    const different = (current: QuoteAnchor) => canonicalReplyData(current) !== canonicalReplyData(anchor);
+    const target = questionDraft && !questionSaving && !questionArea.hidden && different(questionDraft.anchor) ? 'question'
+      : draft && !draft.mutation && !saving && different(draft.anchor) ? 'note'
+      : questionDraft && !questionSaving && different(questionDraft.anchor) ? 'question' : undefined;
+    if (target) {
+      replacementSelection = { anchor: structuredClone(anchor), target };
+      selectionCard.replaceChildren(el('p', 'Attach to the new passage?'), actions(
+        button('Keep', () => {
+          if (!replacementSelection) return;
+          const kept = replacementSelection.target, passage = structuredClone(replacementSelection.anchor);
+          renderSelectionActions(passage);
+          announce(`${kept === 'note' ? 'Note' : 'Question'} kept on its original passage. Nothing sent.`);
+        }),
+        button('Switch', () => { void safely(switchDraftAttachment); }),
+      ));
+      placeItems(); announce('Attach to the new passage? Nothing sent.'); return;
+    }
+    renderSelectionActions(anchor); announce('Selection in the margin. Nothing sent.');
   }
   async function highlightSelection(anchor: QuoteAnchor) {
     await safely(async () => {
@@ -537,18 +616,93 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       announce('Passage highlighted on this device.');
     });
   }
-  function closeSelection() { if (!alive()) return; selectionCard.hidden = true; selectionCard.replaceChildren(); selected = undefined; if (lastOpener?.isConnected) lastOpener.focus(); }
+  async function switchDraftAttachment() {
+    if (!replacementSelection || !alive()) return;
+    const choice = structuredClone(replacementSelection), position = displayPosition(choice.anchor, capture) ?? readingPosition;
+    closeSelection();
+    if (choice.target === 'note') {
+      if (!draft || draft.mutation || saving) return;
+      const switched: Draft = { anchor: structuredClone(choice.anchor), source: structuredClone(capture), position, text: draft.text };
+      draft = switched; pendingNoteMutation = undefined; pendingNoteCommitted = false; editorGeneration++;
+      renderCompose(true);
+      try {
+        await draftBuffer.save(switched); draftAttachmentSaveFailed = false; renderCompose(true);
+        announce('Note switched to the new passage. Nothing sent.');
+      } catch (error) {
+        draftAttachmentSaveFailed = true; draftSaveFailed = true; renderCompose(true); fail(error);
+      }
+      return;
+    }
+    if (!questionDraft || questionSaving) return;
+    ++questionRequest; askingMount?.destroy(); askingMount = undefined;
+    const switched = replaceQuestionExposure(structuredClone(questionDraft));
+    switched.capture = structuredClone(capture); switched.anchor = structuredClone(choice.anchor);
+    delete switched.threadId; delete switched.sourceVersionId; delete switched.answeredNote; delete switched.keepMutation;
+    delete switched.resumeJobId; delete switched.resumeReplyId;
+    questionSaving = true;
+    try {
+      await saveQuestion(switched);
+      showQuestion(questionDraft!);
+      announce('Question switched to the new passage. Nothing sent.');
+    } catch (error) {
+      showQuestion(questionDraft!); fail(error);
+    } finally { questionSaving = false; }
+  }
+  function closeSelection() { if (!alive()) return; replacementSelection = undefined; selectionCard.hidden = true; selectionCard.replaceChildren(); selected = undefined; if (lastOpener?.isConnected) lastOpener.focus(); }
   selectionCard.addEventListener('keydown', event => {
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
     if (event.key === 'Escape') closeSelection();
+    if (replacementSelection) return;
     if (selected && event.key.toLowerCase() === 'k') { event.preventDefault(); void keep(selected); }
     if (selected && event.key.toLowerCase() === 'p') { event.preventDefault(); void keep(selected, true); }
     if (selected && event.key === '/') { event.preventDefault(); ask(selected); }
   });
   let questionRequest = 0, questionSaving = false;
-  function saveQuestion(value: AskingSelection) {
+  function saveQuestion(value: QuestionDraft) {
     questionDraft = structuredClone(value);
-    return track(questionBuffer.save(questionDraft));
+    return track(questionBuffer.save(questionDraft)).then(value => {
+      if (!questionBuffer.unsaved()) questionAttachmentSaveFailed = false;
+      return value;
+    }, error => { questionAttachmentSaveFailed = true; throw error; });
+  }
+  let activeSuggestionExposure: { id: string; shownAt: number; ready: Promise<void>; resolving: boolean } | undefined;
+  async function suggestionContextHash(value: AskingSelection): Promise<string> {
+    const context = JSON.stringify({ source: [value.capture.url, value.capture.capturedAt, value.capture.extractionVersion],
+      anchor: [value.anchor.kind ?? 'quote', value.anchor.start, value.anchor.end], threadId: value.threadId ?? null,
+      sourceVersionId: value.sourceVersionId ?? null, answeredNote: value.answeredNote ? [value.answeredNote.noteId, value.answeredNote.revision] : null });
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(context)));
+    return Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+  function beginSuggestionExposure(value: AskingSelection, offers: readonly { intent: string; label: string }[]) {
+    if (activeSuggestionExposure || questionArea.hidden || suspended) return;
+    const exposureId = id(), shownAt = Date.now();
+    questionDraft = { ...questionDraft!, suggestionExposureId: exposureId };
+    const ready = (async () => {
+      const record = { exposureId, policyVersion: SUGGESTION_POLICY_VERSION, contextHash: await suggestionContextHash(value),
+        eligible: offers.map(offer => offer.intent), shown: offers.map((offer, index) => ({ intent: offer.intent, label: offer.label, position: index + 1 })),
+        shownAt: new Date(shownAt).toISOString(), resolvedAt: null, choice: null, resolution: null, latencyMs: null, eventualOutcome: 'unknown' as const };
+      await persistence.suggestions.record(suggestionScope, record);
+      if (questionDraft?.suggestionExposureId === exposureId) await saveQuestion(questionDraft);
+    })();
+    activeSuggestionExposure = { id: exposureId, shownAt, ready, resolving: false };
+    void track(ready).catch(fail);
+  }
+  function resolveSuggestionExposure(resolution: SuggestionExposureResolution, choice: string | null = null) {
+    const active = activeSuggestionExposure;
+    if (!active || active.resolving) return;
+    active.resolving = true;
+    const now = Date.now(), latency = resolution === 'page-closed' ? null : Math.max(0, now - active.shownAt);
+    const work = active.ready.catch(() => {}).then(() => persistence.suggestions.resolve(suggestionScope, active.id, resolution, choice, new Date(now).toISOString(), latency)).then(() => undefined);
+    void track(work).catch(fail);
+  }
+  /** E23 Switch hook: call before saving/rendering the new question attachment.
+   * Keep must not call this. A chosen A keeps its terminal choice; an unchosen A
+   * resolves as replaced. showQuestion(B) then creates B's independent exposure. */
+  function replaceQuestionExposure<T extends AskingSelection>(next: T): T {
+    resolveSuggestionExposure('replaced'); activeSuggestionExposure = undefined;
+    const replacement = { ...next } as T & { suggestionExposureId?: string };
+    delete replacement.suggestionExposureId;
+    return replacement;
   }
   function ask(anchor: QuoteAnchor, thread?: Thread, answeredNote?: { noteId: string; text: string; revision: number }, resumeReplyId?: string) {
     if (!alive()) return;
@@ -575,15 +729,19 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const question = el('textarea'); question.setAttribute('aria-label', 'Your question'); question.maxLength = 20000; question.value = value.question; question.placeholder = 'What would help you here?';
     const context = el('textarea'); context.setAttribute('aria-label', 'Context to attach'); context.maxLength = 20000; context.value = value.context;
     const details = el('details'); details.append(el('summary', 'Attach context'), label('Context to attach', context));
-    const message = el('p', 'Draft only. Preparing a review is separate from authorizing a model request.', 'm-meta'); message.setAttribute('role', 'status');
+    const message = el('p', questionAttachmentSaveFailed ? 'This question attachment is not saved yet. Retry saving in Settings; your text is retained.' : 'Draft only. Preparing a review is separate from authorizing a model request.', 'm-meta'); message.setAttribute('role', 'status');
     const persist = () => { if (!questionDraft) return; questionDraft.question = question.value; questionDraft.context = context.value; void saveQuestion(questionDraft).catch(fail); };
     question.addEventListener('input', persist); context.addEventListener('input', persist);
-    const suggestions = actions(...([
-      { intent: 'define', label: 'Define this', question: 'Define this passage in context.' },
-      { intent: 'instantiate', label: 'Show me an example', question: 'Show a worked example of this passage.' },
-      { intent: 'derive', label: 'Explain step by step', question: 'Explain this passage step by step.' },
-      ...(value.anchor.kind === 'whole-page' ? [] : selectionSuggestions),
-    ] as const).map(suggestion => button(suggestion.label, () => { questionDraft!.intent = suggestion.intent; question.value = suggestion.question; persist(); question.focus(); })));
+    const offers = value.anchor.kind === 'whole-page' ? wholePageSuggestions : selectionSuggestions;
+    const suggestions = actions(...offers.map(suggestion => {
+      const choose = button(suggestion.label, () => {
+        resolveSuggestionExposure('chosen', suggestion.intent);
+        suggestions.querySelectorAll<HTMLButtonElement>('button').forEach(control => { control.disabled = true; });
+        questionDraft!.intent = suggestion.intent; question.value = suggestion.question; persist(); question.focus();
+      });
+      if (!('time' in suggestion)) return choose;
+      const offer = el('span', undefined, 'm-suggestion'); offer.append(choose, el('span', suggestion.time, 'm-meta')); return offer;
+    }));
     const contextOnDevice = button('Keep this context on this device', () => { void safely(async () => {
       if (!questionDraft || questionSaving) return; questionSaving = true; contextOnDevice.disabled = true;
       const selection = structuredClone(questionDraft);
@@ -606,16 +764,18 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const reviewButton = button(value.resumeJobId || value.resumeReplyId ? 'Check saved request or reply' : 'Review with local helper', () => { void openQuestionWithHelper(message, reviewButton); });
     if (options.allowHelper === false) {
       saveHelper.disabled = true; reviewButton.disabled = true;
-      message.textContent = 'Open the browser-owned margin or localhost page to review sending. This embedded surface can save local drafts but cannot use pairing credentials.';
+      if (!questionAttachmentSaveFailed) message.textContent = 'Open the browser-owned margin or localhost page to review sending. This embedded surface can save local drafts but cannot use pairing credentials.';
     }
     questionForm.replaceChildren(el('blockquote', value.anchor.kind === 'whole-page' ? 'Whole page' : value.anchor.exact),
       ...(value.answeredNote ? [el('p', `Your note, version ${value.answeredNote.revision}: ${value.answeredNote.text}`, 'm-note')] : []),
-      suggestions, question, details, message, actions(contextOnDevice, saveHelper, reviewButton, button('Close question', closeQuestion), button('Retain draft in history and start another', () => { void archiveQuestion(); })));
+      suggestions, question, details, message, actions(contextOnDevice, saveHelper, reviewButton, button('Close question', () => closeQuestion()), button('Retain draft in history and start another', () => { void archiveQuestion(); })));
+    beginSuggestionExposure(value, offers);
     placeItems(); question.focus({ preventScroll: true });
     return { message, reviewButton };
   }
-  function closeQuestion() {
+  function closeQuestion(resolution: SuggestionExposureResolution = 'dismissed') {
     if (!alive()) return;
+    resolveSuggestionExposure(resolution); activeSuggestionExposure = undefined;
     ++questionRequest; questionArea.hidden = true; askingMount?.destroy(); askingMount = undefined;
     if (lastOpener?.isConnected) lastOpener.focus({ preventScroll: true }); else readingTitle.focus({ preventScroll: true });
   }
@@ -624,7 +784,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       if (!questionDraft || questionSaving) return;
       questionSaving = true;
       try {
-        closeQuestion(); // Snapshot the peer before preserving and clearing this draft.
+        closeQuestion('replaced'); // Snapshot the peer before preserving and clearing this draft.
         const retained = structuredClone(questionDraft);
         await persistence.write('question-history:' + draftKey + ':' + id(), retained);
         await questionBuffer.save(undefined); questionDraft = undefined;
@@ -884,7 +1044,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const replyStatus = el('p', '', 'm-reply-status m-meta'); replyStatus.setAttribute('role', 'status');
     const replyList = el('div', undefined, 'm-reply-list');
     const replyActions = actions(button('Reload saved views', () => loadReplies(thread.id, false, true)), button('Export saved replies and views', () => exportReplies(thread.id)));
-    if (options.allowHelper !== false) replyActions.append(button('Load replies from helper', () => loadReplies(thread.id, true)));
+    if (options.allowHelper !== false) replyActions.append(
+      button('Load replies from helper', () => loadReplies(thread.id, true)),
+      button('Save reply changes to helper', () => safely(() => syncReplyRemovals(thread.id))),
+    );
     replyArea.append(replyStatus, replyList, replyActions);
     const bodyGroup = el('div', undefined, 'm-thread-body'); bodyGroup.append(body, replyArea); node.append(preview, bodyGroup);
     for (const control of Array.from(node.querySelectorAll<HTMLElement>('button,select'))) control.dataset.focusKey ??= thread.id + ':' + (control.getAttribute('aria-label') ?? control.textContent);
@@ -915,6 +1078,44 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     return anchor;
   }
   function loadReplies(threadId: string, remote = false, reopen = false) { return track(readReplies(threadId, remote, reopen)); }
+  async function setReplyRemoval(record: CachedReply, removed: boolean) {
+    const changed = await persistence.replies.setRemoved(record, removed);
+    if (!alive()) return;
+    await readReplies(record.version.threadId, false, true);
+    announce(removed ? 'Reply removed from the margin. Its saved record is retained.' : 'Reply restored.');
+    return changed;
+  }
+  function showReplyRemovalToast(record: CachedReply) {
+    toast.hidden = false;
+    const undo = button('Undo', () => safely(async () => {
+      const latest = (await persistence.replies.list(record.version.threadId)).find(item => item.origin === record.origin && item.version.id === record.version.id);
+      if (!latest) throw new Error('This saved reply is unavailable.');
+      await setReplyRemoval(latest, false);
+      toast.hidden = true;
+      threadNodes.get(record.version.threadId)?.node.querySelector<HTMLElement>('.m-source-action')?.focus();
+    }));
+    toast.replaceChildren(el('span', 'Reply removed.'), undo); undo.focus();
+  }
+  async function syncReplyRemovals(threadId: string) {
+    const client = await replyClient(threadId);
+    const records = await persistence.replies.list(threadId);
+    const changes = records.filter(record => record.removal && record.removal.status !== 'acknowledged');
+    if (!changes.length) { announce('No reply changes are waiting to be saved to the helper.'); return; }
+    let failure: unknown;
+    try {
+      for (const record of changes) {
+        if (record.origin !== client.origin) throw new Error('Pair with the helper that owns this reply.');
+        await persistence.replies.syncRemoval(record, async change => {
+          const currentClient = await replyClient(threadId);
+          if (currentClient !== client) throw new Error('The helper connection changed.');
+          return client.setReplyRemoved(change);
+        });
+      }
+    } catch (error) { failure = error; }
+    if (alive()) await readReplies(threadId, false, true);
+    if (failure) throw failure;
+    announce('Reply changes were saved to the local helper.');
+  }
   async function readReplies(threadId: string, remote = false, reopen = false) {
     if (!alive()) return;
     const thread = currentThread(threadId); if (!thread || thread.deletedAt) return;
@@ -944,20 +1145,31 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       }
       const records = await persistence.replies.list(thread.id);
       if (!current()) return;
-      const visible = records.filter(record => !record.version.deletedAt);
+      const visible = records.filter(record => !replyIsRemoved(record));
+      const removed = records.filter(replyIsRemoved);
       let unavailable = 0;
       const identity = (record: CachedReply) => JSON.stringify([record.origin, record.version.threadId, record.version.id]);
       for (const [key, entry] of replyMounts) if (entry.threadId === thread.id && !visible.some(record => identity(record) === key)) { entry.close(); entry.node.remove(); replyMounts.delete(key); }
       for (const record of visible) {
         const key = identity(record);
-        if (replyMounts.has(key)) continue;
+        const warningText = (record.version.corrections ?? []).map(item =>
+          `Review this work: reply “${item.ancestorTitle}” (${item.ancestorId}) was corrected by ${item.correctionId}. Saved notes and controls are preserved.`).join(' ');
+        const existingMount = replyMounts.get(key);
+        if (existingMount) {
+          const warning = existingMount.node.querySelector<HTMLElement>('.m-reply-correction');
+          if (warning) { warning.textContent = warningText; warning.hidden = !warningText; }
+          continue;
+        }
         const session = await persistence.replies.open(record);
         if (!current()) return;
         const saved = session.record;
-        if (saved.version.deletedAt) continue;
+        if (replyIsRemoved(saved)) continue;
         if (!validateReply(saved.version.reply, { sourceText: saved.source.text }).ok) { unavailable++; continue; }
         const wrapper = el('section', undefined, 'm-saved-reply'); wrapper.dataset.replyVersion = saved.version.id;
         wrapper.append(el('p', `Saved reply · ${saved.version.createdAt}${saved.version.parentId ? ' · follow-up' : ''}${saved.version.supersedes ? ' · revised version' : ''}`, 'm-meta'));
+        const correctionWarning = el('p', warningText, 'm-reply-correction m-meta');
+        correctionWarning.setAttribute('role', 'status'); correctionWarning.hidden = !warningText;
+        wrapper.append(correctionWarning);
         if (saved.version.answeredNote) wrapper.append(el('p', `Answers your note, version ${saved.version.answeredNote.revision}: ${saved.version.answeredNote.text}`, 'm-reply-note-reference m-meta'));
         wrapper.append(el('p', saved.dirty ? 'View changes saved on this device.' : 'Saved view. Controls do not change the authored reply.', 'm-meta'));
         const viewStatus = el('p', saved.conflict ? 'This view changed elsewhere. Your local inputs are preserved.' : '', 'm-meta'); viewStatus.setAttribute('role', 'status');
@@ -1055,13 +1267,35 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
           })));
         }
         if (options.allowHelper !== false) controls.append(button('Open saved reply and follow-up', () => { const current = currentThread(thread.id); if (!current) return; const note = saved.version.answeredNote; ask(current.anchor, current, note ? { noteId: note.noteId, revision: note.revision, text: note.text } : undefined, saved.version.id); }));
+        controls.append(button('Remove reply', () => safely(async () => {
+          if (closed) return;
+          await flush();
+          if (closed || !alive()) return;
+          await persistence.replies.setRemoved(saved, true);
+          if (!alive()) return;
+          showReplyRemovalToast(saved);
+          await readReplies(thread.id, false, true);
+        })));
         wrapper.append(viewStatus, controls);
         if (!solverRecompute) wrapper.append(el('p', options.allowHelper === false
           ? 'This example cannot run again here yet. Your notes and current inputs are unchanged.'
           : 'Permission is needed before this example can run again. Your notes and current inputs are unchanged.', 'm-meta'));
         area()?.querySelector('.m-reply-list')?.append(wrapper);
       }
-      message(persistence.replies.unsaved(thread.id).length ? 'Some view inputs are still only in memory after a failed save. Export them before closing this page.' : unavailable ? `${unavailable} saved ${unavailable === 1 ? 'reply could' : 'replies could'} not be safely displayed. Original records remain available in the export.` : visible.some(record => record.conflict) ? 'The helper has a different view. Local controls are preserved; use the helper view explicitly to replace them.' : visible.some(record => record.recovered?.length) ? 'Saved replies are available. Earlier view inputs are preserved in the recovery export.' : visible.length ? `${visible.length} saved ${visible.length === 1 ? 'reply' : 'replies'}. Notes stay above replies.` : 'No saved replies on this device.');
+      area()?.querySelector('.m-removed-replies')?.remove();
+      if (removed.length) {
+        const history = el('details', undefined, 'm-removed-replies');
+        history.append(el('summary', `Removed replies (${removed.length})`));
+        for (const record of removed) {
+          const item = el('div', undefined, 'm-removed-reply');
+          item.append(el('p', `${record.version.reply.title ?? 'Saved reply'} · ${record.version.createdAt}`, 'm-meta'));
+          if (record.removal?.status === 'conflict') item.append(el('p', 'This reply changed elsewhere. Your choice is kept here.', 'm-meta'));
+          item.append(button('Undo', () => safely(async () => { await setReplyRemoval(record, false); toast.hidden = true; })));
+          history.append(item);
+        }
+        area()?.append(history);
+      }
+      message(persistence.replies.unsaved(thread.id).length ? 'Some view inputs are still only in memory after a failed save. Export them before closing this page.' : unavailable ? `${unavailable} saved ${unavailable === 1 ? 'reply could' : 'replies could'} not be safely displayed. Original records remain available in the export.` : removed.some(record => record.removal?.status === 'conflict') ? 'This reply changed elsewhere. Your choice is kept here.' : visible.some(record => record.conflict) ? 'The helper has a different view. Local controls are preserved; use the helper view explicitly to replace them.' : visible.some(record => record.recovered?.length) ? 'Saved replies are available. Earlier view inputs are preserved in the recovery export.' : visible.length ? `${visible.length} saved ${visible.length === 1 ? 'reply' : 'replies'}. Notes stay above replies.${removed.length ? ` ${removed.length} removed ${removed.length === 1 ? 'reply is' : 'replies are'} retained in history.` : ''}` : removed.length ? `${removed.length} removed ${removed.length === 1 ? 'reply is' : 'replies are'} retained in history.` : 'No saved replies on this device.');
     } catch (error) { message(error instanceof Error ? error.message : 'Saved replies could not be loaded.'); }
   }
   function exportReplies(threadId: string) {
@@ -1120,8 +1354,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     node?.scrollIntoView({ block: 'center', behavior: 'instant' }); highlight(anchor);
     if (source && closeNarrow && narrowViewport()) closePanel();
   }
-  function updateReading() {
+  function updateReading(event?: Event) {
     if (held || suspended || !source) return;
+    if (event?.type === 'scroll') beginReading();
     const blocks = Array.from(source.querySelectorAll<HTMLElement>('[data-reading-section]'));
     const index = blocks.reduce((chosen, node, i) => node.getBoundingClientRect().top <= innerHeight * .4 ? i : chosen, 0);
     sectionIndex = Math.min(index, sections.length - 1); readingPosition = sections[sectionIndex].start;
@@ -1194,10 +1429,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       await locked(() => journal.reconcilePersistence()); needsReconciliation = false; pendingNoteCommitted = false;
       changed(); renderThreads(); renderCompose(); renderSettings(); announce('Recovered changes need deliberate review. Your note and question drafts are retained.');
     })));
-    if (hydrationFinished && (journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() || pendingNoteMutation || pendingNoteCommitted || draftSaveFailed || !!draft)) settingsBody.append(el('p', 'Some work needs saving or conflict review. Memory-only recovery lasts only while this document stays open; export before closing.', 'm-error'), button('Retry saving', () => safely(async () => {
-      if (draft || pendingNoteMutation) await saveDraftNow();
+    if (hydrationFinished && (journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() || persistence.suggestions.unsaved(suggestionScope).length || pendingNoteMutation || pendingNoteCommitted || draftSaveFailed || !!draft)) settingsBody.append(el('p', 'Some work needs saving or conflict review. Memory-only recovery lasts only while this document stays open; export before closing.', 'm-error'), button('Retry saving', () => safely(async () => {
+      if (draftAttachmentSaveFailed) { await draftBuffer.flush(); draftAttachmentSaveFailed = false; draftSaveFailed = false; announce('Draft attachment saved on this device. The note remains a draft.'); }
+      else if (draft || pendingNoteMutation) await saveDraftNow();
       else { await locked(() => journal.retryPersistence()); await draftBuffer.flush(); }
-      if (questionBuffer.unsaved()) await questionBuffer.save(questionBuffer.get());
+      const questionWasAttachmentFailed = questionAttachmentSaveFailed;
+      if (questionBuffer.unsaved()) { const retained = questionBuffer.get(); if (retained) await saveQuestion(retained); }
+      if (questionWasAttachmentFailed && questionDraft && !questionArea.hidden) { showQuestion(questionDraft); announce('Question draft attachment saved on this device. The question remains a draft.'); }
+      await persistence.suggestions.retry(suggestionScope);
       draftSaveFailed = false;
       changed(); renderThreads(); renderCompose(); renderSettings();
     })));
@@ -1274,7 +1513,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       catch { requestHistoryAvailable = false; }
       const blob = new Blob([JSON.stringify({ version: 1, source: capture, ...state, draft, question: questionDraft,
         journalDurable: !journal.unsaved, requests, earlierQuestions, requestHistoryAvailable,
-        memoryOnlyDrafts: unsavedDrafts(namespace, capture.url), memoryOnlyQuestions: unsavedQuestions(namespace, capture.url) }, null, 2)], { type: 'application/json' });
+        memoryOnlyDrafts: unsavedDrafts(namespace, capture.url), memoryOnlyQuestions: unsavedQuestions(namespace, capture.url),
+        unsavedSuggestionExposures: persistence.suggestions.unsaved(suggestionScope) }, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob), link = el('a'); link.href = url; link.download = 'marginalia-notes.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
   }
@@ -1283,6 +1523,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     ++attachmentGeneration;
     options.onSavedMarks?.([]);
     void track(flushReadingPosition());
+    resolveSuggestionExposure('page-closed'); activeSuggestionExposure = undefined;
     askingMount?.destroy(); management?.destroy(); closeReplies(); highlight(null); destroyed = true; abort.abort(); channel?.close();
     workspace.remove(); skip.remove();
     if (mountedMargins.get(root)?.destroy === destroy) root.classList.remove('m-app', 'm-host-only');
@@ -1294,12 +1535,13 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     return helper;
   }
   const api = {
+    replaceQuestionExposure,
     sourceUrl: capture.url, connection: trustedHelper, exportWork, drain: lifecycle.drain,
     get restoredPosition() { return restoredPosition; }, flushReadingPosition,
     getThread: currentThread,
     focusThread(threadId: string) { expandAdditionally(threadId); renderThreads(); const thread = currentThread(threadId); if (thread) hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); },
     select: showSelection,
-    setReadingPosition(start: number) { if (alive() && !suspended && !held) { const next = Math.max(0, Math.min(capture.text.length, start)); if (resumePosition !== undefined && next > resumePosition) dismissResumeLine(); if (restoredPosition && sectionFor(next) === sectionIndex) return; restoredPosition = false; if (next === readingPosition) return; readingPosition = next; sectionIndex = sectionFor(readingPosition); renderPosition(); if (hydrationFinished) { positionDirty = true; queueReadingPosition(); } } },
+    setReadingPosition(start: number) { if (alive() && !suspended && !held && Number.isFinite(start)) { const next = Math.max(0, Math.min(capture.text.length, start)); if (resumePosition !== undefined && next > resumePosition) dismissResumeLine(); if (restoredPosition && sectionFor(next) === sectionIndex) return; restoredPosition = false; if (next === readingPosition) return; beginReading(); readingPosition = next; sectionIndex = sectionFor(readingPosition); renderPosition(); if (hydrationFinished) { positionDirty = true; queueReadingPosition(); } } },
     suspend() { highlight(null); suspended = true; diagnosticsAbort?.abort(); management?.close(); askingMount?.setVisible(false); },
     resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); renderSettings(); paintHighlights(); },
     async openThread(threadId: string) { await openSavedThread(threadId); },
@@ -1336,6 +1578,22 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   if (!alive()) return api;
   hydrationFinished = true; renderCompose(); renderThreads(); renderSettings(); renderRetainedRequests();
   if (questionDraft) footer.append(button('Return to retained question', () => { if (questionDraft) showQuestion(questionDraft); }));
+  // Exposure history is independent of reader hydration. Read at most 64 entries
+  // per page and yield between pages; preserve malformed rows for inspection.
+  void track((async () => {
+    let after: string | undefined;
+    const recoveryTime = exposureRecoveryTime;
+    try {
+      await persistence.suggestions.retry(suggestionScope);
+      do {
+        const result = await persistence.suggestions.recover(suggestionScope, recoveryTime, after);
+        if (result.invalid || result.failed) announce('Some suggestion history could not be restored. Your notes and questions are available. Retry saving in Settings for unsaved history.');
+        after = result.next;
+        if (after) await new Promise(resolve => setTimeout(resolve, 0));
+      } while (after && alive());
+    } catch { announce('Suggestion history could not be restored. Your notes and questions are available.'); }
+    if (alive()) renderSettings();
+  })());
   channel?.addEventListener('message', event => {
     if (event.data === 'pairing-changed') {
       if (options.allowHelper === false || !helper) return;

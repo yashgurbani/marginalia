@@ -253,6 +253,38 @@ test('immutable validated reply versions quote the answered note and persist ind
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('E38 correction marks transitive and future descendants, survives restore/reopen, and preserves exported reader work', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'marginalia-corrections-'));
+  const filename = join(dir, 'reader.sqlite');
+  let store = new ReaderStore(filename);
+  try {
+    store.apply({ ...keep, capture: { ...keep.capture, text: growthSourceText }, anchor: wholePageAnchor() });
+    const add = (id: string, parentId?: string, supersedes?: string) => store.commitReply({ id, threadId: keep.threadId, reply: growthReply, parentId, supersedes });
+    add('root'); add('child', 'root'); add('grandchild', 'child'); add('unrelated');
+    const view = store.saveReplyView({ id: 'controls', replyVersionId: 'grandchild', expectedRevision: 1, parameters: { ...growthDefaultParameters, f: 0.2 }, view: { annotation: 'My observation', expanded: true } });
+    const before = store.exportThread(keep.threadId);
+    add('fixed', undefined, 'root');
+    add('future', 'grandchild'); add('revised-child', undefined, 'child');
+    for (const id of ['root', 'child', 'grandchild', 'future', 'revised-child']) {
+      assert.ok(store.reply(id)!.corrections!.some(item => item.ancestorId === 'root' && item.correctionId === 'fixed' && item.ancestorTitle === growthReply.title), id);
+    }
+    assert.deepEqual(store.reply('unrelated')!.corrections, []);
+    assert.deepEqual(store.reply('fixed')!.corrections!.map(item => item.ancestorId), ['root']);
+    store.setReplyRemoved({ id: 'remove-root', replyVersionId: 'root', removed: true, expectedRevision: 1 });
+    store.setReplyRemoved({ id: 'remove-fixed', replyVersionId: 'fixed', removed: true, expectedRevision: 1 });
+    store.close(); store = new ReaderStore(filename);
+    store.setReplyRemoved({ id: 'restore-root', replyVersionId: 'root', removed: false, expectedRevision: 2 });
+    const after = store.exportThread(keep.threadId);
+    assert.deepEqual(after.thread.notes, before.thread.notes);
+    assert.deepEqual(after.noteVersions, before.noteVersions);
+    assert.deepEqual(after.source, before.source);
+    assert.deepEqual(store.replyView('grandchild'), view);
+    for (const original of before.replies) assert.deepEqual(after.replies.find(item => item.id === original.id)!.reply, original.reply);
+    assert.ok(after.replies.find(item => item.id === 'grandchild')!.corrections!.some(item => item.ancestorId === 'root'));
+    assert.ok(store.reply('root')!.corrections!.length);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('outbox and mutation receipt commit atomically with notes, and retries accept reordered JSON keys', () => {
   const store = new ReaderStore(':memory:');
   try {
@@ -299,7 +331,7 @@ test('v1 database migration preserves original captures and labels unrecoverable
     assert.deepEqual(store.exportThread('t').targetVersions, []);
     store.close(); store = new ReaderStore(filename);
     assert.equal(store.list().length, 1);
-    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 4, 7001, 7002, 7004]);
+    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 4, 7001, 7002, 7004, 22001, 33001]);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -324,7 +356,7 @@ test('T07 F2 material metadata and section maps have independent immutable ident
     assert.equal(new Set([original, title, type, sectioned, sectionTitle].map(v => v.id)).size, 5);
     assert.equal(save('same-material', { ...keep.capture, title: 'New title' }).id, title.id);
     assert.deepEqual(store.sourceVersion(original.id), original);
-    assert.throws(() => store.db.prepare(`INSERT INTO source_versions SELECT 'duplicate',sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections FROM source_versions WHERE id=?`).run(original.id), /UNIQUE/);
+    assert.throws(() => store.db.prepare(`INSERT INTO source_versions SELECT 'duplicate',sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections,author,publicationDate,venue FROM source_versions WHERE id=?`).run(original.id), /UNIQUE/);
     assert.throws(() => store.db.prepare('UPDATE source_versions SET title=? WHERE id=?').run('Rewritten', original.id), /immutable/);
     store.close(); store = new ReaderStore(filename);
     assert.deepEqual(store.sourceVersion(original.id), original);
@@ -362,7 +394,7 @@ test('T07 F2 v4 upgrade preserves old IDs, legacy/unavailable metadata and forei
   old.close();
   let store = new ReaderStore(filename);
   try {
-    assert.deepEqual(store.db.prepare('SELECT * FROM source_versions ORDER BY id').all(), rows);
+    assert.deepEqual(store.db.prepare('SELECT * FROM source_versions ORDER BY id').all(), rows.map(row => ({ ...(row as object), author: null, publicationDate: null, venue: null })));
     assert.equal(store.get('thread-old')!.sourceVersionId, 'legacy-id');
     assert.equal(store.attachments('thread-old')[0].targetVersionId, 'unavailable-id');
     assert.equal(store.attachments('thread-old')[0].targetAvailable, true);
@@ -373,12 +405,12 @@ test('T07 F2 v4 upgrade preserves old IDs, legacy/unavailable metadata and forei
     assert.equal(store.sourceVersion('legacy-id')!.metadataStatus, 'legacy');
     assert.equal(store.sourceVersion('legacy-id')!.title, null);
     // Null and empty metadata remain distinct; SQL and application identity agree.
-    store.db.prepare(`INSERT INTO source_versions SELECT 'empty-title',sourceId,hash,text,capturedAt,extractionVersion,'',pageType,metadataStatus,sections FROM source_versions WHERE id='legacy-id'`).run();
-    assert.throws(() => store.db.prepare(`INSERT INTO source_versions SELECT 'duplicate-null',sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections FROM source_versions WHERE id='legacy-id'`).run(), /UNIQUE/);
+    store.db.prepare(`INSERT INTO source_versions SELECT 'empty-title',sourceId,hash,text,capturedAt,extractionVersion,'',pageType,metadataStatus,sections,author,publicationDate,venue FROM source_versions WHERE id='legacy-id'`).run();
+    assert.throws(() => store.db.prepare(`INSERT INTO source_versions SELECT 'duplicate-null',sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections,author,publicationDate,venue FROM source_versions WHERE id='legacy-id'`).run(), /UNIQUE/);
     assert.throws(() => store.db.prepare("UPDATE source_versions SET title='changed' WHERE id='legacy-id'").run(), /immutable/);
     store.close(); store = new ReaderStore(filename);
     assert.deepEqual(store.db.pragma('foreign_key_check'), []);
-    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 3, 4, 13, 7001, 7002, 7004]);
+    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 3, 4, 13, 7001, 7002, 7004, 22001, 33001]);
     assert.equal(store.sourceVersion('unavailable-id')!.capturedAt, null);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

@@ -1,4 +1,4 @@
-import type { QuoteAnchor, SourceCapture, SourceSection } from '../../contracts/reader.ts';
+import { validPublicationDate, type QuoteAnchor, type SourceCapture, type SourceSection } from '../../contracts/reader.ts';
 export const MAX_TEXT = 1_000_000;
 export const MAX_QUOTE = 20_000;
 export const MAX_CONTEXT = 40;
@@ -46,6 +46,8 @@ export function validSnapshot(v: unknown): v is Snapshot {
   if (!record(v) || !text(v.document, 64) || !v.document || !record(v.capture) || !integer(v.position) || !integer(v.revision, Number.MAX_SAFE_INTEGER)) return false;
   const c = v.capture;
   if (!allowedPage(c.url) || !text(c.title, 500) || !text(c.pageType, 80) || !text(c.text, MAX_TEXT) || !text(c.capturedAt, 40) || !Number.isFinite(Date.parse(c.capturedAt)) || c.extractionVersion !== 'dom-safe-text-v1' || v.position > c.text.length) return false;
+  for (const field of ['author', 'venue'] as const) if (c[field] !== undefined && (!text(c[field], 500) || !c[field].trim() || c[field] !== c[field].trim() || /[\u0000-\u001f\u007f]/.test(c[field]))) return false;
+  if (c.publicationDate !== undefined && !validPublicationDate(c.publicationDate)) return false;
   if (!validSections(v.sections, c.text.length, 300, 200)) return false;
   const sections = v.sections;
   if (c.sections !== undefined && (!validSections(c.sections, c.text.length, 2000, 1000) || c.sections.length !== sections.length || c.sections.some((section, index) => {

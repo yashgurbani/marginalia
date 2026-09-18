@@ -5,14 +5,18 @@ import type { HostCheckReport } from './host-checks.ts';
 export type QuoteAnchor = { kind?: 'quote' | 'section' | 'whole-page'; exact: string; prefix: string; suffix: string; start: number; end: number };
 export const wholePageAnchor = (): QuoteAnchor => ({ kind: 'whole-page', exact: '', prefix: '', suffix: '', start: 0, end: 0 });
 export type SourceSection = { title: string; start: number; end: number };
-export type SourceCapture = { url: string; title: string; pageType: string; text: string; capturedAt: string; extractionVersion: string; sections?: SourceSection[] };
-export type SourceVersion = { id: string; sourceId: string; hash: string; text: string; capturedAt: string | null; extractionVersion: string | null; title: string | null; pageType: string | null; metadataStatus: 'provided' | 'legacy' | 'unavailable'; sections?: SourceSection[] };
+export type SourceMetadata = { author?: string; publicationDate?: string; venue?: string };
+export type SourceCapture = SourceMetadata & { url: string; title: string; pageType: string; text: string; capturedAt: string; extractionVersion: string; sections?: SourceSection[] };
+export type SourceVersion = SourceMetadata & { id: string; sourceId: string; hash: string; text: string; capturedAt: string | null; extractionVersion: string | null; title: string | null; pageType: string | null; metadataStatus: 'provided' | 'legacy' | 'unavailable'; sections?: SourceSection[] };
 export type NoteVersionRef = { noteId: string; revision: number };
 export type NoteVersion = NoteVersionRef & { text: string; createdAt: string };
-export type ReplyVersion = { id: string; threadId: string; parentId: string | null; supersedes: string | null; reply: CandidateReply; hash: string; validation: HostCheckReport; answeredNote: NoteVersion | null; createdAt: string; deletedAt: string | null; revision: number };
+export type ReplyCorrection = { ancestorId: string; ancestorTitle: string; correctionId: string; correctedAt: string };
+// Derived from immutable lineage, including removed versions. Missing on legacy caches.
+export type ReplyVersion = { id: string; threadId: string; parentId: string | null; supersedes: string | null; reply: CandidateReply; hash: string; validation: HostCheckReport; answeredNote: NoteVersion | null; createdAt: string; deletedAt: string | null; revision: number; corrections?: ReplyCorrection[] };
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 // The authored reply is immutable; these reader controls are stored independently.
 export type ReplyViewState = { replyVersionId: string; parameters: Record<string, number>; view: { [key: string]: JsonValue }; revision: number; updatedAt: string };
+export type ReplyRemovalChange = { id: string; threadId: string; replyVersionId: string; removed: boolean; expectedRevision: number };
 export type ThreadState = 'open' | 'parked' | 'done' | 'archived';
 export type ReaderMutation =
   | { id: string; kind: 'keep'; threadId: string; capture: SourceCapture; anchor: QuoteAnchor; note?: string }
@@ -86,6 +90,16 @@ export function validateReaderMutation(value: unknown): asserts value is ReaderM
   }
 }
 
+/** Shared boundary for the reply-only tombstone route. Reply authorship and view data are not mutable here. */
+export function validateReplyRemovalChange(value: unknown): asserts value is ReplyRemovalChange {
+  const change = value as ReplyRemovalChange;
+  if (!change || typeof change !== 'object' || Array.isArray(change) ||
+    !readerId(change.id) || !readerId(change.threadId) || !readerId(change.replyVersionId) ||
+    typeof change.removed !== 'boolean' || !Number.isSafeInteger(change.expectedRevision) || change.expectedRevision < 0) {
+    invalidReaderMutation('Invalid reply removal.');
+  }
+}
+
 export function validateQuoteAnchor(a: unknown, text: string): asserts a is QuoteAnchor {
   const anchor = a as QuoteAnchor;
   if (!anchor || (anchor.kind !== undefined && !['quote', 'section', 'whole-page'].includes(anchor.kind)) || typeof anchor.exact !== 'string' || anchor.exact.length > 16000 || typeof anchor.prefix !== 'string' || typeof anchor.suffix !== 'string' || anchor.prefix.length > 256 || anchor.suffix.length > 256 || !Number.isSafeInteger(anchor.start) || !Number.isSafeInteger(anchor.end) || anchor.start < 0 || anchor.end < anchor.start || anchor.end > text.length) invalidReaderMutation('Invalid passage attachment.');
@@ -99,6 +113,11 @@ export function validateSourceCapture(value: unknown): asserts value is SourceCa
   let url: URL;
   try { url = new URL(c.url); } catch { invalidReaderMutation('Invalid source capture.'); }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) invalidReaderMutation('Invalid source capture.');
+  for (const field of ['author', 'venue'] as const) {
+    const metadata = c[field];
+    if (metadata !== undefined && (typeof metadata !== 'string' || !metadata.trim() || metadata !== metadata.trim() || metadata.length > 500 || /[\u0000-\u001f\u007f]/.test(metadata))) invalidReaderMutation('Invalid source metadata.');
+  }
+  if (c.publicationDate !== undefined && !validPublicationDate(c.publicationDate)) invalidReaderMutation('Invalid source metadata.');
   if (c.sections !== undefined) {
     if (!Array.isArray(c.sections) || c.sections.length > 2000) invalidReaderMutation('Invalid source sections.');
     let previousEnd = 0;
@@ -107,6 +126,17 @@ export function validateSourceCapture(value: unknown): asserts value is SourceCa
       previousEnd = section.end;
     }
   }
+}
+
+/** Calendar metadata retains its observed precision and spelling. Never parse prose. */
+export function validPublicationDate(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 100) return false;
+  const match = /^(\d{4})(?:[-/](\d{2})(?:[-/](\d{2}))?)?(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2}))?$/.exec(value);
+  if (!match || (value.includes('T') && (!match[3] || !Number.isFinite(Date.parse(value))))) return false;
+  const year = Number(match[1]), month = Number(match[2] ?? 1), day = Number(match[3] ?? 1);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return year > 0 && month > 0 && month <= 12 && day > 0 && day <= days[month - 1];
 }
 
 function readerId(id: unknown): id is string { return typeof id === 'string' && /^[\w-]{1,100}$/.test(id); }

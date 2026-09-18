@@ -56,7 +56,7 @@ export function storage(t: TestContext) {
   const data = (name: string) => { if (!stores.has(name)) stores.set(name, new Map()); return stores.get(name)!; };
   replaceGlobals(t, {
     navigator: { locks: { request<T>(key: string, fn: () => Promise<T>): Promise<T> { const pending = (locks.get(key) ?? Promise.resolve()).catch(() => {}).then(fn); locks.set(key, pending.catch(() => {})); return pending; } } },
-    IDBKeyRange: { bound: (lower: string, upper: string) => ({ lower, upper }) },
+    IDBKeyRange: { bound: (lower: string, upper: string, lowerOpen = false) => ({ lower, upper, lowerOpen }) },
     indexedDB: { open(name: string) {
       const opened: any = {};
       setImmediate(() => {
@@ -66,7 +66,8 @@ export function storage(t: TestContext) {
           const tx: any = {}, operations: any[] = [];
           tx.objectStore = () => ({
             get(key: string) { const request: any = {}; operations.push({ kind: 'get', key, request }); return request; },
-            getAll(range: { lower: string; upper: string }) { const request: any = {}; operations.push({ kind: 'all', range, request }); return request; },
+            getAll(range: { lower: string; upper: string; lowerOpen?: boolean }, count?: number) { const request: any = {}; operations.push({ kind: 'all', range, count, request }); return request; },
+            getAllKeys(range: { lower: string; upper: string; lowerOpen?: boolean }, count?: number) { const request: any = {}; operations.push({ kind: 'keys', range, count, request }); return request; },
             put(value: unknown, key: string) { operations.push({ kind: 'put', key, value: structuredClone(value), request: {} }); },
           });
           const pending = (tails.get(name) ?? Promise.resolve()).then(async () => {
@@ -75,7 +76,7 @@ export function storage(t: TestContext) {
               for (const op of operations) {
                 if (op.kind === 'put') { await beforeWrite(op.key, op.value); next.set(op.key, structuredClone(op.value)); }
                 else if (op.kind === 'get') { await beforeRead(op.key); op.request.result = structuredClone(next.get(op.key)); }
-                else op.request.result = [...next].filter(([key]) => key >= op.range.lower && key <= op.range.upper).map(([, value]) => structuredClone(value));
+                else op.request.result = [...next].filter(([key]) => (op.range.lowerOpen ? key > op.range.lower : key >= op.range.lower) && key <= op.range.upper).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, op.count).map(([key, value]) => op.kind === 'keys' ? key : structuredClone(value));
                 op.request.onsuccess?.();
               }
               if (mode === 'readwrite') stores.set(name, next);

@@ -70,3 +70,11 @@
   .ml-models__field { flex: 0 0 auto; }
 }
 @media (prefers-reduced-motion: reduce) { .ml *, .ml *::before, .ml *::after { animation: none !important; scroll-behavior: auto !important; transition: none !important; } }
+.ml-search { margin-block: 1.5rem 2rem; }
+.ml-search form { display: flex; flex-wrap: wrap; gap: .75rem; align-items: end; }
+.ml-search label { display: flex; flex-direction: column; gap: .4rem; flex: 1 1 16rem; }
+.ml-search input { background: var(--m-surface); border: 1px solid var(--m-edge); border-radius: var(--m-radius-s); font: inherit; padding: .6rem; width: 100%; box-sizing: border-box; }
+.ml-search blockquote { margin: .75rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ml-search p { overflow-wrap: anywhere; }
+.ml-search button { min-height: 44px; }
+.ml-search :focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }

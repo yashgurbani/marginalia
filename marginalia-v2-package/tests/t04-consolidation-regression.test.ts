@@ -94,6 +94,7 @@ class FixtureElement extends FixtureNode {
     for (let element: FixtureElement | null = this; element; element = element.parentElement) if (element.excluded()) return element;
     return null;
   }
+  getAttribute(name: string) { return this.attributes[name] ?? null; }
   querySelector(selector: string): FixtureElement | null {
     return this.querySelectorAll(selector)[0] ?? null;
   }
@@ -345,6 +346,9 @@ function textPage(text: string) {
 
 test('selection captures safe source identity without page mutation or implicit send', () => {
   const page = selectionPage();
+  appendElement(page.document.body, 'meta', '', { name: 'author', content: 'Ada Reader' });
+  appendElement(page.document.body, 'meta', '', { property: 'article:published_time', content: '2026-09-17' });
+  appendElement(page.document.body, 'meta', '', { name: 'citation_journal_title', content: 'Local Journal' });
   const fixture = installPage(page.document, page.selected, 'https://arxiv.org/html/2303.08774v6#results');
   try {
     const before = fixture.markup();
@@ -356,6 +360,9 @@ test('selection captures safe source identity without page mutation or implicit 
     assert.notEqual(snapshot.document, 'browser-document-1');
     assert.equal(snapshot.capture.url, 'https://arxiv.org/html/2303.08774v6');
     assert.equal(snapshot.capture.pageType, 'Paper');
+    assert.equal(snapshot.capture.author, 'Ada Reader');
+    assert.equal(snapshot.capture.publicationDate, '2026-09-17');
+    assert.equal(snapshot.capture.venue, 'Local Journal');
     assert.equal(snapshot.capture.text, 'HeadingBefore selected passage after.');
     assert.deepEqual(snapshot.anchor, { exact: 'selected passage', prefix: 'HeadingBefore ', suffix: ' after.', start: 14, end: 30 });
     assert.deepEqual(snapshot.sections, [{ title: 'Heading', start: 0, end: 37 }]);
