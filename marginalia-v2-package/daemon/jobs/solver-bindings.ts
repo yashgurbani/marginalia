@@ -5,6 +5,7 @@ import type { JobConsentAuthority, JobSnapshot } from '../../contracts/jobs.ts';
 import type { CandidateReply } from '../../contracts/reply.ts';
 import { SOLVER_LIMITS, type SolverArtifactBinding } from '../../contracts/solver.ts';
 import type { SolverArtifactBindingSource } from '../solver/adapters.ts';
+import { hashRegularFile } from '../solver/artifacts.ts';
 import { assertDirectoryCurrent, assertInside, directoryIdentity, readWorkspaceBytes } from './workspace-integrity.ts';
 import { JobConflictError, type JobStore, type SolverBindingCommit } from './store.ts';
 
@@ -45,6 +46,10 @@ async function collectBindings(jobId: string, attemptId: string, reply: Candidat
 
   const root = await directoryIdentity(resolve(workspace));
   const runtimeExecutable = await realpath(process.execPath);
+  const runtime = await hashRegularFile(runtimeExecutable, 512 * 1024 * 1024);
+  if (!runtime.ok) throw new JobConflictError('The interpreter binary could not be pinned. Ask again to rebuild this solver.');
+  const runtimeIdentity = process.release.name;
+  const runtimeVersion = process.version;
   const generation = `directory:${root.dev}:${root.ino}`;
   const bindings: SolverBindingCommit[] = [];
   for (const solver of solvers) {
@@ -67,6 +72,9 @@ async function collectBindings(jobId: string, attemptId: string, reply: Candidat
       solverRelativePath: solver.path,
       solverSha256: createHash('sha256').update(bytes).digest('hex'),
       runtimeExecutable,
+      runtimeSha256: runtime.value.sha256,
+      runtimeIdentity,
+      runtimeVersion,
     });
   }
   return bindings;

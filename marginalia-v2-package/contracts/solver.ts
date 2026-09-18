@@ -79,7 +79,11 @@ export type SolverArtifactBinding = {
   solverSha256: string;
   /** Absolute host-selected interpreter. Never taken from reply data. */
   runtimeExecutable: string;
-  /** Present only when the host actually hashed the interpreter. */
+  /** Runtime family recorded by the daemon that accepted the reply, for example `node`. */
+  runtimeIdentity: string;
+  /** Exact runtime version recorded with the reply, for example `v24.10.0`. */
+  runtimeVersion: string;
+  /** Required for execution; optional only to represent legacy records, which are refused. */
   runtimeSha256?: string;
 };
 
@@ -587,6 +591,8 @@ export function solverCacheKey(
     solverSha256: binding.solverSha256,
     solverRelativePath: binding.solverRelativePath,
     runtimeExecutable: binding.runtimeExecutable,
+    runtimeIdentity: binding.runtimeIdentity,
+    runtimeVersion: binding.runtimeVersion,
     runtimeSha256: binding.runtimeSha256 ?? null,
     workspace: binding.workspace,
     workspaceGeneration: binding.workspaceGeneration,
@@ -612,7 +618,7 @@ export type SolverIdentityFields = Pick<
 
 export function solverRequestIdentity(
   fields: SolverIdentityFields,
-  binding: Pick<SolverArtifactBinding, 'workspaceGeneration' | 'solverSha256' | 'runtimeSha256'>,
+  binding: Pick<SolverArtifactBinding, 'workspaceGeneration' | 'solverSha256' | 'runtimeIdentity' | 'runtimeVersion' | 'runtimeSha256'>,
 ): string {
   return solverDigest('request-identity', {
     replyVersionId: fields.replyVersionId,
@@ -627,6 +633,8 @@ export function solverRequestIdentity(
     grantId: fields.grantId,
     workspaceGeneration: binding.workspaceGeneration,
     solverSha256: binding.solverSha256,
+    runtimeIdentity: binding.runtimeIdentity,
+    runtimeVersion: binding.runtimeVersion,
     runtimeSha256: binding.runtimeSha256 ?? null,
     limits: fields.limits,
   });

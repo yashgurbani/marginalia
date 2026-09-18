@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SOLVER_EXECUTE_SCHEMA, SOLVER_PLAN_REQUEST_SCHEMA, solverStateKeyFrom, type SolverPlan } from '../contracts/solver.ts';
@@ -201,7 +201,9 @@ test("the collector's issues reach the reader through the existing unavailable o
   const context: SolverRecomputeContext = {
     reply, replyHash: digestReply(reply), threadId: 'thread-1', sourceVersionId: 'source-1', sourceHash: 'b'.repeat(64),
     binding: { jobId: 'job-1', attemptId: 'attempt-1', workspace, workspaceGeneration: 'gen-1', solverRelativePath: 'solver.js',
-      solverSha256: createHash('sha256').update(source).digest('hex'), runtimeExecutable: await realpath(process.execPath) },
+      solverSha256: createHash('sha256').update(source).digest('hex'), runtimeExecutable: await realpath(process.execPath),
+      runtimeIdentity: process.release.name, runtimeVersion: process.version,
+      runtimeSha256: createHash('sha256').update(await readFile(process.execPath)).digest('hex') },
     capabilities: ['solver'], limits: { timeoutMs: 5_000, maxOutputBytes: 4096 },
   };
   const fake = transportFor();

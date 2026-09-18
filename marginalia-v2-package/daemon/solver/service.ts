@@ -1119,6 +1119,11 @@ export class SolverExecutionService {
         modelTurns: 0,
       });
 
+      // Recheck bytes after asynchronous evidence and gate preparation, before the
+      // synchronous claim and handoff. The earlier plan hash is not a disk lease.
+      const currentArtifacts = await resolveSolverArtifacts(binding);
+      if (!currentArtifacts.ok) return rejected(currentArtifacts.code, currentArtifacts.reason);
+
       // The last point a cancellation may stop the attempt cleanly. After the commit
       // writes the durable claim, a cancellation can only race the running process; it
       // can never rewrite a committed, handed-off attempt into one that never ran.

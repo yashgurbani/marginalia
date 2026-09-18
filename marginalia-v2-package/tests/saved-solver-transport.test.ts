@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -673,6 +673,8 @@ async function temporaryWorkspace(): Promise<{ workspace: string; binding: Solve
       solverRelativePath: 'solver/main.py',
       solverSha256: createHash('sha256').update(source, 'utf8').digest('hex'),
       runtimeExecutable: process.execPath,
+      runtimeSha256: createHash('sha256').update(await readFile(process.execPath)).digest('hex'),
+      runtimeIdentity: process.release.name, runtimeVersion: process.version,
     },
   };
 }
@@ -704,6 +706,8 @@ test('solver artifacts canonicalize an aliased ancestor but reject a linked work
     jobId: 'job-1', attemptId: 'attempt-1', workspace: join(alias, 'job'), workspaceGeneration: 'gen-1',
     solverRelativePath: 'solver/main.py', solverSha256: createHash('sha256').update(source, 'utf8').digest('hex'),
     runtimeExecutable: process.execPath,
+    runtimeSha256: createHash('sha256').update(await readFile(process.execPath)).digest('hex'),
+    runtimeIdentity: process.release.name, runtimeVersion: process.version,
   };
   const resolved = await resolveSolverArtifacts(binding);
   assert.equal(resolved.ok, true);

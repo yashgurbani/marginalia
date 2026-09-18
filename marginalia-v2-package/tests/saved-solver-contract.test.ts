@@ -339,13 +339,14 @@ test('the cache key binds artifacts, inputs, the prepared policy and limits', ()
     jobId: 'job-1', attemptId: 'attempt-1',
     workspace: '/jobs/one', workspaceGeneration: 'gen-1',
     solverRelativePath: 'solver/main.py', solverSha256: HASH_A,
-    runtimeExecutable: '/usr/bin/python3',
+    runtimeExecutable: '/usr/bin/python3', runtimeIdentity: 'python', runtimeVersion: '3.12.0',
   };
   const key = solverCacheKey(binding, request(), HASH_C);
   assert.equal(key, solverCacheKey(binding, request({ requestId: 'req-9', requestedAt: '2026-09-18T00:00:00.000Z', stateKey: STATE_9 }), HASH_C));
   assert.notEqual(key, solverCacheKey({ ...binding, solverSha256: HASH_B }, request(), HASH_C));
   assert.notEqual(key, solverCacheKey({ ...binding, workspaceGeneration: 'gen-2' }, request(), HASH_C));
   assert.notEqual(key, solverCacheKey({ ...binding, runtimeExecutable: '/usr/bin/python3.12' }, request(), HASH_C));
+  assert.notEqual(key, solverCacheKey({ ...binding, runtimeVersion: '3.13.0' }, request(), HASH_C));
   assert.notEqual(key, solverCacheKey(binding, request({ inputs: { k: 0.3, T0: 95 } }), HASH_C));
   assert.notEqual(key, solverCacheKey(binding, request(), HASH_B));
   assert.notEqual(key, solverCacheKey(binding, request({ limits: { timeoutMs: 6_000, maxOutputBytes: 65_536 } }), HASH_C));
@@ -356,7 +357,7 @@ test('the cache key ignores the policy identity the margin claims', () => {
     jobId: 'job-1', attemptId: 'attempt-1',
     workspace: '/jobs/one', workspaceGeneration: 'gen-1',
     solverRelativePath: 'solver/main.py', solverSha256: HASH_A,
-    runtimeExecutable: '/usr/bin/python3',
+    runtimeExecutable: '/usr/bin/python3', runtimeIdentity: 'python', runtimeVersion: '3.12.0',
   };
   // A caller that could move the key by changing `policyKey` could partition or
   // poison the cache. Only the host-computed fingerprint moves it.
@@ -515,7 +516,8 @@ test('an execute request must echo a well formed plan token and a real timestamp
 // Content identity
 // ---------------------------------------------------------------------------
 
-const IDENTITY_BINDING = { workspaceGeneration: 'gen-1', solverSha256: HASH_A };
+const IDENTITY_BINDING = { workspaceGeneration: 'gen-1', solverSha256: HASH_A,
+  runtimeIdentity: 'python', runtimeVersion: '3.12.0' };
 
 function identityFields(overrides: Partial<SolverRecomputeRequest> = {}): SolverIdentityFields {
   const value = request(overrides);
@@ -552,6 +554,8 @@ test('every field that changes the answer changes the request identity', () => {
     ['limits', solverRequestIdentity(identityFields({ limits: { timeoutMs: 6_000, maxOutputBytes: 65_536 } }), IDENTITY_BINDING)],
     ['generation', solverRequestIdentity(identityFields(), { ...IDENTITY_BINDING, workspaceGeneration: 'gen-2' })],
     ['solver bytes', solverRequestIdentity(identityFields(), { ...IDENTITY_BINDING, solverSha256: HASH_B })],
+    ['interpreter identity', solverRequestIdentity(identityFields(), { ...IDENTITY_BINDING, runtimeIdentity: 'node' })],
+    ['interpreter version', solverRequestIdentity(identityFields(), { ...IDENTITY_BINDING, runtimeVersion: '3.13.0' })],
     ['interpreter bytes', solverRequestIdentity(identityFields(), { ...IDENTITY_BINDING, runtimeSha256: HASH_C })],
   ];
   const seen = new Set([base]);

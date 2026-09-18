@@ -73,6 +73,7 @@ function binding(overrides: Partial<SolverArtifactBinding> = {}): SolverArtifact
     solverRelativePath: 'solver/main.js',
     solverSha256: 'a'.repeat(64),
     runtimeExecutable: '/usr/bin/node',
+    runtimeIdentity: 'node', runtimeVersion: 'v24.10.0',
     ...overrides,
   };
 }

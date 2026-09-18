@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, mkdir, open, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -144,6 +144,9 @@ async function fixture(): Promise<Fixture> {
       solverRelativePath: 'solver/main.js',
       solverSha256: createHash('sha256').update(SOLVER_SOURCE, 'utf8').digest('hex'),
       runtimeExecutable: runtime,
+      runtimeSha256: createHash('sha256').update(await readFile(runtime)).digest('hex'),
+      runtimeIdentity: process.release.name,
+      runtimeVersion: process.version,
     },
     cleanup: async () => {
       await rm(workspace, { recursive: true, force: true });
@@ -786,6 +789,36 @@ test('permission, grant, generation or reply movement between prepare and click 
     const outcome = await runner.service.request(executeFor(plan), READER);
     expectStatus(outcome, 'rejected');
     if (outcome.status === 'rejected') assert.equal(outcome.code, 'reply-changed');
+  }
+});
+
+test('interpreter bytes changed after planning or during gate preparation never reach execution', async (t) => {
+  for (const stage of ['after-plan', 'gate-preparation'] as const) {
+    const fix = await fixture();
+    t.after(fix.cleanup);
+    // The configured executable is a real binary copy, outside the solver workspace.
+    const executable = join(fix.codexHome, 'node-copy.exe');
+    await copyFile(fix.runtime, executable);
+    fix.runtime = executable;
+    fix.binding.runtimeExecutable = executable;
+    const mutate = async () => {
+      const file = await open(executable, 'r+');
+      try { const byte = Buffer.alloc(1); await file.read(byte, 0, 1, 0); byte[0] ^= 1; await file.write(byte, 0, 1, 0); }
+      finally { await file.close(); }
+    };
+    const runner = harness(fix, stage === 'gate-preparation' ? { onPrepare: mutate } : {});
+    t.after(() => runner.service.close());
+    const plan = expectPlan(await runner.service.prepare(planRequestFor(), READER));
+    const authorityCount = runner.authorizations.length;
+    if (stage === 'after-plan') await mutate();
+    const outcome = await runner.service.request(executeFor(plan), READER);
+    expectStatus(outcome, 'rejected');
+    if (outcome.status === 'rejected') { assert.equal(outcome.code, 'artifact-modified'); assert.match(outcome.reason, /interpreter.*pinned hash/); }
+    if (stage === 'after-plan') assert.equal(runner.authorizations.length, authorityCount);
+    assert.equal(runner.calls.length, 0);
+    assert.equal(runner.log.includes('commit'), false);
+    assert.equal(fix.binding.runtimeIdentity, process.release.name);
+    assert.equal(fix.binding.runtimeVersion, process.version);
   }
 });
 

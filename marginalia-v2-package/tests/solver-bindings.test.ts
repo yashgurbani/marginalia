@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { resolveSolverArtifacts } from '../daemon/solver/artifacts.ts';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ReaderStore } from '../daemon/store.ts';
@@ -73,10 +75,81 @@ test('a solver binding is pinned in the reply commit and resolves through the re
     assert.equal(binding.solverRelativePath, 'solver/main.js');
     assert.match(binding.workspaceGeneration, /^directory:\d+:\d+$/);
     assert.match(binding.solverSha256, /^[a-f0-9]{64}$/);
+    assert.equal(binding.runtimeIdentity, process.release.name);
+    assert.equal(binding.runtimeVersion, process.version);
+    assert.equal(binding.runtimeSha256, createHash('sha256').update(await readFile(process.execPath)).digest('hex'));
     const context = await createStoreSolverContextSource({ replies: f.reader, jobs: f.store,
       bindings: createJobSolverArtifactBindings(f.store), limits: { timeoutMs: 5_000, maxOutputBytes: 65_536 } })
       .resolve('job-1-reply', 'solver-1');
     assert.equal(context?.binding.solverSha256, binding.solverSha256);
+  } finally { await f.close(); }
+});
+
+test('a binding recorded under interpreter A is rejected under interpreter B and never executes', async () => {
+  const f = await fixture();
+  try {
+    await commitSucceededReplyWithSolverBindings({ store: f.store, authority, job: f.store.get('job-1')!, attemptId: f.attemptId,
+      expectedRevision: 1, reply: f.reply, workspace: f.workspace });
+    f.reader.db.prepare('UPDATE solver_artifact_bindings SET runtimeVersion=? WHERE replyVersionId=? AND solverId=?')
+      .run('interpreter-A', 'job-1-reply', 'solver-1');
+    let executions = 0;
+    const context = createStoreSolverContextSource({ replies: f.reader, jobs: f.store,
+      bindings: createJobSolverArtifactBindings(f.store), limits: { timeoutMs: 5_000, maxOutputBytes: 65_536 } });
+    const service = new SolverExecutionService({ context,
+      authority: { async authorize() { throw new Error('Interpreter drift must be detected before authority.'); } },
+      gate: unavailableSolverExecutionGate('No execution gate in this binding test.'),
+      evidence: unavailableSolverEvidence('No evidence collector in this binding test.'),
+      transport: { enforces: { timeout: true, outputBytes: true, memoryBytes: false, maxTimeoutMs: 10_000 },
+        async exec() { executions++; throw new Error('A solver recorded under interpreter A must not execute under interpreter B.'); } },
+      codexHome: join(f.root, 'codex-home'), auditId: 'binding-test' });
+    try {
+      const outcome = await service.prepare({ schema: 'marginalia.solver-plan-request.v1', replyVersionId: 'job-1-reply',
+        blockId: 'answer', solverId: 'solver-1', inputs: { x: 1 }, stateKey: 'c'.repeat(64) },
+      { siteOrigin: 'https://example.test', threadId: 'thread-1', sessionId: 'session-1' });
+      assert.equal(outcome.status, 'rejected');
+      if (outcome.status === 'rejected') {
+        assert.equal(outcome.code, 'artifact-modified');
+        assert.equal(outcome.reason, 'This saved solver was recorded for a different interpreter. Ask again to rebuild it with the current interpreter.');
+      }
+      assert.equal(executions, 0);
+    } finally { service.close(); }
+  } finally { await f.close(); }
+});
+
+test('same-path interpreter binary drift with unchanged daemon metadata refuses before authority and transport', async () => {
+  const f = await fixture();
+  try {
+    await commitSucceededReplyWithSolverBindings({ store: f.store, authority, job: f.store.get('job-1')!, attemptId: f.attemptId,
+      expectedRevision: 1, reply: f.reply, workspace: f.workspace });
+    const executable = join(f.root, 'node-copy.exe');
+    await copyFile(process.execPath, executable);
+    // Redirect only the host-owned test binding to identical bytes outside the workspace.
+    f.reader.db.prepare('UPDATE solver_artifact_bindings SET runtimeExecutable=?').run(executable);
+    const binding = f.store.solverArtifactBinding('job-1-reply', 'solver-1')!;
+    assert.equal((await resolveSolverArtifacts(binding)).ok, true);
+    const file = await open(executable, 'r+');
+    try { const byte = Buffer.alloc(1); await file.read(byte, 0, 1, 0); byte[0] ^= 1; await file.write(byte, 0, 1, 0); }
+    finally { await file.close(); }
+    assert.equal(binding.runtimeIdentity, process.release.name);
+    assert.equal(binding.runtimeVersion, process.version);
+    let authorizations = 0, executions = 0;
+    const service = new SolverExecutionService({
+      context: createStoreSolverContextSource({ replies: f.reader, jobs: f.store,
+        bindings: createJobSolverArtifactBindings(f.store), limits: { timeoutMs: 5_000, maxOutputBytes: 65_536 } }),
+      authority: { async authorize() { authorizations++; throw new Error('Must reject before authority.'); } },
+      gate: unavailableSolverExecutionGate('Test gate unavailable.'), evidence: unavailableSolverEvidence('Test evidence unavailable.'),
+      transport: { enforces: { timeout: true, outputBytes: true, memoryBytes: false, maxTimeoutMs: 10_000 },
+        async exec() { executions++; throw new Error('Must not execute modified binary.'); } },
+      codexHome: join(f.root, 'codex-home'), auditId: 'binary-drift' });
+    try {
+      const outcome = await service.prepare({ schema: 'marginalia.solver-plan-request.v1', replyVersionId: 'job-1-reply',
+        blockId: 'answer', solverId: 'solver-1', inputs: { x: 1 }, stateKey: 'c'.repeat(64) },
+        { siteOrigin: 'https://example.test', threadId: 'thread-1', sessionId: 'session-1' });
+      assert.equal(outcome.status, 'rejected');
+      if (outcome.status === 'rejected') { assert.equal(outcome.code, 'artifact-modified'); assert.match(outcome.reason, /interpreter.*pinned hash/); }
+      assert.equal(authorizations, 0); assert.equal(executions, 0);
+      assert.equal((await resolveSolverArtifacts({ ...binding, runtimeSha256: undefined })).ok, false);
+    } finally { service.close(); }
   } finally { await f.close(); }
 });
 

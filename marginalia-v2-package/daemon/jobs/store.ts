@@ -9,6 +9,7 @@ import type { SolverArtifactBinding } from '../../contracts/solver.ts';
 import type { ReaderStore } from '../store.ts';
 
 export type SolverBindingCommit = SolverArtifactBinding & {
+  runtimeSha256: string;
   solverId: string;
   workspaceDev: string;
   workspaceIno: string;
@@ -96,7 +97,8 @@ export class JobStore {
           replyVersionId TEXT NOT NULL REFERENCES reply_versions(id), solverId TEXT NOT NULL,
           jobId TEXT NOT NULL REFERENCES jobs(id), attemptId TEXT NOT NULL REFERENCES job_attempts(id),
           workspace TEXT NOT NULL, workspaceDev TEXT NOT NULL, workspaceIno TEXT NOT NULL, workspaceGeneration TEXT NOT NULL,
-          solverRelativePath TEXT NOT NULL, solverSha256 TEXT NOT NULL, runtimeExecutable TEXT NOT NULL, runtimeSha256 TEXT,
+          solverRelativePath TEXT NOT NULL, solverSha256 TEXT NOT NULL, runtimeExecutable TEXT NOT NULL,
+          runtimeIdentity TEXT NOT NULL, runtimeVersion TEXT NOT NULL, runtimeSha256 TEXT,
           PRIMARY KEY(replyVersionId,solverId)
         );
         CREATE TABLE IF NOT EXISTS solver_execution_claims(
@@ -140,6 +142,10 @@ export class JobStore {
             .run(this.buildId(job.id), job.latestAttemptId, packetDigest(question));
         }
       }
+      // Old bindings have no trustworthy interpreter identity. Nullable migration
+      // columns make those rows fail closed when read instead of inventing metadata.
+      ensureColumn(this.db, 'solver_artifact_bindings', 'runtimeIdentity', 'TEXT');
+      ensureColumn(this.db, 'solver_artifact_bindings', 'runtimeVersion', 'TEXT');
     })();
   }
   private event(kind: string, payload: unknown) {
@@ -287,11 +293,13 @@ export class JobStore {
     return row ? JSON.parse(row.capabilities) : [];
   }
   solverArtifactBinding(replyVersionId: string, solverId: string): SolverArtifactBinding | undefined {
-    const row = this.db.prepare(`SELECT jobId,attemptId,workspace,workspaceGeneration,solverRelativePath,solverSha256,runtimeExecutable,runtimeSha256
-      FROM solver_artifact_bindings WHERE replyVersionId=? AND solverId=?`).get(replyVersionId, solverId) as (SolverArtifactBinding & { runtimeSha256: string | null }) | undefined;
-    if (!row) return;
+    const row = this.db.prepare(`SELECT jobId,attemptId,workspace,workspaceGeneration,solverRelativePath,solverSha256,
+      runtimeExecutable,runtimeIdentity,runtimeVersion,runtimeSha256
+      FROM solver_artifact_bindings WHERE replyVersionId=? AND solverId=?`).get(replyVersionId, solverId) as (SolverArtifactBinding & { runtimeIdentity: string | null; runtimeVersion: string | null; runtimeSha256: string | null }) | undefined;
+    if (!row?.runtimeIdentity || !row.runtimeVersion) return;
     return { jobId: row.jobId, attemptId: row.attemptId, workspace: row.workspace, workspaceGeneration: row.workspaceGeneration,
       solverRelativePath: row.solverRelativePath, solverSha256: row.solverSha256, runtimeExecutable: row.runtimeExecutable,
+      runtimeIdentity: row.runtimeIdentity, runtimeVersion: row.runtimeVersion,
       ...(row.runtimeSha256 ? { runtimeSha256: row.runtimeSha256 } : {}) };
   }
   recordSolverGateDecision(record: SolverGateDecisionRecord): void {
@@ -502,13 +510,14 @@ export class JobStore {
       const committed = this.reader.commitReply({ id: `${job.id}-reply`, threadId: job.threadId, reply,
         parentId: job.context.parentReplyId, answeredNote: job.context.answeredNote && { noteId: job.context.answeredNote.noteId, revision: job.context.answeredNote.revision } }, this.capabilities(job.id));
       const insertBinding = this.db.prepare(`INSERT INTO solver_artifact_bindings
-        (replyVersionId,solverId,jobId,attemptId,workspace,workspaceDev,workspaceIno,workspaceGeneration,solverRelativePath,solverSha256,runtimeExecutable,runtimeSha256)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`);
+        (replyVersionId,solverId,jobId,attemptId,workspace,workspaceDev,workspaceIno,workspaceGeneration,solverRelativePath,solverSha256,runtimeExecutable,runtimeIdentity,runtimeVersion,runtimeSha256)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
       for (const binding of solverBindings) {
         if (binding.jobId !== job.id || binding.attemptId !== attemptId) throw new JobConflictError('A saved solver binding does not belong to the committing attempt.');
+        if (!isDigest(binding.runtimeSha256)) throw new JobConflictError('A saved solver requires a pinned interpreter binary.');
         insertBinding.run(committed.id, binding.solverId, binding.jobId, binding.attemptId, binding.workspace,
           binding.workspaceDev, binding.workspaceIno, binding.workspaceGeneration, binding.solverRelativePath,
-          binding.solverSha256, binding.runtimeExecutable, binding.runtimeSha256 ?? null);
+          binding.solverSha256, binding.runtimeExecutable, binding.runtimeIdentity, binding.runtimeVersion, binding.runtimeSha256 ?? null);
       }
       const now = new Date().toISOString();
       this.db.prepare("UPDATE jobs SET state='succeeded',replyVersionId=?,provisional=NULL,reason=NULL,updatedAt=? WHERE id=?").run(committed.id, now, job.id);
