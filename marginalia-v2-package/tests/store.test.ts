@@ -34,6 +34,28 @@ test('reader work survives reopening; replay is idempotent; conflicting revision
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('removing and restoring one note tombstones only that note and advances note and thread revisions', () => {
+  const store = new ReaderStore(':memory:');
+  try {
+    store.apply(keep);
+    store.apply({ id: 'note-2-write', kind: 'note', threadId: keep.threadId, noteId: 'note-2', expectedRevision: 0, text: 'Keep this note.' });
+    const before = store.get(keep.threadId)!;
+    const target = before.notes.find(note => note.id !== 'note-2')!;
+    store.apply({ id: 'note-1-remove', kind: 'note-remove', threadId: keep.threadId, noteId: target.id, expectedRevision: target.revision, removed: true });
+    const removed = store.get(keep.threadId)!;
+    assert.equal(removed.revision, before.revision + 1);
+    assert.equal(removed.notes.find(note => note.id === target.id)!.revision, target.revision + 1);
+    assert.ok(removed.notes.find(note => note.id === target.id)!.deletedAt);
+    assert.deepEqual(removed.notes.find(note => note.id === 'note-2'), before.notes.find(note => note.id === 'note-2'));
+    store.apply({ id: 'note-1-restore', kind: 'note-remove', threadId: keep.threadId, noteId: target.id, expectedRevision: target.revision + 1, removed: false });
+    const restored = store.get(keep.threadId)!;
+    assert.equal(restored.revision, removed.revision + 1);
+    assert.equal(restored.notes.find(note => note.id === target.id)!.revision, target.revision + 2);
+    assert.equal(restored.notes.find(note => note.id === target.id)!.deletedAt, null);
+    assert.deepEqual(restored.notes.find(note => note.id === 'note-2'), before.notes.find(note => note.id === 'note-2'));
+  } finally { store.close(); }
+});
+
 test('reattachment preserves exact, moved, ambiguous and missing states without fuzzy guessing', () => {
   const a = keep.anchor;
   assert.equal(attachQuote(a, keep.capture.text).state, 'exact');
