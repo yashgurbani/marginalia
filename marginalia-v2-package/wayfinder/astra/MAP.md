@@ -22,12 +22,17 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 
 ## Decisions so far
 
+- 2026-09-18: Yash resolved H01 (correct copy now, defer web path), H09 (keep FTS with erasure), H11 (unsupported receipts stay unverified), and H12 (one simulate decision with local execution shown before sending). Implementation and QA obligations remain open.
+- 2026-09-18: Astra independently reproduced `bdfe8d7` baseline: 785 tests, 780 pass, 0 fail, 5 skipped; both typechecks clean. Raw logs: `../../.local/astra-baseline/`. The unfinished M13 installer is being completed by Sol high; the original worktree is preserved. Technical packets use Sol high per Yash's current instruction, superseding dated medium routing.
+- 2026-09-18: E21 tracks the supplied `integrate_pro_review.py` and exact transcript extraction provenance; E14 still owns substantive review triage. Initial D: worktree creation failed for lack of space; the two first packets use isolated C: worktrees. Yash subsequently freed D: space. No existing worktree was removed.
+
 - Head `dc94636` pushed to origin on 2026-09-18 with this map, the handoff, the lead prompt and the next build plan; the GPT-6 Pro review landed the same day and is filed under `docs/` with tickets E14, E16 to E20 and H16.
 - Stage 1 position, egress record and retention, per-note removal, one-branch-open, migration message, alarm reconnect and workspace-key cleanup are merged on `codex/marginalia-v2` (d420221..fdb12dc, including P4 indexes, P9/P1/P7 hardening and CI, M14/M18 sheet and library) with suite 785/780/0/5 and both typechecks clean; see `../../docs/ASTRA-HANDOFF-2026-09-18.md` for the list and the installer run still in flight at handoff.
 
 ## Tickets
 
 ### Stream E: engineering
+- [E21 Pro review integration provenance](tickets/E21-pro-review-integration-provenance.md) · AFK · Luna max · claimed
 - [E01 Integrate the Sol runs in flight](tickets/E01-integrate-the-four-sol-runs-in-flight.md) · AFK · blocked by (none) · Astra low
 - [E02 P7 remainder: type parity and CI green on three OSes](tickets/E02-p7-remainder-type-parity-and-ci-green-on-three-oses.md) · AFK · blocked by E01 · Sol medium
 - [E03 P1(a): extension icons at 16, 32, 48 and 128](tickets/E03-p1a-extension-icons-at-16-32-48-and-128.md) · AFK · blocked by (none) · Astra low (visual), Opus 4.8 taste check optional

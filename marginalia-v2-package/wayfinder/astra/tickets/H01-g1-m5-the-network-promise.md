@@ -2,7 +2,7 @@
 
 label: wayfinder:grilling
 mode: HITL
-status: open
+status: closed
 blocked_by: (none)
 route: Fable with Yash; Astra executes the outcome
 
@@ -12,3 +12,6 @@ route: Fable with Yash; Astra executes the outcome
 
 ## Fable's recommendation
 Correct the copy now so the promise is true today, and ticket the open-session path as Stage 3 work behind the confinement collector (E08). Fetched evidence is not support; the copy must say what leaves the machine and what does not.
+
+## Resolution
+Yash decided in the Codex continuation on 2026-09-18: "Correct copy now; defer web path". E16 implements the copy correction; the distinct open-session web path remains deferred behind E08 and requires its own design and evidence. This closes the owner decision, not its implementation or Gate 5a. Evidence: the user's answer to H01 in task `01a0b26e-cc90-73b2-8688-de014bcacd80`.
