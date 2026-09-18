@@ -26,3 +26,5 @@ jobs:
       - run: npm run prepare
       - run: npm run extension:typecheck
       - run: npm test
+      - run: npm run build
+      - run: npm run extension:build
