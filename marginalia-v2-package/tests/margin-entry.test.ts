@@ -170,6 +170,30 @@ test('Library is offered only when its host provides a route', async t => {
   api.destroy(); await api.drain();
 });
 
+test('bottom availability keeps local paths actionable and missing related/listening paths inert', async t => {
+  const e = env(t), requests: string[] = []; let libraryOpens = 0;
+  replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected outbound request'); } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, onLibrary: () => { libraryOpens++; } });
+  const footer = e.root.querySelector('.m-footer')!;
+  assert.match(footer.textContent, /0 threads on this page/);
+  assert.match(footer.textContent, /Related items · not available in this version\./);
+  assert.match(footer.textContent, /Hear it · not available in this version\./);
+  assert.equal(Array.from(footer.querySelectorAll('button')).some(node => /Related items|Hear it/.test(node.textContent)), false);
+  assert.equal(e.root.querySelectorAll('audio,video').length, 0);
+
+  button(e.root, 'Library').click();
+  api.select(anchor()); button(e.root, 'Keep').click(); await api.drain();
+  api.select(anchor(15, 30)); button(e.root, 'Park').click(); await api.drain();
+
+  const state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(libraryOpens, 1);
+  assert.equal(state.threads.length, 2);
+  assert.equal(state.threads.find(thread => thread.anchor.exact === anchor().exact)?.state, 'open');
+  assert.equal(state.threads.find(thread => thread.anchor.exact === anchor(15, 30).exact)?.state, 'parked');
+  assert.deepEqual(requests, []);
+  api.destroy(); await api.drain();
+});
+
 test('stored reading anchor restores quietly and an unresolved anchor keeps the current section fallback', async t => {
   const e = env(t), restored = anchor(21, 30), navigated: unknown[] = [], writes: unknown[] = [];
   let api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false,
