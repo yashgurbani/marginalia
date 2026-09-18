@@ -307,6 +307,8 @@ export type SolverClaimReleaseResult = { decision: 'released' };
 /** Actual host observations for this exact policy. `undefined` means unavailable, never assumed good. */
 export interface SolverEvidenceSource {
   collect(policy: CodexPolicy, stage: 'dispatch'): Promise<PolicyEvidence | undefined>;
+  /** Named, reader-facing reasons the evidence is not available. Optional; an adapter that has none returns nothing. */
+  issues?(): readonly string[];
 }
 
 export type SolverServiceOptions = {
@@ -1082,7 +1084,9 @@ export class SolverExecutionService {
 
       const evidence = await this.options.evidence.collect(policy, 'dispatch');
       if (!evidence) {
-        return unavailable('isolation-evidence-unavailable', 'No current isolation evidence is available, so no saved solver was run.');
+        const issues = this.options.evidence.issues?.();
+        return unavailable('isolation-evidence-unavailable',
+          'No current isolation evidence is available, so no saved solver was run.', issues?.length ? issues : undefined);
       }
       const decision = auditCodexPolicy(policy, evidence, 'dispatch');
       if (decision.decision !== 'evidence-consistent' || !decision.dispatchPolicySatisfied) {
