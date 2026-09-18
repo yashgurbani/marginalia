@@ -10,7 +10,7 @@ import { ConsentSessionService } from '../daemon/consent/service.ts';
 import { prepareContinuationWorkspace, prepareWorkspace, restoreCompletedWorkspace } from '../daemon/jobs/workspace.ts';
 import { JOB_WORKSPACE_INSTRUCTIONS } from '../daemon/jobs/envelope.ts';
 import type { AuthorizedRuntimeFactory } from '../daemon/jobs/runtime.ts';
-import type { FrozenJobContext, StartJobInput } from '../contracts/jobs.ts';
+import type { FrozenJobContext, JobSnapshot, StartJobInput } from '../contracts/jobs.ts';
 import { ProviderNotSentError, type ProviderHandle, type ProviderRequest } from '../contracts/job-runner.ts';
 import { capabilitiesForIntent, type ReplyCapability, type CandidateReply } from '../contracts/reply.ts';
 
@@ -36,6 +36,36 @@ function factory(revalidate: AuthorizedRuntimeFactory['consent']['revalidate']):
       provider: job.provider, policyKey: job.policyKey, bindingDigest: job.preparedPayloadDigest, permissionFingerprint: 'f'.repeat(64), egressEventId: 'egress' }),
     withResultAcceptance: (_job, _attempt, commit) => commit(), recordOutcome: () => undefined },
     create: async () => { throw new Error('Provider must not start in this test.'); } };
+}
+
+async function waitForCondition(
+  condition: () => boolean,
+  description: string,
+  timeoutMs = 10_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return;
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  throw new Error(`Timed out waiting for ${description}.`);
+}
+
+async function waitForJob(
+  jobs: JobService,
+  id: string,
+  predicate: (job: JobSnapshot) => boolean,
+  description: string,
+  timeoutMs = 10_000,
+): Promise<JobSnapshot> {
+  const deadline = Date.now() + timeoutMs;
+  let last: JobSnapshot | undefined;
+  while (Date.now() < deadline) {
+    last = jobs.get(id);
+    if (last && predicate(last)) return last;
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+  throw new Error(`Timed out waiting for ${description}; last state: ${last?.state ?? 'missing'}.`);
 }
 
 test('preparation reports the shared result shape and bounds duplicated UTF-8 content', async () => {
@@ -72,17 +102,22 @@ test('cancel before handoff settles locally and cannot become a timeout', async 
   const root = await mkdtemp(join(tmpdir(), 'marginalia-jobs-'));
   const reader = fixture();
   let release!: () => void;
+  let dispatchRevalidationFinished = false;
   const waiting = new Promise<void>(resolve => { release = resolve; });
   const jobs = new JobService({ reader, workspaceRoot: root, library, timeoutMs: 1000,
     defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: [] },
-    runtimeFactory: factory(async () => { await waiting; return { grantId: 'grant', policyKey, auditScope: 'scope' }; }) });
+    runtimeFactory: factory(async () => {
+      await waiting;
+      dispatchRevalidationFinished = true;
+      return { grantId: 'grant', policyKey, auditScope: 'scope' };
+    }) });
   try {
     const prepared = await jobs.prepare({ id: 'cancel-job', idempotencyKey: 'cancel-key', threadId: 'thread-job-test', intent: 'explore', question: 'Explain.' });
     const created = await jobs.create({ ...prepared.job, grantId: 'grant' });
     assert.ok(created.latestAttemptId);
     assert.equal((await jobs.cancel(created.id)).state, 'cancelled');
     release();
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await waitForCondition(() => dispatchRevalidationFinished, 'cancelled dispatch revalidation');
     assert.equal(jobs.get(created.id)?.state, 'cancelled');
     assert.equal(jobs.get(created.id)?.attempts[0].handoffMarked, false);
     assert.equal(jobs.get(created.id)?.attempts[0].sentContent, undefined);
@@ -111,12 +146,11 @@ test('pre-handoff refusals are not sent; a canonical handoff cannot be downgrade
       const prepared = await jobs.prepare({ id: `not-sent-${suffix}`, idempotencyKey: `not-sent-key-${suffix}`,
         threadId: 'thread-job-test', intent: 'explore', question: 'Explain.' });
       await jobs.create({ ...prepared.job, grantId: 'grant' });
-      for (let i = 0; i < 20 && !['failed', 'outcome_unknown'].includes(jobs.get(`not-sent-${suffix}`)!.state); i++) {
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-      assert.equal(jobs.get(`not-sent-${suffix}`)?.state, expected);
-      assert.equal(jobs.get(`not-sent-${suffix}`)?.attempts[0].dispatchClaimed, finalized);
-      assert.equal(jobs.get(`not-sent-${suffix}`)?.attempts[0].handoffMarked, finalized);
+      const settled = await waitForJob(jobs, `not-sent-${suffix}`,
+        job => job.state === 'failed' || job.state === 'outcome_unknown', `${suffix} pre-handoff settlement`);
+      assert.equal(settled.state, expected);
+      assert.equal(settled.attempts[0].dispatchClaimed, finalized);
+      assert.equal(settled.attempts[0].handoffMarked, finalized);
     } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
   }
 });
@@ -135,9 +169,9 @@ test('runtime preparation failure leaves the handoff and once-grant untouched', 
     const prepared = await jobs.prepare({ id: 'prep-failure', idempotencyKey: 'prep-failure-key',
       threadId: 'thread-job-test', intent: 'explore', question: 'Explain.' });
     await jobs.create({ ...prepared.job, grantId: 'grant' });
-    for (let i = 0; i < 20 && jobs.get('prep-failure')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    assert.equal(jobs.get('prep-failure')?.state, 'failed');
-    assert.equal(jobs.get('prep-failure')?.attempts[0].handoffMarked, false);
+    const failed = await waitForJob(jobs, 'prep-failure', job => job.state === 'failed', 'runtime preparation failure');
+    assert.equal(failed.state, 'failed');
+    assert.equal(failed.attempts[0].handoffMarked, false);
     assert.equal(finalized, 0);
   } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -162,9 +196,8 @@ test('runner uncertainty after handoff stays unknown with one finalization', asy
     const prepared = await jobs.prepare({ id: 'uncertain-job', idempotencyKey: 'uncertain-key',
       threadId: 'thread-job-test', intent: 'explore', question: 'Explain.' });
     await jobs.create({ ...prepared.job, grantId: 'grant' });
-    for (let i = 0; i < 20 && jobs.get('uncertain-job')?.state !== 'outcome_unknown'; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    assert.equal(jobs.get('uncertain-job')?.state, 'outcome_unknown');
-    const sent = jobs.get('uncertain-job')!;
+    const sent = await waitForJob(jobs, 'uncertain-job', job => job.state === 'outcome_unknown', 'uncertain provider outcome');
+    assert.equal(sent.state, 'outcome_unknown');
     assert.equal(sent.attempts[0].handoffMarked, true);
     assert.deepEqual(sent.attempts[0].sentContent, prepared.consent.outgoing);
     assert.equal(sent.preparedPayloadDigest, prepared.consent.bindingDigest);
@@ -197,8 +230,7 @@ test('real once grant stays spent and handoff marked after uncertain transport',
     const grant = consent.decide({ previewId: preview.id, expectedRevision: preview.revision, choice: 'this-time' },
       { surface: 'localhost-settings', pairingId: 'pair', origin: 'http://127.0.0.1:43120' });
     await jobs.create({ ...prepared.job, grantId: grant.id });
-    for (let i = 0; i < 30 && jobs.get('real-uncertain')?.state !== 'outcome_unknown'; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    const current = jobs.get('real-uncertain')!;
+    const current = await waitForJob(jobs, 'real-uncertain', job => job.state === 'outcome_unknown', 'real uncertain provider outcome');
     assert.equal(current.state, 'outcome_unknown');
     assert.equal(current.attempts[0].handoffMarked, true);
     assert.equal((reader.db.prepare('SELECT consumedAttemptId FROM consent_grant_state WHERE grantId=?').get(grant.id) as { consumedAttemptId: string }).consumedAttemptId, current.latestAttemptId);
@@ -223,8 +255,7 @@ test('real once grant survives asynchronous runtime preparation failure', async 
     const grant = consent.decide({ previewId: preview.id, expectedRevision: preview.revision, choice: 'this-time' },
       { surface: 'localhost-settings', pairingId: 'pair', origin: 'http://127.0.0.1:43120' });
     await jobs.create({ ...prepared.job, grantId: grant.id });
-    for (let i = 0; i < 30 && jobs.get('real-prep-failure')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    const current = jobs.get('real-prep-failure')!;
+    const current = await waitForJob(jobs, 'real-prep-failure', job => job.state === 'failed', 'real runtime preparation failure');
     assert.equal(current.state, 'failed');
     assert.equal(current.attempts[0].handoffMarked, false);
     assert.equal((reader.db.prepare('SELECT consumedAttemptId FROM consent_grant_state WHERE grantId=?').get(grant.id) as { consumedAttemptId: string | null }).consumedAttemptId, null);
@@ -247,8 +278,8 @@ test('retry keeps frozen source lineage and original capabilities when the ceili
     const prepared = await first.prepare({ id: 'retry-parent', idempotencyKey: 'retry-parent-key',
       threadId: 'thread-job-test', intent: 'explore', question: 'Explain.' });
     await first.create({ ...prepared.job, grantId: 'grant' });
-    for (let i = 0; i < 20 && first.get('retry-parent')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    assert.equal(first.get('retry-parent')?.state, 'failed');
+    const failed = await waitForJob(first, 'retry-parent', job => job.state === 'failed', 'retry parent failure');
+    assert.equal(failed.state, 'failed');
   } finally { await first.close(); }
   const next = new JobService({ reader, workspaceRoot: root, library,
     defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: ['samples'] }, runtimeFactory: unavailable });
@@ -359,9 +390,9 @@ test('restart validates and commits the persisted completed workspace without st
       jobs.store.checkpoint(attempt.id, { ...durable, revision: durable.revision, state: 'completed' });
       releaseCommit();
       await recovering;
-      for (let i = 0; i < 20 && jobs.get(input.id)?.state !== 'succeeded'; i++) await new Promise(resolve => setTimeout(resolve, 10));
-      assert.equal(jobs.get(input.id)?.state, 'succeeded');
-      assert.ok(jobs.get(input.id)?.replyVersionId);
+      const succeeded = await waitForJob(jobs, input.id, job => job.state === 'succeeded', 'recovered completed job');
+      assert.equal(succeeded.state, 'succeeded');
+      assert.ok(succeeded.replyVersionId);
       const followup = await jobs.prepareFollowup(input.id, { id: 'followup-job', idempotencyKey: 'followup-key', question: 'Continue.' });
       const reviewedPacket = JSON.parse(followup.consent.outgoing[0].text) as { parentReply?: { replyVersionId: string; attribution: string; excerpt: string } };
       assert.equal(reviewedPacket.parentReply?.replyVersionId, jobs.get(input.id)?.replyVersionId);
@@ -434,8 +465,7 @@ test('retry dispatch uses the exact outgoing content reviewed during retry prepa
     const first = await jobs.prepare({ id: 'retry-content-original', idempotencyKey: 'retry-content-original-key',
       threadId: 'thread-job-test', intent: 'explore', question: 'Keep this exact question.' });
     await jobs.create({ ...first.job, grantId: 'grant' });
-    for (let i = 0; i < 20 && jobs.get('retry-content-original')?.state !== 'outcome_unknown'; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    const original = jobs.get('retry-content-original')!;
+    const original = await waitForJob(jobs, 'retry-content-original', job => job.state === 'outcome_unknown', 'retry content original outcome');
     const legacyContext = structuredClone(original.context);
     delete (legacyContext.outgoing as Partial<typeof legacyContext.outgoing>).question;
     reader.db.prepare('UPDATE jobs SET context=? WHERE id=?').run(JSON.stringify(legacyContext), original.id);
@@ -445,8 +475,8 @@ test('retry dispatch uses the exact outgoing content reviewed during retry prepa
     const retried = await jobs.retry(original.id, { ...retryInput, grantId: 'grant', preparedPayloadDigest: reviewed.job.preparedPayloadDigest });
 
     assert.equal(retried.preparedPayloadDigest, reviewed.job.preparedPayloadDigest);
-    for (let i = 0; i < 20 && !jobs.get(retried.id)?.attempts[0].sentContent; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    assert.deepEqual(jobs.get(retried.id)?.attempts[0].sentContent, reviewed.consent.outgoing);
+    const retriedSent = await waitForJob(jobs, retried.id, job => !!job.attempts[0].sentContent, 'retry content dispatch');
+    assert.deepEqual(retriedSent.attempts[0].sentContent, reviewed.consent.outgoing);
   } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -459,7 +489,7 @@ test('retry dispatch rejects a question changed after retry preparation', async 
     const first = await jobs.prepare({ id: 'retry-question-original', idempotencyKey: 'retry-question-original-key',
       threadId: 'thread-job-test', intent: 'explore', question: 'Reviewed question.' });
     await jobs.create({ ...first.job, grantId: 'grant' });
-    for (let i = 0; i < 20 && jobs.get('retry-question-original')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    await waitForJob(jobs, 'retry-question-original', job => job.state === 'failed', 'retry question original failure');
 
     const retryInput = { id: 'retry-question-next', idempotencyKey: 'retry-question-next-key' };
     const reviewed = await jobs.prepareRetry(first.job.id, retryInput);
