@@ -150,6 +150,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   let needsReconciliation = false;
   let lastOpener: HTMLElement | null = null;
   const expanded = new Set<string>();
+  const expandedKey = 'expanded:' + capture.url;
+  const rememberExpanded = (threadId: string) => { void track(persistence.write(expandedKey, threadId)).catch(() => {}); };
+  const expandOnly = (threadId: string) => { expanded.clear(); expanded.add(threadId); rememberExpanded(threadId); };
+  const expandAdditionally = (threadId: string) => { expanded.add(threadId); rememberExpanded(threadId); };
   const attachmentMessages = new Map<string, string>();
   const attachmentPending = new Set<string>();
   const threadNodes = new Map<string, { signature: string; node: HTMLElement }>();
@@ -643,7 +647,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const node = el('section', undefined, 'm-thread'); node.id = instance + '-' + thread.id; node.dataset.thread = thread.id;
     const location = sourceLocation(thread, capture);
     const currentSection = () => { const current = currentThread(thread.id); return current ? sectionFor(displayPosition(current.anchor, capture) ?? readingPosition) : sectionIndex; };
-    const preview = button(excerpt(thread.notes.find(n => !n.deletedAt)?.text ?? thread.anchor.exact), () => { expanded.add(thread.id); hold(currentSection()); renderPosition(); requestAnimationFrame(() => { if (alive()) threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); }); }); preview.setAttribute('aria-label', 'Open thread: ' + (thread.notes.find(note => !note.deletedAt)?.text ?? thread.anchor.exact)); preview.className = 'm-excerpt'; preview.dataset.focusKey = thread.id + ':excerpt';
+    const preview = button(excerpt(thread.notes.find(n => !n.deletedAt)?.text ?? thread.anchor.exact), () => { expandOnly(thread.id); hold(currentSection()); renderPosition(); requestAnimationFrame(() => { if (alive()) threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); }); }); preview.setAttribute('aria-label', 'Open thread: ' + (thread.notes.find(note => !note.deletedAt)?.text ?? thread.anchor.exact)); preview.className = 'm-excerpt'; preview.dataset.focusKey = thread.id + ':excerpt';
     const body = el('div', undefined, 'm-thread-content');
     const sourceText = thread.anchor.kind === 'whole-page' ? 'Whole page' : `“${excerpt(displayAnchor(thread.anchor))}”`;
     const sourceButton = button(sourceText, () => sourceAction(thread.anchor)); sourceButton.className = 'm-source-action'; sourceButton.setAttribute('aria-label', 'Source passage: ' + sourceText); sourceButton.dataset.focusKey = thread.id + ':source';
@@ -1084,12 +1088,12 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     sourceUrl: capture.url, connection: trustedHelper, exportWork, drain: lifecycle.drain,
     get restoredPosition() { return restoredPosition; }, flushReadingPosition,
     getThread: currentThread,
-    focusThread(threadId: string) { expanded.add(threadId); renderThreads(); const thread = currentThread(threadId); if (thread) hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); },
+    focusThread(threadId: string) { expandAdditionally(threadId); renderThreads(); const thread = currentThread(threadId); if (thread) hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); },
     select: showSelection,
     setReadingPosition(start: number) { if (alive() && !suspended && !held) { const next = Math.max(0, Math.min(capture.text.length, start)); if (restoredPosition && sectionFor(next) === sectionIndex) return; restoredPosition = false; if (next === readingPosition) return; readingPosition = next; sectionIndex = sectionFor(readingPosition); renderPosition(); if (hydrationFinished) { positionDirty = true; queueReadingPosition(); } } },
     suspend() { highlight(null); suspended = true; management?.close(); askingMount?.setVisible(false); },
     resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); renderSettings(); paintHighlights(); },
-    async openThread(threadId: string) { await locked(() => journal.load()); const thread = currentThread(threadId); if (!thread || thread.deletedAt || thread.sourceUrl !== capture.url) throw new Error('The current thread is unavailable; local work is unchanged.'); expanded.add(threadId); renderThreads(); hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); threadNodes.get(threadId)?.node.querySelector<HTMLElement>('.m-source-action')?.focus({ preventScroll: true }); },
+    async openThread(threadId: string) { await locked(() => journal.load()); const thread = currentThread(threadId); if (!thread || thread.deletedAt || thread.sourceUrl !== capture.url) throw new Error('The current thread is unavailable; local work is unchanged.'); expandAdditionally(threadId); renderThreads(); hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); threadNodes.get(threadId)?.node.querySelector<HTMLElement>('.m-source-action')?.focus({ preventScroll: true }); },
     destroy,
   };
   const startupGeneration = editorGeneration;
@@ -1099,11 +1103,12 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (options.allowHelper !== false) helper = documentHelper(namespace, options.helperOrigin ?? location.origin);
     const connectionEpoch = helper?.connectionVersion;
     await locked(() => journal.load()); storageReady = true;
-    const [savedDraft, pairing, block, theme, savedQuestion, savedRequests] = await Promise.all([draftBuffer.load(), options.allowHelper === false ? undefined : persistence.read<{ origin: string; token: string }>('pairing'), persistence.read<boolean>('denied:' + new URL(capture.url).origin), persistence.read<string>('theme'), questionBuffer.load(), persistence.values<RetainedRequest>('asking:' + draftKey + ':request:').catch(() => [])]);
+    const [savedDraft, pairing, block, theme, savedQuestion, savedRequests, savedExpanded] = await Promise.all([draftBuffer.load(), options.allowHelper === false ? undefined : persistence.read<{ origin: string; token: string }>('pairing'), persistence.read<boolean>('denied:' + new URL(capture.url).origin), persistence.read<string>('theme'), questionBuffer.load(), persistence.values<RetainedRequest>('asking:' + draftKey + ':request:').catch(() => []), persistence.read<string>(expandedKey)]);
     if (!alive()) return api;
     if (startupGeneration === editorGeneration) { draft = savedDraft; pendingNoteMutation = draft?.mutation; }
     questionDraft = savedQuestion;
     retainedRequests = savedRequests;
+    if (typeof savedExpanded === 'string' && threadsNow().some(thread => thread.id === savedExpanded && !thread.deletedAt && thread.sourceUrl === capture.url)) expanded.add(savedExpanded);
     if (draft) { held = true; readingPosition = composerOffset(draft, 0); sectionIndex = sectionFor(readingPosition); }
     denied = !!block; if (theme && theme !== 'system') document.documentElement.dataset.theme = theme;
     if (helper && connectionEpoch === 0 && helper.connectionVersion === connectionEpoch && pairing?.origin === helper.origin) helper.token = pairing.token;
