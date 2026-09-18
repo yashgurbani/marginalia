@@ -58,9 +58,9 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
   contextDetails.append(make('summary', 'What should the reply assume you know?'), contextLabel);
   const submit = make('button', 'Ask'); submit.type = 'submit'; form.append(suggestions, more, label, contextDetails, submit); form.hidden = true;
   const status = make('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
-  const plan = make('p'); plan.setAttribute('aria-label', 'Reviewed plan'); plan.hidden = true;
+  const plan = make('p'); plan.hidden = true;
   const localStatus = make('p'); localStatus.setAttribute('role', 'status');
-  const elapsed = make('p'); elapsed.setAttribute('aria-label', 'Elapsed time'); elapsed.hidden = true;
+  const elapsed = make('p'); elapsed.hidden = true;
   const consentRoot = make('div'), provisionalRoot = make('div'), replyRoot = make('div');
   const trace = make('details'), traceBody = make('dl'); trace.append(make('summary', 'Completion record'), traceBody); trace.hidden = true;
   const workActions = make('div'); workActions.className = 'm-asking__actions';
@@ -110,8 +110,16 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
     exposureChosen = true; exposure('choice', 'free-text'); void flow.ask(intent, question);
   }, { signal: abort.signal });
   root.addEventListener('focusin', () => { try { options.onHoldReading?.(); } catch { /* Never navigate source implicitly. */ } }, { signal: abort.signal });
+  let confirmEscape = false;
   root.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && !consentRoot.contains(event.target as Node)) { event.preventDefault(); event.stopPropagation(); destroy(); }
+    if (event.key !== 'Escape' || consentRoot.contains(event.target as Node)) return;
+    event.preventDefault(); event.stopPropagation();
+    if (planPhases.has(flow.getState().phase) && !confirmEscape) {
+      confirmEscape = true;
+      localStatus.textContent = 'Work is in progress. Press Escape again to dismiss this view; the request will continue.';
+      return;
+    }
+    destroy();
   }, { signal: abort.signal });
   const surfaces = connectAskingSurfaces(flow, { ...options, consentRoot, replyRoot, provisionalRoot, returnFocus: input,
     onError: message => { if (!destroyed) localStatus.textContent = message; },
@@ -126,6 +134,7 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
   });
   function update(state: AskingState) {
     if (destroyed) return;
+    if (!planPhases.has(state.phase)) confirmEscape = false;
     root.dataset.state = state.phase;
     definition.hidden = !state.definition; noDefinition.hidden = !!state.definition || state.phase !== 'local';
     const definitionText = state.definition?.text ?? ''; if (quote.textContent !== definitionText) quote.textContent = definitionText;

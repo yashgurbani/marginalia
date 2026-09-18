@@ -9,6 +9,7 @@ import {
   parseAndValidateReply,
   validateReply,
   type CandidateReply,
+  type Intent,
   type ReplyBlock,
   type ReplyCapability,
 } from '../contracts/reply.ts';
@@ -26,6 +27,17 @@ function cloneReply(): CandidateReply {
 function validate(candidate: unknown, capabilities: readonly ReplyCapability[] = allCapabilities) {
   return validateReply(candidate, { sourceText: growthSourceText, capabilities });
 }
+
+test('every intent grants its deliberate capability set', () => {
+  const expected: Record<Intent, readonly ReplyCapability[]> = {
+    define: ['samples'], simulate: ['samples', 'solver'], instantiate: ['samples'],
+    derive: ['samples'], diagram: ['samples'], evidence: ['samples', 'network.citations'],
+    explore: ['samples', 'network.shelf'], unsure: ['samples'],
+  };
+  for (const intent of Object.keys(expected) as Intent[]) {
+    assert.deepEqual(capabilitiesForIntent(intent), expected[intent], intent);
+  }
+});
 
 test('honest growth fixture validates and its independently checked headline covers divergence beyond the plot', () => {
   const validated = validate(growthReply);

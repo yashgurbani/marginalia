@@ -28,21 +28,27 @@ export function mountNoteEditor(host: HTMLElement, actions: {
   });
   attachment.append(label, change);
   const field = el('textarea'); field.setAttribute('aria-label', 'Your note');
+  const hint = el('small', 'Enter saves; Shift+Enter adds a line. Asking always needs a separate action.', 'm-meta');
+  hint.id = `m-note-editor-hint-${crypto.randomUUID()}`; field.setAttribute('aria-describedby', hint.id);
   field.placeholder = 'Your note'; field.maxLength = 20000;
   const save = button('Save note', actions.save), discard = button('Discard draft', actions.discard);
   const ask = button('Save note and review a question', actions.ask); ask.hidden = true;
   const row = el('div', undefined, 'm-actions'); row.append(save, discard, ask);
   const status = el('p', '', 'm-meta'); status.setAttribute('role', 'status');
+  let askAnnounced = false;
   field.addEventListener('input', () => {
     if (field.readOnly) return;
-    actions.edit(field.value); ask.hidden = !field.value.trimEnd().endsWith('?');
+    actions.edit(field.value);
+    const askAvailable = field.value.trimEnd().endsWith('?'); ask.hidden = !askAvailable;
+    if (askAvailable && !askAnnounced) { status.textContent = 'Save note and review a question is now available.'; askAnnounced = true; }
+    else if (!askAvailable) askAnnounced = false;
   });
   field.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !field.readOnly) {
       event.preventDefault(); actions.save();
     }
   });
-  body.append(attachment, choices, field, row, el('small', 'Enter saves; Shift+Enter adds a line. Asking always needs a separate action.', 'm-meta'), status);
+  body.append(attachment, choices, field, row, hint, status);
   host.append(body);
   return {
     update(state?: NoteEditorState) {
@@ -56,8 +62,9 @@ export function mountNoteEditor(host: HTMLElement, actions: {
       save.disabled = state.saving || !state.text.trim();
       discard.disabled = state.saving || state.locked;
       change.hidden = !state.canChange; change.disabled = state.saving || state.locked;
-      ask.hidden = !state.text.trimEnd().endsWith('?'); ask.disabled = state.saving || state.locked;
-      status.textContent = state.message;
+      const askAvailable = state.text.trimEnd().endsWith('?'); ask.hidden = !askAvailable; ask.disabled = state.saving || state.locked;
+      if (!askAvailable) askAnnounced = false;
+      if (state.message || !askAnnounced) status.textContent = state.message;
     },
     focus() { field.focus({ preventScroll: true }); },
     element: field,

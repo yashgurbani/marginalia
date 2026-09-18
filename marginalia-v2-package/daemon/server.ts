@@ -15,13 +15,23 @@ import { runHostChecks } from '../contracts/host-checks.ts';
 import { LibrarySettingsService } from './library.ts';
 import { ConsentSessionService, handleConsentDecision, handleConsentSettingsChange, handleConsentSettingsRead, prepareConsentForTrustedHost } from './consent/index.ts';
 import { createSolverRoutes, SolverExecutionService, createConsentSolverAuthority, createStoreSolverContextSource,
-  unavailableSolverEvidence, unavailableSolverExecutionGate } from './solver/index.ts';
+  createConfinementEvidenceCollector, unavailableSolverEvidence, type SolverCommandTransport } from './solver/index.ts';
+import type { RpcTransport } from './providers/stdio.ts';
 import { createJobSolverArtifactBindings } from './jobs/solver-bindings.ts';
+import { createJobSolverExecutionGate, uncollectedSolverConfinement, unavailableSolverCommitAuthority } from './jobs/solver-gate.ts';
 import { randomUUID } from 'node:crypto';
+
+type LaunchFailureAwareTransport = SolverCommandTransport & { lastLaunchFailureReason(): string | undefined };
+
+function launchFailureReason(transport: SolverCommandTransport): string | undefined {
+  const candidate = transport as Partial<LaunchFailureAwareTransport>;
+  return typeof candidate.lastLaunchFailureReason === 'function' ? candidate.lastLaunchFailureReason() : undefined;
+}
 
 export async function startServer(options: { database: string; port?: number; webRoot?: string; diagnostics?: (refresh?: boolean) => unknown;
   jobWorkspaceRoot?: string; runtimeFactory?: AuthorizedRuntimeFactory;
   runtimeFactoryBuilder?: (input: { store: ReaderStore; consent: ConsentSessionService }) => Promise<AuthorizedRuntimeFactory | undefined>;
+  solverTransport?: SolverCommandTransport; solverRpc?: Pick<RpcTransport, 'request'>; solverProbeRoot?: string;
   jobDefaults?: JobServiceOptions['defaults'];
   jobTimeoutMs?: number }) {
   const store = new ReaderStore(options.database);
@@ -34,14 +44,33 @@ export async function startServer(options: { database: string; port?: number; we
   }
   const jobs = new JobService({ reader: store, workspaceRoot: options.jobWorkspaceRoot ?? resolve(dirname(options.database), 'jobs'),
     runtimeFactory, defaults: options.jobDefaults ?? runtimeFactory?.jobDefaults, timeoutMs: options.jobTimeoutMs, library });
+  const confinementEvidence = options.solverTransport && options.solverProbeRoot
+    ? createConfinementEvidenceCollector({ transport: options.solverTransport, probeRoot: options.solverProbeRoot,
+        ...(options.solverRpc ? { rpc: options.solverRpc } : {}) })
+    : undefined;
+  const solverEvidence = confinementEvidence ? {
+    collect: confinementEvidence.collect.bind(confinementEvidence),
+    issues: () => {
+      const issues = confinementEvidence.issues();
+      const failure = launchFailureReason(options.solverTransport!);
+      return failure ? [...issues, `solver-transport-unavailable:${failure}`] : issues;
+    },
+  } : unavailableSolverEvidence('No saved-solver command transport is available.');
   const solver = new SolverExecutionService({
     context: createStoreSolverContextSource({ replies: store, jobs: jobs.store,
       bindings: createJobSolverArtifactBindings(jobs.store), limits: { timeoutMs: 5_000, maxOutputBytes: 65_536 } }),
     authority: createConsentSolverAuthority({ permissions: consent, jobs: jobs.store }),
-    gate: unavailableSolverExecutionGate('No durable saved-solver execution gate is mounted.'),
-    evidence: unavailableSolverEvidence('No saved-solver confinement evidence collector is mounted.'),
+    gate: createJobSolverExecutionGate({
+      store: jobs.store,
+      confinement: uncollectedSolverConfinement(
+        `No saved-solver confinement evidence collector is mounted for ${process.platform}.`),
+      authority: unavailableSolverCommitAuthority(
+        'No synchronous saved-solver permission re-read is mounted, so no recompute is committed.'),
+    }),
+    evidence: solverEvidence,
+    transport: options.solverTransport,
     codexHome: resolve(dirname(options.database), 'solver-codex-home'), auditId: randomUUID(),
-    unavailableReason: 'Saved-solver execution has no mounted command transport or durable execution gate.',
+    unavailableReason: options.solverTransport ? undefined : 'No saved-solver command transport is available.',
   });
   const handleSolverRoute = createSolverRoutes(solver);
   void jobs.recover().catch(() => { /* Per-job recovery records its own honest outcome. */ });

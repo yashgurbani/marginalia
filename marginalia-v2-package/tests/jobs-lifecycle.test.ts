@@ -12,7 +12,7 @@ import { JOB_WORKSPACE_INSTRUCTIONS } from '../daemon/jobs/envelope.ts';
 import type { AuthorizedRuntimeFactory } from '../daemon/jobs/runtime.ts';
 import type { FrozenJobContext, StartJobInput } from '../contracts/jobs.ts';
 import { ProviderNotSentError, type ProviderHandle, type ProviderRequest } from '../contracts/job-runner.ts';
-import type { CandidateReply } from '../contracts/reply.ts';
+import { capabilitiesForIntent, type ReplyCapability, type CandidateReply } from '../contracts/reply.ts';
 
 const policyKey = 'a'.repeat(64);
 function starting(request: ProviderRequest): ProviderHandle {
@@ -230,7 +230,7 @@ test('real once grant survives asynchronous runtime preparation failure', async 
   } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('retry keeps frozen source lineage while declaring current host capabilities', async () => {
+test('retry keeps frozen source lineage and original capabilities when the ceiling expands', async () => {
   const root = await mkdtemp(join(tmpdir(), 'marginalia-jobs-'));
   const reader = fixture();
   const unavailable = factory(async () => { throw new Error('No current consent.'); });
@@ -248,7 +248,7 @@ test('retry keeps frozen source lineage while declaring current host capabilitie
   try {
     const retry = await next.prepareRetry('retry-parent', { id: 'retry-child', idempotencyKey: 'retry-child-key' });
     const packet = JSON.parse(retry.consent.outgoing[0].text) as { availableCapabilities: string[]; source: { sourceHash: string } };
-    assert.deepEqual(packet.availableCapabilities, ['samples']);
+    assert.deepEqual(packet.availableCapabilities, []);
     assert.equal(packet.source.sourceHash, next.get('retry-parent')?.context.sourceHash);
   } finally { await next.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
@@ -367,4 +367,94 @@ test('restart validates and commits the persisted completed workspace without st
       assert.equal(fork.attempts[0].predecessorAttemptId, undefined);
     } finally { releaseCommit(); await jobs.close(); reopened.close(); }
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+for (const intent of ['simulate', 'define', 'evidence'] as const) {
+  test(`${intent} grants only intent capabilities within the configured ceiling`, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'marginalia-capabilities-')), reader = fixture();
+    const jobs = new JobService({ reader, workspaceRoot: root, library,
+      defaults: { provider: 'app-server', mode: 'workspace-files', policyKey,
+        capabilities: ['samples', 'solver', 'network.citations', 'network.shelf'] },
+      runtimeFactory: factory(async () => ({ grantId: 'grant', policyKey })) });
+    try {
+      const prepared = await jobs.prepare({ id: 'intent-job', idempotencyKey: 'intent-key', threadId: 'thread-job-test', intent, question: 'Explain.' });
+      assert.deepEqual(prepared.job.capabilities, capabilitiesForIntent(intent));
+      assert.deepEqual(JSON.parse(prepared.consent.outgoing[0].text).availableCapabilities, capabilitiesForIntent(intent));
+      await jobs.create({ ...prepared.job, grantId: 'grant' });
+      assert.deepEqual(jobs.store.capabilities('intent-job'), capabilitiesForIntent(intent));
+    } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+  });
+}
+
+test('retry preparation and dispatch retain original capabilities across changed ceilings', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-retry-capabilities-')), reader = fixture();
+  const make = (capabilities: ReplyCapability[]) => new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities },
+    runtimeFactory: factory(async () => ({ grantId: 'grant', policyKey })) });
+  let jobs = make(['samples', 'network.citations']);
+  try {
+    const prepared = await jobs.prepare({ id: 'original', idempotencyKey: 'original-key', threadId: 'thread-job-test', intent: 'simulate', question: 'Explain.' });
+    await jobs.create({ ...prepared.job, grantId: 'grant' }); await jobs.close();
+    assert.equal(jobs.get('original')!.state, 'failed');
+    const retry = { id: 'retry', idempotencyKey: 'retry-key' };
+    const before = await makePreparation(['samples', 'solver']);
+    jobs = make([]);
+    const after = await jobs.prepareRetry('original', retry);
+    assert.deepEqual(after.job.capabilities, ['samples']);
+    assert.deepEqual(after.consent.outgoing, before.consent.outgoing);
+    assert.equal(after.job.preparedPayloadDigest, before.job.preparedPayloadDigest);
+    await jobs.retry('original', { ...retry, grantId: 'grant', preparedPayloadDigest: after.job.preparedPayloadDigest });
+    assert.deepEqual(jobs.store.capabilities('retry'), ['samples']);
+    async function makePreparation(ceiling: ReplyCapability[]) {
+      const service = make(ceiling);
+      try { return await service.prepareRetry('original', retry); } finally { await service.close(); }
+    }
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('retry dispatch uses the exact outgoing content reviewed during retry preparation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-retry-content-')), reader = fixture();
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: [] },
+    runtimeFactory: factory(async () => ({ grantId: 'grant', policyKey })) });
+  try {
+    const first = await jobs.prepare({ id: 'retry-content-original', idempotencyKey: 'retry-content-original-key',
+      threadId: 'thread-job-test', intent: 'explore', question: 'Keep this exact question.' });
+    await jobs.create({ ...first.job, grantId: 'grant' });
+    for (let i = 0; i < 20 && jobs.get('retry-content-original')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    const original = jobs.get('retry-content-original')!;
+    const legacyContext = structuredClone(original.context);
+    delete (legacyContext.outgoing as Partial<typeof legacyContext.outgoing>).question;
+    reader.db.prepare('UPDATE jobs SET context=? WHERE id=?').run(JSON.stringify(legacyContext), original.id);
+
+    const retryInput = { id: 'retry-content-next', idempotencyKey: 'retry-content-next-key' };
+    const reviewed = await jobs.prepareRetry(original.id, retryInput);
+    const retried = await jobs.retry(original.id, { ...retryInput, grantId: 'grant', preparedPayloadDigest: reviewed.job.preparedPayloadDigest });
+
+    assert.equal(retried.preparedPayloadDigest, reviewed.job.preparedPayloadDigest);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('retry dispatch rejects a question changed after retry preparation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-retry-question-')), reader = fixture();
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: [] },
+    runtimeFactory: factory(async () => ({ grantId: 'grant', policyKey })) });
+  try {
+    const first = await jobs.prepare({ id: 'retry-question-original', idempotencyKey: 'retry-question-original-key',
+      threadId: 'thread-job-test', intent: 'explore', question: 'Reviewed question.' });
+    await jobs.create({ ...first.job, grantId: 'grant' });
+    for (let i = 0; i < 20 && jobs.get('retry-question-original')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+
+    const retryInput = { id: 'retry-question-next', idempotencyKey: 'retry-question-next-key' };
+    const reviewed = await jobs.prepareRetry(first.job.id, retryInput);
+    const changed = jobs.get(first.job.id)!;
+    changed.context.question = 'Changed after review.';
+    reader.db.prepare('UPDATE jobs SET context=? WHERE id=?').run(JSON.stringify(changed.context), changed.id);
+
+    await assert.rejects(
+      jobs.retry(first.job.id, { ...retryInput, grantId: 'grant', preparedPayloadDigest: reviewed.job.preparedPayloadDigest }),
+      /The reviewed outgoing content changed/,
+    );
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });

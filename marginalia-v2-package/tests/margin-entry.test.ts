@@ -15,10 +15,55 @@ async function threadFixture(namespace: string, remote = false) {
   if (remote) { const threads = structuredClone(journal.state.threads); threads[0].sourceVersionId = 'source'; await journal.sync(async () => {}, async () => threads); }
   return { journal, persistence, thread: structuredClone(journal.state.threads[0]) };
 }
-function cached(thread: Thread) {
+function cached(thread: Thread, intent = 'define', replyId = 'reply') {
   return { source: { id: 'source', sourceId: 'page', hash: 'source-hash', text: capture.text, title: capture.title, capturedAt: capture.capturedAt, extractionVersion: capture.extractionVersion, pageType: capture.pageType, metadataStatus: 'provided' },
-    version: { id: 'reply', threadId: thread.id, parentId: null, supersedes: null, hash: 'reply-hash', reply: { schema: 't05.fixture' }, validation: {}, answeredNote: null, revision: 1, createdAt: capture.capturedAt, deletedAt: null },
-    view: { replyVersionId: 'reply', parameters: { x: 1 }, view: {}, revision: 1, updatedAt: capture.capturedAt } } as any;
+    version: { id: replyId, threadId: thread.id, parentId: null, supersedes: null, hash: `reply-hash-${replyId}`, reply: { schema: 't05.fixture', intent }, validation: {}, answeredNote: null, revision: 1, createdAt: capture.capturedAt, deletedAt: null },
+    view: { replyVersionId: replyId, parameters: { x: 1 }, view: {}, revision: 1, updatedAt: capture.capturedAt } } as any;
+}
+
+for (const outcome of ['succeeded', 'cancelled', 'failed', 'outcome_unknown', 'cancelled-after-handoff']) {
+  test(`activity record reads stored ${outcome} work without writes`, async t => {
+    const e = env(t); await threadFixture(e.namespace, true);
+    e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+    let hostContext: any, selection: any;
+    const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: (_root, context) => {
+      hostContext = context;
+      return { open(value) { selection = value; }, setVisible() {}, destroy() {} };
+    } });
+    button(e.root, 'Ask about this note').click(); button(e.root, 'Review with local helper').click(); await api.drain();
+    hostContext.retainedQuestion({ ...selection, resumeJobId: 'stored-job' }); await api.drain();
+    hostContext.onState({ phase: outcome === 'succeeded' ? 'committed' : outcome === 'outcome_unknown' ? 'unknown' : 'cancelled' });
+    assert.equal(e.root.querySelector('.m-activity')!.hidden, false);
+    const noSend = outcome === 'cancelled' || outcome === 'failed';
+    const job = {
+      id: 'stored-job', provider: 'app-server', model: 'recorded-model',
+      state: outcome === 'cancelled-after-handoff' ? 'cancelled' : outcome,
+      createdAt: '2026-09-18T09:00:00Z', updatedAt: '2026-09-18T09:01:00Z', preparedPayloadDigest: 'a'.repeat(64),
+      attempts: [{ number: 1, handoffMarked: !noSend, dispatchClaimed: !noSend, ...(!noSend ? { startedAt: '2026-09-18T09:00:01Z' } : {}) }],
+      context: { outgoing: { question: 'The frozen question <script>', selection: { exact: 'Reviewed passage' }, availableCapabilities: ['samples', 'solver'] } },
+    };
+    const requests: { path: string; method: string; body: unknown }[] = [];
+    replaceGlobals(t, { fetch: async (url: string, init: RequestInit) => {
+      requests.push({ path: new URL(url).pathname, method: init.method!, body: init.body }); return Response.json(job);
+    } });
+    const writes: string[] = []; e.onWrite(async key => { writes.push(key); });
+    const dot = e.root.querySelector('.m-activity')!; dot.click();
+    const sheet = e.root.querySelector('[aria-label="What was sent"]')!;
+    await until(() => sheet.textContent.includes('recorded-model'));
+    assert.equal(sheet.hidden, false);
+    for (const text of ['What was sent', 'app-server', 'recorded-model', job.createdAt, job.updatedAt, 'samples, solver', job.preparedPayloadDigest, 'full reviewed text is no longer stored', 'The frozen question <script>', 'Reviewed passage']) assert.ok(sheet.textContent.includes(text), text);
+    assert.equal(sheet.querySelectorAll('textarea,input,select,script').length, 0);
+    assert.equal(sheet.textContent.includes('Nothing left this machine'), noSend);
+    if (!noSend) assert.match(sheet.textContent, /2026-09-18T09:00:01Z/);
+    if (outcome === 'succeeded') assert.match(sheet.textContent, /Ready/);
+    if (outcome === 'outcome_unknown') assert.match(sheet.textContent, /Outcome unconfirmed/);
+    assert.deepEqual(requests, [{ path: '/api/jobs/stored-job', method: 'GET', body: undefined }]);
+    assert.deepEqual(writes, []);
+    sheet.fire('keydown', { key: 'Escape' }); assert.equal(sheet.hidden, true); assert.equal(e.document.activeElement, dot);
+    dot.click(); await until(() => sheet.textContent.includes('recorded-model'));
+    button(sheet, 'Close').click(); assert.equal(sheet.hidden, true); assert.deepEqual(writes, []);
+    api.destroy(); await api.drain();
+  });
 }
 test('reading-position editor is connected, anchored and single-map across save failure, collapse and suspend', async t => {
   const e = env(t); const api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false });
@@ -65,6 +110,24 @@ test('equal-revision metadata refresh preserves focused reply controls and resol
   const paths: string[] = []; replaceGlobals(t, { fetch: async (url: string) => { paths.push(new URL(url).pathname); return Response.json({ source: reply.source, replies: [reply.version], views: [reply.view] }); } });
   button(e.root, 'Load replies from helper').click(); await api.drain(); assert.deepEqual(paths, ['/api/read/replies']); assert.doesNotMatch(e.root.textContent, /different source version/);
   api.destroy(); await api.drain(); channel.close();
+});
+test('saved replies receive intent capabilities and solver only at the paired recompute gate', async t => {
+  const e = env(t), seeded = await threadFixture(e.namespace);
+  const replies = [cached(seeded.thread, 'evidence', 'evidence'), cached(seeded.thread, 'explore', 'explore'), cached(seeded.thread, 'define', 'define')];
+  await seeded.persistence.replies.cache(e.document.location.origin, seeded.thread.id, replies[0].source, replies.map(item => item.version), replies.map(item => item.view));
+  boundaries.replyMounts.length = 0;
+  let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  await until(() => boundaries.replyMounts.length === 3);
+  assert.deepEqual(Object.fromEntries(boundaries.replyMounts.map(item => [item.intent, item.capabilities])), {
+    evidence: ['samples', 'network.citations'], explore: ['samples', 'network.shelf'], define: ['samples'],
+  });
+  api.destroy(); await api.drain();
+
+  e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) }); boundaries.replyMounts.length = 0;
+  api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperOrigin: e.document.location.origin });
+  await until(() => boundaries.replyMounts.length === 3);
+  assert.ok(boundaries.replyMounts.every(item => item.capabilities?.at(-1) === 'solver'));
+  api.destroy(); await api.drain();
 });
 test('embedded margin never reads a pairing credential or exposes management/privileged dispatch', async t => {
   const e = env(t), reads: string[] = []; e.onRead(async key => { reads.push(key); }); e.data(e.namespace).set('pairing', { token: 'must-not-read' });
@@ -143,4 +206,40 @@ test('actual reply-cache failures retain unsaved inputs and competing sessions r
   e.onWrite(async () => {}); await first.save({ parameters: { x: 3 }, view: {} }); assert.equal(seeded.persistence.replies.unsaved(seeded.thread.id).length, 0);
   await assert.rejects(second.save({ parameters: { x: 4 }, view: {} }), { name: 'RecoveredViewConflict' });
   const final = (await seeded.persistence.replies.list(seeded.thread.id))[0]; assert.equal(final.local.parameters.x, 3); assert.equal(final.recovered![0].state.parameters.x, 4);
+});
+
+for (const [label, intent] of [['Move it', 'simulate'], ['Check this', 'evidence']] as const) {
+  test(`${label} saves a selection draft without opening asking or sending`, async t => {
+    const e = env(t), requests: string[] = []; let opened = 0;
+    replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected outbound request'); } });
+    const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace,
+      asking: () => ({ open() { opened++; }, setVisible() {}, destroy() {} }) });
+    api.select(anchor()); button(e.root, 'Ask').click(); button(e.root, label).click(); await api.drain();
+    const draft = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
+    assert.equal(draft.intent, intent); assert.deepEqual(draft.anchor, anchor());
+    assert.equal(draft.question, e.root.querySelector('[aria-label="Your question"]')!.value);
+    assert.ok(draft.question.length); assert.equal(opened, 0); assert.deepEqual(requests, []);
+    api.destroy(); await api.drain();
+  });
+}
+
+test('saved reply follow-up retains the saved thread and current inputs as a draft without sending', async t => {
+  const e = env(t), seeded = await threadFixture(e.namespace), reply = cached(seeded.thread);
+  await seeded.persistence.replies.cache(e.document.location.origin, seeded.thread.id, reply.source, [reply.version], [reply.view]);
+  const requests: string[] = []; let opened = 0;
+  replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected outbound request'); } });
+  boundaries.replyMounts.length = 0;
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace,
+    asking: () => ({ open() { opened++; }, setVisible() {}, destroy() {} }) });
+  await until(() => boundaries.replyMounts.length === 1);
+  const followup = boundaries.replyMounts[0].onFollowup; assert.equal(typeof followup, 'function');
+  await followup!({ text: 'Why this value?', parameters: { x: 2 }, view: {} }); await api.drain();
+  const draft = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
+  assert.equal(draft.threadId, seeded.thread.id); assert.equal(draft.resumeReplyId, reply.version.id);
+  assert.equal(draft.answeredNote, undefined, 'follow-up uses the saved reply note identity, not the latest thread note');
+  assert.equal(draft.question, 'Why this value?\n\nCurrent reader-selected inputs:\nx = 2');
+  assert.equal(e.root.querySelector('[aria-label="Your question"]')!.value, draft.question);
+  await followup!({ text: 'Do not replace my draft', parameters: {}, view: {} }); await api.drain();
+  assert.equal(e.root.querySelector('[aria-label="Your question"]')!.value, draft.question);
+  assert.equal(opened, 0); assert.deepEqual(requests, []); api.destroy(); await api.drain();
 });

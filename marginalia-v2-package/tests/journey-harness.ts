@@ -8,11 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { ReaderStore } from '../daemon/store.ts';
 import type { JobSnapshot } from '../contracts/jobs.ts';
 import type { ReaderMutation } from '../contracts/reader.ts';
-import type { CandidateReply } from '../contracts/reply.ts';
+import type { CandidateReply, ReplyCapability } from '../contracts/reply.ts';
 
 export const EXTENSION_ORIGIN = 'chrome-extension://' + 'a'.repeat(32);
 export type RuntimeBehaviour = 'reply' | 'hang' | 'unknown-throw' | 'cancel';
-export type RuntimeScript = { behaviour: RuntimeBehaviour; reply?: CandidateReply };
+export type RuntimeScript = { behaviour: RuntimeBehaviour; reply?: CandidateReply; savedSolver?: boolean };
 export type RuntimeCall = { lifetime: string; at: string; kind: 'create' | 'start' | 'cancel' | 'inspect' | 'resume' | 'close'; jobId: string; attemptId?: string; workspace?: string; prompt?: string; requestKeys?: string[]; packetSha256?: string; model?: string; mode?: string; policyKey?: string };
 export type Daemon = { origin: string; token: string; request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }>; stop(): Promise<void>; output(): string };
 export type Journey = { root: string; database: string; port: number; start(lifetime: string): Promise<Daemon>; script(value: Record<string, RuntimeScript>): Promise<void>; calls(): Promise<RuntimeCall[]>; store<T>(read: (store: ReaderStore) => T): T; dispose(): Promise<void> };
@@ -28,12 +28,12 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
-export async function journey(name: string): Promise<Journey> {
+export async function journey(name: string, capabilities: ReplyCapability[] = []): Promise<Journey> {
   const root = await mkdtemp(join(tmpdir(), `marginalia-${name}-`));
   const data = join(root, 'data'), runtime = join(root, 'runtime'), database = join(data, 'marginalia.sqlite');
   const runtimeModule = join(root, 'fake-runtime.mjs'), scriptPath = join(runtime, 'script.json');
   await mkdir(runtime);
-  await writeFile(runtimeModule, FAKE_RUNTIME_SOURCE, 'utf8');
+  await writeFile(runtimeModule, FAKE_RUNTIME_SOURCE.replace('capabilities: []', `capabilities: ${JSON.stringify(capabilities)}`), 'utf8');
   await writeFile(scriptPath, '{}', 'utf8');
   const port = await freePort();
   const children = new Set<Daemon>();
@@ -130,7 +130,7 @@ export function scriptedReply(title = 'Contextual meaning'): CandidateReply {
     blocks: [{ id: 'meaning', type: 'text', md: 'Start with this passage.' }], sourceBindings: [], parameters: [], assumptions: [], checks: [], limitations: [], staticFallback: 'Start with this passage.' };
 }
 
-export const FAKE_RUNTIME_SOURCE = String.raw`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+export const FAKE_RUNTIME_SOURCE = String.raw`import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -158,6 +158,10 @@ export function createAuthorizedRuntime({ consent }) {
           const script = scriptFor(job.id);
           if (script.behaviour === 'unknown-throw') throw new Error('transport outcome unconfirmed');
           if (script.behaviour === 'hang' || script.behaviour === 'cancel') return handle;
+          if (script.savedSolver) {
+            mkdirSync(join(request.workspace, 'solver'), { recursive: true });
+            writeFileSync(join(request.workspace, 'solver/main.js'), 'console.log(JSON.stringify({ y: 1 }));');
+          }
           writeFileSync(join(request.workspace, 'reply.json'), JSON.stringify(script.reply));
           const done = (await hooks.checkpoint({ ...handle, state: 'completed' })) ?? { ...handle, state: 'completed' };
           live.set(request.jobId, done); return done;

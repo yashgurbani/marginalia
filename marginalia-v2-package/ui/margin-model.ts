@@ -1,4 +1,31 @@
 import { attachQuote, type QuoteAnchor, type SourceCapture, type Thread } from '../contracts/reader.ts';
+import type { JobSnapshot } from '../contracts/jobs.ts';
+
+/** Handoff is evidence of a possible send, never proof of remote delivery. */
+export function egressRecord(job: JobSnapshot) {
+  const handedOff = job.attempts.some(a => a.handoffMarked || a.dispatchClaimed || a.providerHandle);
+  const unsent = !handedOff && ['queued', 'preparing', 'cancelled', 'failed'].includes(job.state);
+  const outcomes: Record<JobSnapshot['state'], string> = {
+    queued: 'Waiting', preparing: 'Preparing', sending: 'Sending', running: 'Working', validating: 'Checking the reply',
+    succeeded: 'Ready', failed: 'Failed', cancelled: 'Cancelled', timed_out: 'Outcome unconfirmed',
+    outcome_unknown: 'Outcome unconfirmed', cancel_requested: 'Cancellation requested',
+  };
+  return {
+    summary: unsent ? 'Nothing left this machine. This job never reached the provider handoff.'
+      : 'This record describes the reviewed content. Provider handoff does not independently confirm delivery.',
+    fields: [
+      [unsent ? 'Intended recipient' : 'Recipient', `OpenAI Codex · ${job.provider} · ${job.model}`],
+      ['Request recorded', job.createdAt],
+      ...job.attempts.filter(a => a.startedAt).map(a => [`Attempt ${a.number} recorded by provider adapter`, a.startedAt!]),
+      ['Last updated', job.updatedAt],
+      ['Capabilities offered', job.context.outgoing.availableCapabilities.join(', ') || 'None'],
+      ['Outcome', outcomes[job.state] + (job.reason ? ` — ${job.reason}` : '')],
+      ['Reviewed content digest (SHA-256)', job.preparedPayloadDigest || 'Not recorded'],
+    ],
+    retention: 'The full reviewed text is no longer stored in the job record. Its stored digest is shown above; the retained reading packet is shown below.',
+    packet: job.context.outgoing,
+  };
+}
 
 export function anchorAt(text: string, start: number, end: number): QuoteAnchor {
   return { exact: text.slice(start, end), start, end, prefix: text.slice(Math.max(0, start - 40), start), suffix: text.slice(end, end + 40) };

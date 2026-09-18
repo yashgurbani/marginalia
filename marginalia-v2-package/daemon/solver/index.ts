@@ -33,6 +33,25 @@ export {
   type SolverTerminationHandoff,
   type SolverTransportLimits,
 } from './transport.ts';
+export {
+  createLazySolverTransport,
+  type LazySolverTransport,
+  type LazySolverTransportOptions,
+} from './lazy-transport.ts';
+export {
+  CONFINEMENT_EVIDENCE_VERSION,
+  PROBE_SENTINEL_PREFIX,
+  confinementProbeCommand,
+  createConfinementEvidenceCollector,
+  readProbeSentinel,
+  type ConfinementEvidenceCollector,
+  type ConfinementEvidenceOptions,
+  type ConfinementProbeName,
+  type ConfinementProbeOutcome,
+  type ConfinementProbeResult,
+  type ConfinementReadiness,
+  type ConfinementVerdict,
+} from './confinement-evidence.ts';
 export { SolverResultCache, type SolverCacheEntry, type SolverCacheOptions } from './cache.ts';
 export {
   SolverExecutionService,

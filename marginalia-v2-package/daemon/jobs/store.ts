@@ -12,6 +12,27 @@ export type SolverBindingCommit = SolverArtifactBinding & {
   workspaceIno: string;
 };
 
+export type SolverGateDecisionRecord = {
+  decidedAt: string; requestIdentity: string; executionAttemptId: string;
+  replyVersionId: string; solverId: string;
+  siteOrigin: string; threadId: string; sessionId: string; stateKey: string;
+  decision: 'allowed' | 'denied' | 'already-claimed' | 'released';
+  reasonCode: string; reason: string;
+  confinement: 'observed' | 'uncollected'; confinementReference: string | null; confinementReason: string | null;
+  policyFingerprint: string; evidenceScope: string; modelTurns: 0;
+};
+
+export type SolverExecutionClaimInput = SolverGateDecisionRecord & {
+  jobId: string; attemptId: string;
+  workspaceGeneration: string; profileManifestSha256: string; solverSha256: string;
+  handoffToken: string; leaseId: string; leaseExpiresAt: string;
+};
+
+export type SolverExecutionClaimResult =
+  | { decision: 'committed'; workspaceGeneration: string }
+  | { decision: 'already-claimed'; state: 'dispatched' | 'settled'; reason: string }
+  | { decision: 'refused'; code: 'binding-missing' | 'binding-moved' | 'job-not-succeeded'; reason: string };
+
 type JobRow = {
   id: string; threadId: string; idempotencyKey: string; packetDigest: string; requestDigest: string; preparedPayloadDigest: string; provider: JobSnapshot['provider']; model: string;
   mode: JobSnapshot['mode']; policyKey: string; grantId: string; state: JobState; cancelRequested: number; latestAttemptId: string | null;
@@ -67,6 +88,25 @@ export class JobStore {
           workspace TEXT NOT NULL, workspaceDev TEXT NOT NULL, workspaceIno TEXT NOT NULL, workspaceGeneration TEXT NOT NULL,
           solverRelativePath TEXT NOT NULL, solverSha256 TEXT NOT NULL, runtimeExecutable TEXT NOT NULL, runtimeSha256 TEXT,
           PRIMARY KEY(replyVersionId,solverId)
+        );
+        CREATE TABLE IF NOT EXISTS solver_execution_claims(
+          requestIdentity TEXT PRIMARY KEY, executionAttemptId TEXT NOT NULL,
+          replyVersionId TEXT NOT NULL, solverId TEXT NOT NULL,
+          jobId TEXT NOT NULL REFERENCES jobs(id), attemptId TEXT NOT NULL REFERENCES job_attempts(id),
+          workspaceGeneration TEXT NOT NULL, profileManifestSha256 TEXT NOT NULL, solverSha256 TEXT NOT NULL,
+          policyFingerprint TEXT NOT NULL, evidenceScope TEXT NOT NULL, stateKey TEXT NOT NULL,
+          siteOrigin TEXT NOT NULL, threadId TEXT NOT NULL, sessionId TEXT NOT NULL,
+          handoffToken TEXT NOT NULL, leaseId TEXT NOT NULL, leaseExpiresAt TEXT NOT NULL,
+          state TEXT NOT NULL, claimedAt TEXT NOT NULL, releasedAt TEXT
+        );
+        CREATE TABLE IF NOT EXISTS solver_gate_decisions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT, decidedAt TEXT NOT NULL,
+          requestIdentity TEXT NOT NULL, executionAttemptId TEXT NOT NULL,
+          replyVersionId TEXT NOT NULL, solverId TEXT NOT NULL,
+          siteOrigin TEXT NOT NULL, threadId TEXT NOT NULL, sessionId TEXT NOT NULL, stateKey TEXT NOT NULL,
+          decision TEXT NOT NULL, reasonCode TEXT NOT NULL, reason TEXT NOT NULL,
+          confinement TEXT NOT NULL, confinementReference TEXT, confinementReason TEXT,
+          policyFingerprint TEXT NOT NULL, evidenceScope TEXT NOT NULL, modelTurns INTEGER NOT NULL DEFAULT 0
         );
         INSERT OR IGNORE INTO migrations(version) VALUES(3);
       `);
@@ -193,6 +233,85 @@ export class JobStore {
     return { jobId: row.jobId, attemptId: row.attemptId, workspace: row.workspace, workspaceGeneration: row.workspaceGeneration,
       solverRelativePath: row.solverRelativePath, solverSha256: row.solverSha256, runtimeExecutable: row.runtimeExecutable,
       ...(row.runtimeSha256 ? { runtimeSha256: row.runtimeSha256 } : {}) };
+  }
+  recordSolverGateDecision(record: SolverGateDecisionRecord): void {
+    this.db.transaction(() => insertSolverGateDecision(this.db, record))();
+  }
+  commitSolverExecutionClaim(input: SolverExecutionClaimInput): SolverExecutionClaimResult {
+    return this.db.transaction((): SolverExecutionClaimResult => {
+      const binding = this.db.prepare(`SELECT jobId,attemptId,workspaceGeneration,solverSha256 FROM solver_artifact_bindings
+        WHERE replyVersionId=? AND solverId=?`).get(input.replyVersionId, input.solverId) as {
+          jobId: string; attemptId: string; workspaceGeneration: string; solverSha256: string;
+        } | undefined;
+      if (!binding) {
+        const reason = 'The saved solver is no longer bound to this reply.';
+        insertSolverGateDecision(this.db, { ...input, decision: 'denied', reasonCode: 'binding-missing', reason });
+        return { decision: 'refused', code: 'binding-missing', reason };
+      }
+      if (binding.workspaceGeneration !== input.workspaceGeneration || binding.solverSha256 !== input.solverSha256 ||
+        binding.jobId !== input.jobId || binding.attemptId !== input.attemptId) {
+        const reason = 'The saved solver workspace moved after this recompute was prepared.';
+        insertSolverGateDecision(this.db, { ...input, decision: 'denied', reasonCode: 'binding-moved', reason });
+        return { decision: 'refused', code: 'binding-moved', reason };
+      }
+      const job = this.db.prepare('SELECT state,latestAttemptId,replyVersionId FROM jobs WHERE id=?').get(input.jobId) as {
+        state: string; latestAttemptId: string | null; replyVersionId: string | null;
+      } | undefined;
+      if (!job || job.state !== 'succeeded' || job.latestAttemptId !== input.attemptId || job.replyVersionId !== input.replyVersionId) {
+        const reason = 'The work that produced this saved solver is no longer a succeeded current attempt.';
+        insertSolverGateDecision(this.db, { ...input, decision: 'denied', reasonCode: 'job-not-succeeded', reason });
+        return { decision: 'refused', code: 'job-not-succeeded', reason };
+      }
+      const claimed = this.db.prepare('SELECT state FROM solver_execution_claims WHERE requestIdentity=?')
+        .get(input.requestIdentity) as { state: string } | undefined;
+      if (claimed?.state === 'dispatched' || claimed?.state === 'settled') {
+        const state = claimed.state;
+        const reason = `This saved-solver recompute is already ${state}.`;
+        insertSolverGateDecision(this.db, { ...input, decision: 'already-claimed', reasonCode: 'already-claimed', reason });
+        return { decision: 'already-claimed', state, reason };
+      }
+      if (claimed?.state === 'released') {
+        this.db.prepare('DELETE FROM solver_execution_claims WHERE requestIdentity=?').run(input.requestIdentity);
+      }
+      this.db.prepare(`INSERT INTO solver_execution_claims
+        (requestIdentity,executionAttemptId,replyVersionId,solverId,jobId,attemptId,workspaceGeneration,profileManifestSha256,solverSha256,
+         policyFingerprint,evidenceScope,stateKey,siteOrigin,threadId,sessionId,handoffToken,leaseId,leaseExpiresAt,state,claimedAt,releasedAt)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'dispatched',?,NULL)`).run(
+        input.requestIdentity, input.executionAttemptId, input.replyVersionId, input.solverId, input.jobId, input.attemptId,
+        binding.workspaceGeneration, input.profileManifestSha256, input.solverSha256, input.policyFingerprint, input.evidenceScope,
+        input.stateKey, input.siteOrigin, input.threadId, input.sessionId, input.handoffToken, input.leaseId, input.leaseExpiresAt, input.decidedAt);
+      insertSolverGateDecision(this.db, { ...input, decision: 'allowed', reasonCode: 'committed', reason: input.reason });
+      return { decision: 'committed', workspaceGeneration: binding.workspaceGeneration };
+    })();
+  }
+  releaseSolverExecutionClaim(input: { requestIdentity: string; executionAttemptId: string; handoffToken: string; leaseId: string; reason: string; at: string }): void {
+    this.db.transaction(() => {
+      const claim = this.db.prepare(`SELECT replyVersionId,solverId,siteOrigin,threadId,sessionId,stateKey,policyFingerprint,evidenceScope
+        FROM solver_execution_claims WHERE requestIdentity=? AND executionAttemptId=? AND handoffToken=? AND leaseId=? AND state='dispatched'`)
+        .get(input.requestIdentity, input.executionAttemptId, input.handoffToken, input.leaseId) as Omit<SolverGateDecisionRecord,
+          'decidedAt' | 'requestIdentity' | 'executionAttemptId' | 'decision' | 'reasonCode' | 'reason' | 'confinement' |
+          'confinementReference' | 'confinementReason' | 'modelTurns'> | undefined;
+      const released = this.db.prepare(`UPDATE solver_execution_claims SET state='released',releasedAt=?
+        WHERE requestIdentity=? AND executionAttemptId=? AND handoffToken=? AND leaseId=? AND state='dispatched'`)
+        .run(input.at, input.requestIdentity, input.executionAttemptId, input.handoffToken, input.leaseId);
+      if (released.changes !== 1 || !claim) throw new JobConflictError('The exact saved-solver execution claim was not found to release.');
+      const allowed = this.db.prepare(`SELECT confinementReference FROM solver_gate_decisions
+        WHERE requestIdentity=? AND executionAttemptId=? AND decision='allowed' ORDER BY id DESC LIMIT 1`)
+        .get(input.requestIdentity, input.executionAttemptId) as { confinementReference: string | null } | undefined;
+      insertSolverGateDecision(this.db, { ...claim, decidedAt: input.at, requestIdentity: input.requestIdentity,
+        executionAttemptId: input.executionAttemptId, decision: 'released', reasonCode: 'claim-released', reason: input.reason,
+        confinement: 'observed', confinementReference: allowed?.confinementReference ?? null, confinementReason: null, modelTurns: 0 });
+    })();
+  }
+  solverGateDecisions(requestIdentity?: string): SolverGateDecisionRecord[] {
+    const rows = (requestIdentity
+      ? this.db.prepare('SELECT * FROM solver_gate_decisions WHERE requestIdentity=? ORDER BY id').all(requestIdentity)
+      : this.db.prepare('SELECT * FROM solver_gate_decisions ORDER BY id').all()) as Array<SolverGateDecisionRecord & { modelTurns: number }>;
+    return rows.map(row => ({ decidedAt: row.decidedAt, requestIdentity: row.requestIdentity, executionAttemptId: row.executionAttemptId,
+      replyVersionId: row.replyVersionId, solverId: row.solverId, siteOrigin: row.siteOrigin, threadId: row.threadId,
+      sessionId: row.sessionId, stateKey: row.stateKey, decision: row.decision, reasonCode: row.reasonCode, reason: row.reason,
+      confinement: row.confinement, confinementReference: row.confinementReference, confinementReason: row.confinementReason,
+      policyFingerprint: row.policyFingerprint, evidenceScope: row.evidenceScope, modelTurns: 0 }));
   }
   checkpoint(attemptId: string, incoming: ProviderHandle): ProviderHandle {
     return this.db.transaction(() => {
@@ -436,6 +555,16 @@ export class JobStore {
       this.db.prepare('UPDATE job_attempts SET deadlineAt=COALESCE(deadlineAt,?) WHERE id=?').run(deadlineAt, attemptId);
     })();
   }
+}
+
+function insertSolverGateDecision(db: Database.Database, record: SolverGateDecisionRecord): void {
+  db.prepare(`INSERT INTO solver_gate_decisions
+    (decidedAt,requestIdentity,executionAttemptId,replyVersionId,solverId,siteOrigin,threadId,sessionId,stateKey,
+     decision,reasonCode,reason,confinement,confinementReference,confinementReason,policyFingerprint,evidenceScope,modelTurns)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    record.decidedAt, record.requestIdentity, record.executionAttemptId, record.replyVersionId, record.solverId,
+    record.siteOrigin, record.threadId, record.sessionId, record.stateKey, record.decision, record.reasonCode, record.reason,
+    record.confinement, record.confinementReference, record.confinementReason, record.policyFingerprint, record.evidenceScope, 0);
 }
 
 function ensureColumn(db: Database.Database, table: string, name: string, declaration: string) {

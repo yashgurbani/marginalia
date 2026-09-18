@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import type { ReplyCapability } from '../contracts/reply.ts';
 import { startServer } from './server.ts';
 import { createInterface } from 'node:readline';
 import { createDiagnostics } from './diagnostics.ts';
@@ -13,14 +14,20 @@ import { createDedicatedHostEvidenceSource } from './consent/evidence-host.ts';
 import { modeForIntent } from './jobs/mode.ts';
 import { createCodexPolicy, PINNED_CODEX_VERSION, type JsonValue } from './codex-policy.ts';
 import { policyFingerprint } from './providers/policy-gate.ts';
+import { launchProvider } from './providers/runtime.ts';
+import { inspectAppServer } from './providers/preflight.ts';
+import { createLazySolverTransport } from './solver/index.ts';
+import { ensurePrivateDataDirectory, runShutdown, shutdownSignals } from './shutdown.ts';
 
 const userDataRoot = process.platform === 'win32' ? process.env.LOCALAPPDATA
   : process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support')
     : process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
 const dataDir = process.env.MARGINALIA_DATA_DIR ?? (userDataRoot && isAbsolute(userDataRoot) ? join(userDataRoot, 'Marginalia') : join(homedir(), '.marginalia'));
 if (!isAbsolute(dataDir)) throw new Error('MARGINALIA_DATA_DIR must be absolute.');
-mkdirSync(dataDir, { recursive: true });
+ensurePrivateDataDirectory(dataDir);
 const canonicalDataDir = realpathSync(dataDir);
+const solverProbeRoot = join(canonicalDataDir, 'confinement-probes');
+mkdirSync(solverProbeRoot, { recursive: true, mode: 0o700 });
 const port = Number(process.env.MARGINALIA_PORT ?? 43120);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MARGINALIA_PORT must be between 1 and 65535.');
 function dedicatedRuntimeIdentity() {
@@ -73,11 +80,18 @@ function policyFor(workspace: string, mode: 'structured-final' | 'workspace-file
   return createCodexPolicy({ ...common, operation: 'generation' });
 }
 const jobDefaults = runtimeIdentity && !runtimeModule ? {
-  provider: 'app-server' as const, mode: 'workspace-files' as const, modeFor: modeForIntent, capabilities: [],
+  provider: 'app-server' as const, mode: 'workspace-files' as const, modeFor: modeForIntent, capabilities: ['samples', 'solver', 'media.audio', 'media.image', 'media.video', 'network.citations', 'network.shelf'] satisfies ReplyCapability[],
   policyFor: (workspace: string, mode: 'structured-final' | 'workspace-files', model: string, provider: 'app-server' | 'mcp-server') => policyFingerprint(policyFor(workspace, mode, model, provider)),
 } : undefined;
+const solverTransport = runtimeIdentity && !runtimeModule ? createLazySolverTransport({
+  launch: () => launchProvider('app-server', { ...runtimeIdentity, workspace: canonicalDataDir, timeoutMs: 60_000 }),
+  inspect: rpc => inspectAppServer(rpc, canonicalDataDir, runtimeIdentity.codexHome),
+  rpcTimeoutMs: 60_000,
+}) : undefined;
 const server = await startServer({ database: join(canonicalDataDir, 'marginalia.sqlite'), port, webRoot: fileURLToPath(new URL('../webapp/dist', import.meta.url)), diagnostics,
-  jobWorkspaceRoot: join(canonicalDataDir, 'jobs'), runtimeFactoryBuilder, jobDefaults }).catch((error: unknown) => {
+  jobWorkspaceRoot: join(canonicalDataDir, 'jobs'), runtimeFactoryBuilder, jobDefaults,
+  solverTransport, solverRpc: solverTransport, solverProbeRoot }).catch((error: unknown) => {
+  solverTransport?.close();
   if (error && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE') {
     console.error(`Another program is using port ${port}. Close it, or start Marginalia on another port. Set MARGINALIA_PORT and use the same port in the browser's helper address.`);
     process.exit(1);
@@ -95,4 +109,12 @@ const terminal = createInterface({ input: process.stdin });
 terminal.on('line', line => {
   if (line.trim() === 'pair') console.log(`Pairing code: ${server.pairing.issue()} (valid for five minutes, one use)`);
 });
-for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, async () => { terminal.close(); await server.close(); process.exit(0); });
+let shutdown: Promise<void> | undefined;
+for (const signal of shutdownSignals(process.platform)) process.once(signal, () => {
+  shutdown ??= runShutdown({
+    closeTerminal: () => terminal.close(),
+    closeServer: () => server.close(),
+    closeSolver: () => solverTransport?.close(),
+    exit: code => process.exit(code),
+  });
+});
