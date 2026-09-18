@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Marginalia</title>
-<meta name="description" content="Marginalia is a margin beside whatever you are reading. The page is never rewritten, your notes stay on your computer, and you see exactly what leaves your machine.">
+<title>A personalized, agentic margin for the web.</title>
+<meta name="description" content="A personalized, agentic margin for the web.">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='none'/%3E%3Cpath d='M11.5 1.5v13' stroke='%23566' stroke-width='1'/%3E%3Cpath d='M2 4h7M2 6.5h7M2 9h7M2 11.5h5' stroke='%23334' stroke-width='1.2'/%3E%3C/svg%3E">
 <style>
@@ -246,95 +246,78 @@ p:last-child { margin-bottom: 0; }
   </header>
 
   <main id="main">
-
-    <section class="band hero" aria-labelledby="t-hero">
-      <h1 id="t-hero">A margin beside whatever you are reading.</h1>
-      <p class="lede">You select a passage, or write a note, and the margin answers beside it. The source stays exactly as its author wrote it. Your notes stay on your computer.</p>
-      <aside class="note">
-        <p>A Chrome extension and a small helper program that runs on your own machine. MIT licensed.</p>
-      </aside>
-    </section>
-
-    <section class="band" aria-labelledby="t-promises">
-      <p class="label">Three promises</p>
-      <h2 id="t-promises">What the margin holds to.</h2>
-      <ul class="stack">
-        <li>
-          <h3>The page is never rewritten.</h3>
-          <p>Marginalia does not edit, summarise over, or replace the source. Everything it adds sits in the margin, anchored to the exact words that prompted it. You can remove any of it, and the text underneath is unchanged.</p>
-        </li>
-        <li>
-          <h3>Your notes are senior.</h3>
-          <p>Your note sits above the reply that answers it, in full ink. Replies are indented beneath, quoting the note version they answer. When you start writing, the passage your note is attached to freezes there. Reading on does not move it.</p>
-        </li>
-        <li>
-          <h3>You see exactly what leaves your machine, and to whom.</h3>
-          <p>Selecting text sends nothing. Before any passage leaves a site for the first time, the margin shows you the exact text, the recipient and the scope, and asks once: this time, always on this site, or never on this site. A refusal stays refused.</p>
-        </li>
-      </ul>
-      <aside class="note">
-        <p>Notes, highlights and threads are stored in a SQLite database on your computer and export as plain files.</p>
-        <p>The helper listens only on <code>127.0.0.1:43120</code>. <a href="privacy.html">Read the privacy policy</a>.</p>
-      </aside>
-    </section>
-
-    <section class="band" aria-labelledby="t-how">
-      <p class="label">How it works</p>
-      <h2 id="t-how">Three steps.</h2>
-      <ol class="stack steps">
-        <li>
-          <h3>Install the helper.</h3>
-          <p>One script installs dependencies, builds the local reader, and starts a small program at login. It holds your notes and is the only thing that talks to a model provider.</p>
-        </li>
-        <li>
-          <h3>Pair the extension once.</h3>
-          <p>The helper prints a six-digit code. It is valid for five minutes and can be used once. Enter it in the extension options and the two are paired. Pairing does not authorise anything to be sent.</p>
-        </li>
-        <li>
-          <h3>Read, select, keep or ask.</h3>
-          <p>Keep saves a highlight. Writing a note attaches it to the passage. Asking is a separate, deliberate action with its own consent step, and you can work entirely without it.</p>
-        </li>
-      </ol>
-      <aside class="note">
-        <p>Node 24 is required to run the installer. Reading and note-taking need no account and no network.</p>
-      </aside>
-    </section>
-
-    <section class="band" aria-labelledby="t-shots">
-      <p class="label">Screens</p>
-      <h2 id="t-shots">What it looks like.</h2>
-      <div class="shots">
-        <figure class="shot">
-          <div class="frame">
-            <img src="media/01-margin.png" alt="A research paper on the left, with the Marginalia margin beside it on the right holding a reader's note and an indented reply anchored to a quoted sentence." onerror="this.remove()">
-            <p class="pending">Screenshot: the margin beside a paper.</p>
-          </div>
-          <figcaption>The margin runs beside the page and scrolls with it. Notes sit in page order; replies are indented beneath the note that prompted them.</figcaption>
-        </figure>
-        <figure class="shot">
-          <div class="frame">
-            <img src="media/02-consent.png" alt="A consent panel in the margin showing the exact passage that would be sent, the named recipient, and three choices: this time, always on this site, never on this site." onerror="this.remove()">
-            <p class="pending">Screenshot: the consent panel before a passage is sent.</p>
-          </div>
-          <figcaption>Before anything leaves your machine you see the exact text, who receives it, and how far the permission reaches.</figcaption>
-        </figure>
-        <figure class="shot">
-          <div class="frame">
-            <img src="media/03-library.png" alt="The Marginalia library page listing saved pages with their notes, highlights and threads, and an export control." onerror="this.remove()">
-            <p class="pending">Screenshot: the local library of saved reading.</p>
-          </div>
-          <figcaption>Everything you kept stays on your computer, searchable, and exportable as plain files.</figcaption>
-        </figure>
-      </div>
-      <aside class="note">
-        <p>Where a screenshot has not been captured yet, the frame is left empty rather than filled with a mock-up.</p>
-      </aside>
-    </section>
-
-    <section class="band" id="download" aria-labelledby="t-download">
+<section class="band hero" aria-labelledby="t-hero">
+<h1 id="t-hero">A personalized, agentic margin for the web.</h1>
+<p class="lede">Read a passage, keep your own note beside it, and ask for help when you need it. Your notes are senior to model replies. The page is never rewritten.</p>
+<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+</p>
+<aside class="note">
+<p>A Chrome MV3 extension and a local helper on <code>127.0.0.1</code>. Reading data lives in local SQLite, with browser copies for recovery. MIT licensed.</p>
+</aside>
+</section>
+<section class="band" id="read-now" aria-labelledby="t-read-now">
+<h2 id="t-read-now">Read now</h2>
+<p>Select a passage. Keep a highlight, write a note in your own words, or choose Ask. Notes stay attached to their source, with replies beneath them. Remember lets you keep vocabulary you choose; the app does not infer what you know.</p>
+<figure class="shot">
+<div class="frame"><img src="media/01-margin.png" alt="A source passage with a reader note and an indented reply beside it." onerror="this.remove()">
+<p class="pending">Screenshot pending: Your note stays beside the passage that prompted it.</p>
+</div>
+<figcaption>Your note stays beside the passage that prompted it.</figcaption>
+</figure>
+</section>
+<section class="band" id="read-later" aria-labelledby="t-read-later">
+<h2 id="t-read-later">Read it later</h2>
+<p>Park a passage or thread and return to a “You were here” resume line. Saved marks repaint when the page can be matched again. If the source has moved or the anchor is uncertain, the margin shows that state.</p>
+<p>Retained local copies preserve source versions, notes and replies. Removing a thread does not erase every retained copy.</p>
+</section>
+<section class="band" id="knowledge" aria-labelledby="t-knowledge">
+<h2 id="t-knowledge">Your knowledge base</h2>
+<p>Kept passages, notes and replies collect in your local library with source attribution. Filter threads by state and export your work as plain files. Each page adds to a record you own.</p>
+<figure class="shot">
+<div class="frame"><img src="media/03-library.png" alt="The local library showing saved threads and an export control." onerror="this.remove()">
+<p class="pending">Screenshot pending: Return to saved threads and export them as plain files.</p>
+</div>
+<figcaption>Return to saved threads and export them as plain files.</figcaption>
+</figure>
+</section>
+<section class="band" id="ask" aria-labelledby="t-ask">
+<h2 id="t-ask">How Ask works</h2>
+<p>Ask sends an approved passage and your chosen note to a Codex agent, with GPT-6 Astra available for deeper work. It can define a term, work an example or explain a passage step by step. Supported saved solvers can run again without another model turn.</p>
+<p>Review the exact outgoing text, recipient and permission scope before dispatch. Choose this time, always on this site, or never on this site. Selecting, keeping and writing a note do not send a model request. Ask is a deliberate action; nothing sends on its own.</p>
+<p>The Codex process starts locally; model inference runs on the provider’s service. The reader-authorized runtime has the limits below.</p>
+<figure class="shot">
+<div class="frame"><img src="media/02-consent.png" alt="Consent review showing outgoing text, recipient and permission scope." onerror="this.remove()">
+<p class="pending">Screenshot pending: Review the outgoing text and its recipient before approving Ask.</p>
+</div>
+<figcaption>Review the outgoing text and its recipient before approving Ask.</figcaption>
+</figure>
+</section>
+<section class="band" id="next" aria-labelledby="t-next">
+<h2 id="t-next">Next</h2>
+<p>Library search across everything saved, “Related in your library” on each page, PDF reading and listening (“Hear it”) are next. Topics and reading paths across papers, sharing, connectors and Firefox are also planned.</p>
+</section>
+<section class="band" id="limits" aria-labelledby="t-limits">
+<h2 id="t-limits">Honest limits</h2>
+<p>Real asks use a reader-authorized mode where solver confinement is requested but not observed. The mode is off by default. No recorded real run is in the evidence folder yet. <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
+<p>Windows install is proven. macOS and Linux have command-level CI evidence. PDF is not supported yet. Library search is not reachable yet.</p>
+</section>
+<section class="band" id="built" aria-labelledby="t-built">
+<h2 id="t-built">The Astra build</h2>
+<p>Marginalia is built by Yash Gurbani, a team of one, with GPT-6 Astra via Codex and ChatGPT Pro. Claude Code supports integration and review. The Astra Challenge build used bounded tasks and review against the code; passing tests do not close the real-run or confinement gates.</p>
+<p>The reported suite result is 898 tests: 892 pass, 0 fail, 6 skipped.</p>
+</section>
+<section class="band" id="research" aria-labelledby="t-research">
+<h2 id="t-research">Research and credits</h2>
+<p>ScholarPhi (Head et al., CHI 2021) showed definitions beside the text. Marginalia uses no ScholarPhi code; the debt is that idea. The Semantic Reader project (Lo et al., 2023 preprint, published in 2024) is part of the same research lineage.</p>
+<p><a href="https://scholarphi.org/">ScholarPhi</a> · <a href="https://scholarphi.org/assets/pdf/scholarphi-chi-2021.pdf">Head et al. paper</a> · <a href="https://arxiv.org/abs/2303.14334">Semantic Reader paper</a>
+</p>
+<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+</p>
+</section>    <section class="band" id="download" aria-labelledby="t-download">
       <p class="label">Download</p>
       <h2 id="t-download">Install it.</h2>
-      <p><a class="cta" href="https://github.com/yashgurbani/marginalia/releases/latest">Get the latest release</a></p>
+      <p><a class="cta" href="https://github.com/yashgurbani/marginalia/releases/latest">Get the latest release</a>
+</p>
       <ol class="install">
         <li>Unzip the download.</li>
         <li>Open <code>chrome://extensions</code> in Chrome.</li>
@@ -348,45 +331,22 @@ p:last-child { margin-bottom: 0; }
         <p>Both installers take <code>-DryRun</code> or <code>--dry-run</code>. To remove the login task or service, use <code>-Uninstall</code> or <code>--uninstall</code>. Uninstalling keeps your reading data.</p>
       </aside>
     </section>
-
-    <section class="band" id="limits" aria-labelledby="t-limits">
-      <p class="label">Limits</p>
-      <h2 id="t-limits">What it does not do yet.</h2>
-      <dl class="limits">
-        <dt>Asking the margin needs a local Codex runtime, and it is off by default.</dt>
-        <dd>You must authorise a Codex runtime on your own machine before the margin can ask anything. Until you do, reading, highlighting, notes and the library still work.</dd>
-        <dt>PDF support is deferred.</dt>
-        <dd>Marginalia reads web pages today. Reading PDFs in the same margin is planned work, not shipped work.</dd>
-        <dt>The native install is proven on Windows only.</dt>
-        <dd>The installer has macOS and Linux paths, and the test suite runs on all three systems in continuous integration. That is command-level evidence. The install itself has been accepted only on Windows.</dd>
-        <dt>It is not finished.</dt>
-        <dd>Parts of the product are built and tested but not yet wired end to end. The repository says which, in plain terms, and does not claim otherwise.</dd>
-      </dl>
-      <aside class="note">
-        <p>Claims on this page describe what runs at the current commit. Where evidence covers only one platform or one command, it says so.</p>
-      </aside>
-    </section>
-
-    <section class="band" aria-labelledby="t-built">
-      <p class="label">How it was built</p>
-      <h2 id="t-built">Built with GPT-6 Astra through Codex.</h2>
-      <p>Astra ran as the technical lead at low reasoning effort, working ticket by ticket in isolated worktrees. Every packet was reviewed by an independent worker, on the exact commit, before it was merged. Review findings went back to the author rather than into the product.</p>
-      <p>The test suite at this commit reports 894 tests: 888 passed, six skipped, none failed.</p>
-      <aside class="note">
-        <p>Numbers come from a run of the package test suite on 18 September 2026, Windows, Node 24.</p>
-      </aside>
-    </section>
-
-  </main>
+</main>
 
   <footer class="foot">
-    <ul>
-      <li><a href="https://github.com/yashgurbani/marginalia">Source on GitHub</a></li>
-      <li><a href="https://github.com/yashgurbani/marginalia/blob/main/LICENSE">MIT license</a></li>
-      <li><a href="privacy.html">Privacy</a></li>
-    </ul>
-    <p>Marginalia is a reading tool. It keeps the source intact, keeps your work on your computer, and asks before anything leaves it.</p>
-  </footer>
+<ul>
+<li><a href="index.html">Home</a>
+</li>
+<li><a href="privacy.html">Privacy</a>
+</li>
+<li><a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/LICENSE">MIT license</a>
+</li>
+<li><a href="https://github.com/yashgurbani/marginalia">Source on GitHub</a>
+</li>
+</ul>
+<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+</p>
+</footer>
 
 </div>
 </body>

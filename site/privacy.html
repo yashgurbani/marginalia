@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Privacy — Marginalia</title>
-<meta name="description" content="What Marginalia stores, where it stores it, and what has to happen before anything leaves your machine.">
+<title>A personalized, agentic margin for the web.</title>
+<meta name="description" content="A personalized, agentic margin for the web.">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='none'/%3E%3Cpath d='M11.5 1.5v13' stroke='%23566' stroke-width='1'/%3E%3Cpath d='M2 4h7M2 6.5h7M2 9h7M2 11.5h5' stroke='%23334' stroke-width='1.2'/%3E%3C/svg%3E">
 <style>
@@ -103,7 +103,8 @@ ul.plain li { margin-bottom: 0.5rem; }
 <div class="sheet">
 
   <header class="masthead">
-    <p class="wordmark"><a href="index.html" style="color: inherit; text-decoration: none;">Marginalia</a></p>
+    <p class="wordmark"><a href="index.html" style="color: inherit; text-decoration: none;">Marginalia</a>
+</p>
     <nav aria-label="Page sections">
       <a href="index.html">Home</a>
       <a href="https://github.com/yashgurbani/marginalia">GitHub</a>
@@ -111,96 +112,78 @@ ul.plain li { margin-bottom: 0.5rem; }
   </header>
 
   <main id="main">
-
-    <section class="band" aria-labelledby="t-top">
-      <h1 id="t-top">Privacy</h1>
-      <p class="updated">Last updated 18 September 2026.</p>
-      <p>Marginalia keeps your reading on your computer. Nothing you read, select, highlight or write is sent anywhere until you have looked at the exact passage, seen who would receive it, and said yes.</p>
-      <p>This page describes the program you install. It is written against the code, not against an intention.</p>
-      <aside class="note">
-        <p>There is no account, no sign-up and no analytics in the extension or the helper.</p>
-      </aside>
-    </section>
-
-    <section class="band" aria-labelledby="t-store">
-      <p class="label">Storage</p>
-      <h2 id="t-store">Where your work lives.</h2>
-      <p>Your notes, highlights, threads and reading history are written to a SQLite database in a directory on your own machine. You can choose the directory with <code>MARGINALIA_DATA_DIR</code>. Nothing in that database is copied off your computer as part of ordinary use.</p>
-      <p>You can export the whole library as plain files at any time. Uninstalling the helper leaves your data in place.</p>
-      <aside class="note">
-        <p>Reading, highlighting and note-taking work with no network connection and no provider at all.</p>
-      </aside>
-    </section>
-
-    <section class="band" aria-labelledby="t-local">
-      <p class="label">The helper</p>
-      <h2 id="t-local">Everything stays on 127.0.0.1.</h2>
-      <p>The helper listens only on the loopback address <code>127.0.0.1</code>, by default on port <code>43120</code>. It is not reachable from another machine. It checks the <code>Host</code> and <code>Origin</code> of every request and requires a pairing token that you granted and can revoke.</p>
-      <p>The extension holds that one token and nothing else. Provider credentials never enter the browser. Page scripts cannot read the token.</p>
-      <p>Pairing uses a six-digit code that the helper prints, valid for five minutes and usable once. Pairing connects the extension to the helper. It does not authorise anything to be sent to a provider.</p>
-      <aside class="note">
-        <p>A port number is not authentication. The pairing token is, and you can revoke it from the extension options.</p>
-      </aside>
-    </section>
-
-    <section class="band" aria-labelledby="t-egress">
-      <p class="label">Sending</p>
-      <h2 id="t-egress">Nothing leaves without your approval.</h2>
-      <p>Selecting text sends nothing. Writing a note sends nothing. Saving and searching your own library sends nothing.</p>
-      <p>Asking the margin for help is a separate action. Before the first passage from a site is sent, the margin shows you:</p>
-      <ul class="plain">
-        <li>the exact text that would go, including any notes you chose to include;</li>
-        <li>the recipient, named as the actual provider and runtime that would receive it;</li>
-        <li>the scope of the permission you are being asked for.</li>
-      </ul>
-      <p>You then choose: this time, always on this site, or never on this site. A refusal persists and can be changed later from settings. On a site you have excluded, the margin does not offer an action that would fail.</p>
-      <p>Editing the request after the preview invalidates it. The frozen preview is what is sent, or nothing is.</p>
-      <p>The helper writes a record of every outgoing request before it dispatches and again after the outcome. That record is written by the helper, not by a model. If an outcome is unknown, the margin says it is unknown rather than claiming the request was not sent.</p>
-      <aside class="note">
-        <p>Asking uses a Codex runtime that starts on your computer, but the model inference itself happens on the provider's service. A local process is not local inference, and the consent preview names the real recipient.</p>
-      </aside>
-    </section>
-
-    <section class="band" aria-labelledby="t-auto">
-      <p class="label">Automatic work</p>
-      <h2 id="t-auto">Nothing runs on its own by default.</h2>
-      <p>Asking the margin needs an authorised local Codex runtime and is off until you turn it on. Automatic definitions are a separate setting, also off by default. A site permission you granted for one thing does not switch on another.</p>
-      <p>Fetching pages from the web is a second, narrower permission, asked per site. When the helper fetches a page for you it records what it fetched. If it cannot establish that the record is complete, it labels the record incomplete instead of implying it is whole.</p>
-      <p>Closed sessions are meant to run with no network access. That confinement has not yet been independently confirmed, and this page will not claim it has.</p>
-      <aside class="note">
-        <p>Clicking an ordinary link in a page is your browser doing its normal job. It is not Marginalia fetching anything.</p>
-      </aside>
-    </section>
-
-    <section class="band" aria-labelledby="t-site">
-      <p class="label">This website</p>
-      <h2 id="t-site">The page you are reading.</h2>
-      <p>This site is static HTML with its styles written inline. It sets no cookies, loads no fonts, scripts, images or stylesheets from other servers, and contains no analytics or advertising.</p>
-      <p>It is served by GitHub Pages. GitHub receives the ordinary request information any web server receives, such as your IP address, and handles it under GitHub's own privacy statement. Marginalia collects nothing from this page.</p>
-      <aside class="note">
-        <p>If you follow a link from here to GitHub, you are on GitHub's site and their terms apply.</p>
-      </aside>
-    </section>
-
-    <section class="band" aria-labelledby="t-change">
-      <p class="label">Changes</p>
-      <h2 id="t-change">If this changes.</h2>
-      <p>This policy describes the code at the current commit. When the behaviour changes, this page changes with it, and the history is in the repository where you can read the difference.</p>
-      <aside class="note">
-        <p>Questions and corrections belong in the repository issues.</p>
-      </aside>
-    </section>
-
-  </main>
+<section class="band hero" aria-labelledby="t-hero">
+<h1 id="t-hero">A personalized, agentic margin for the web.</h1>
+<p class="lede">Privacy and data handling. Last updated 18 September 2026.</p>
+<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+</p>
+<aside class="note">
+<p>A Chrome MV3 extension and a local helper on <code>127.0.0.1</code>. Reading data lives in local SQLite, with browser copies for recovery. MIT licensed.</p>
+</aside>
+</section>
+<section class="band" id="read-now" aria-labelledby="t-read-now">
+<h2 id="t-read-now">Read now</h2>
+<p>Selecting a passage, keeping a highlight and writing a note do not request model inference. Your note remains separate from the source page. Remember vocabulary records what you choose to keep.</p>
+</section>
+<section class="band" id="read-later" aria-labelledby="t-read-later">
+<h2 id="t-read-later">Read it later</h2>
+<p>Parked threads, saved marks and resume information are local reading data. The helper retains source, note and reply versions in SQLite. Browser IndexedDB also holds pending work, saved replies and recovery history.</p>
+<p>Removing a thread is a logical removal. It does not erase retained versions, browser caches, backups or downloaded exports. Uninstalling the helper keeps reading data.</p>
+</section>
+<section class="band" id="knowledge" aria-labelledby="t-knowledge">
+<h2 id="t-knowledge">Your knowledge base</h2>
+<p>The library stores source attribution with your passages, notes and replies. Exports create plain files in a location you choose. You manage those downloaded copies. <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/RETAINED-LOCAL-COPIES.md">Read the retained-copy inventory</a>.</p>
+<p>The helper listens on <code>127.0.0.1:43120</code>. Pairing connects the extension to it; pairing does not approve a model request. Provider credentials stay out of the browser.</p>
+</section>
+<section class="band" id="ask" aria-labelledby="t-ask">
+<h2 id="t-ask">How Ask works and what leaves</h2>
+<p>Ask is optional and requires a reader-authorized Codex runtime. Before dispatch, review the exact outgoing text, actual recipient and permission scope. The request can include the selected passage, your chosen note, page facts and bounded surrounding context. A changed request needs a new review.</p>
+<p>You can grant this send, allow the site, or refuse the site. A site grant does not itself start a request. Model inference happens on the provider’s service. The helper records dispatch and outcome; an unknown outcome stays labelled unknown.</p>
+<p>Requested tool and network restrictions are not observed confinement. The runtime’s evidence gaps mean this policy cannot promise that every action of the external runtime is confined to the preview. <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions before enabling real asks</a>.</p>
+</section>
+<section class="band" id="next" aria-labelledby="t-next">
+<h2 id="t-next">Next</h2>
+<p>Library search across everything saved, “Related in your library” on each page, PDF reading and listening (“Hear it”) are next. Topics and reading paths across papers, sharing, connectors and Firefox are also planned.</p>
+</section>
+<section class="band" id="limits" aria-labelledby="t-limits">
+<h2 id="t-limits">Honest limits</h2>
+<p>Real asks use a reader-authorized mode where solver confinement is requested but not observed. The mode is off by default. No recorded real run is in the evidence folder yet. <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
+<p>Windows install is proven. macOS and Linux have command-level CI evidence. PDF is not supported yet. Library search is not reachable yet.</p>
+</section>
+<section class="band" id="built" aria-labelledby="t-built">
+<h2 id="t-built">The Astra build</h2>
+<p>Marginalia is built by Yash Gurbani, a team of one, with GPT-6 Astra via Codex and ChatGPT Pro. Claude Code supports integration and review. The Astra Challenge build used bounded tasks and review against the code; passing tests do not close the real-run or confinement gates.</p>
+<p>The reported suite result is 898 tests: 892 pass, 0 fail, 6 skipped.</p>
+</section>
+<section class="band" id="research" aria-labelledby="t-research">
+<h2 id="t-research">Research and credits</h2>
+<p>ScholarPhi (Head et al., CHI 2021) showed definitions beside the text. Marginalia uses no ScholarPhi code; the debt is that idea. The Semantic Reader project (Lo et al., 2023 preprint, published in 2024) is part of the same research lineage.</p>
+<p><a href="https://scholarphi.org/">ScholarPhi</a> · <a href="https://scholarphi.org/assets/pdf/scholarphi-chi-2021.pdf">Head et al. paper</a> · <a href="https://arxiv.org/abs/2303.14334">Semantic Reader paper</a>
+</p>
+<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+</p>
+</section>
+<section class="band" id="site" aria-labelledby="t-site">
+<h2 id="t-site">This website</h2>
+<p>This site is static HTML with inline styles. It sets no cookies and contains no analytics or advertising. Images use local paths; it loads no external fonts, scripts or stylesheets. Following an outward link opens another site.</p>
+<p>When served by GitHub Pages, GitHub receives ordinary web request information such as your IP address. This policy changes with the code, and its history is in the repository.</p>
+</section>
+</main>
 
   <footer class="foot">
-    <ul>
-      <li><a href="index.html">Home</a></li>
-      <li><a href="https://github.com/yashgurbani/marginalia">Source on GitHub</a></li>
-      <li><a href="https://github.com/yashgurbani/marginalia/blob/main/LICENSE">MIT license</a></li>
-    </ul>
-    <p>Marginalia is a reading tool. It keeps the source intact, keeps your work on your computer, and asks before anything leaves it.</p>
-  </footer>
+<ul>
+<li><a href="index.html">Home</a>
+</li>
+<li><a href="privacy.html">Privacy</a>
+</li>
+<li><a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/LICENSE">MIT license</a>
+</li>
+<li><a href="https://github.com/yashgurbani/marginalia">Source on GitHub</a>
+</li>
+</ul>
+<p><a href="Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+</p>
+</footer>
 
 </div>
 </body>

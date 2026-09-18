@@ -1,5 +1,7 @@
 # Marginalia documentation
 
+[Research whitepaper](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/Marginalia-Research-Whitepaper.pdf) ([source](https://github.com/yashgurbani/marginalia/blob/codex/marginalia-v2/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md)) · [Credits](../../CREDITS.md) · [Third-party notices](../../THIRD-PARTY-NOTICES.md) · [Build scope](SCOPE-COVERAGE.md)
+
 Start here. Most files in this folder record how the project was built by a team of agents. Only a few describe the product.
 
 ## Read these to understand the product
@@ -28,7 +30,7 @@ The founding documents sit at the repository root: the research whitepaper, `PRO
 
 These gates are open. Tests and CI do not close them.
 
-- No run against a real model provider has been recorded. Reply behavior is proven on deterministic fixtures only.
+- A [reader-authorized real-ask path](READER-AUTHORIZED-RUNTIME.md) exists, but no recorded real run is in the evidence folder yet.
 - Solver confinement is requested but not yet observed.
 - Native install is proven on Windows only. macOS and Linux have command-level CI evidence.
 - The runtime direction for inference is undecided.
