@@ -40,8 +40,8 @@ test('mounted solver routes require pairing and expose truthful status only to a
     const response = await fetch(helper.origin + '/api/solver/status', { headers: headers() });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { available: false,
-      reason: 'Saved-solver execution has no mounted command transport or durable execution gate.',
-      modelTurns: 0, durableAtMostOnce: false });
+      reason: 'Saved-solver execution has no mounted command transport or confinement evidence collector.',
+      modelTurns: 0, durableAtMostOnce: true });
   } finally { await helper.close(); }
 });
 
@@ -83,7 +83,7 @@ test('unmounted execution dependencies fail closed without egress or grant consu
     const payload = await response.json() as { outcome: { status: string; code: string; reason: string } };
     assert.equal(payload.outcome.status, 'unavailable');
     assert.equal(payload.outcome.code, 'not-configured');
-    assert.match(payload.outcome.reason, /no mounted command transport or durable execution gate/i);
+    assert.match(payload.outcome.reason, /no mounted command transport or confinement evidence collector/i);
     const recompute = await fetch(helper.origin + '/api/solver/recompute', { method: 'POST', headers: headers(),
       body: JSON.stringify({ schema: 'marginalia.solver-execute.v1', requestId: 'request-1', planId: 'plan-1',
         planToken: 'f'.repeat(64), replyVersionId: 'reply-one', blockId: 'text', solverId: 'solver-1', inputs: {},
