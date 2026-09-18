@@ -20,6 +20,51 @@ function cached(thread: Thread, intent = 'define', replyId = 'reply') {
     version: { id: replyId, threadId: thread.id, parentId: null, supersedes: null, hash: `reply-hash-${replyId}`, reply: { schema: 't05.fixture', intent }, validation: {}, answeredNote: null, revision: 1, createdAt: capture.capturedAt, deletedAt: null },
     view: { replyVersionId: replyId, parameters: { x: 1 }, view: {}, revision: 1, updatedAt: capture.capturedAt } } as any;
 }
+
+for (const outcome of ['succeeded', 'cancelled', 'failed', 'outcome_unknown', 'cancelled-after-handoff']) {
+  test(`activity record reads stored ${outcome} work without writes`, async t => {
+    const e = env(t); await threadFixture(e.namespace, true);
+    e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+    let hostContext: any, selection: any;
+    const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: (_root, context) => {
+      hostContext = context;
+      return { open(value) { selection = value; }, setVisible() {}, destroy() {} };
+    } });
+    button(e.root, 'Ask about this note').click(); button(e.root, 'Review with local helper').click(); await api.drain();
+    hostContext.retainedQuestion({ ...selection, resumeJobId: 'stored-job' }); await api.drain();
+    hostContext.onState({ phase: outcome === 'succeeded' ? 'committed' : outcome === 'outcome_unknown' ? 'unknown' : 'cancelled' });
+    assert.equal(e.root.querySelector('.m-activity')!.hidden, false);
+    const noSend = outcome === 'cancelled' || outcome === 'failed';
+    const job = {
+      id: 'stored-job', provider: 'app-server', model: 'recorded-model',
+      state: outcome === 'cancelled-after-handoff' ? 'cancelled' : outcome,
+      createdAt: '2026-09-18T09:00:00Z', updatedAt: '2026-09-18T09:01:00Z', preparedPayloadDigest: 'a'.repeat(64),
+      attempts: [{ number: 1, handoffMarked: !noSend, dispatchClaimed: !noSend, ...(!noSend ? { startedAt: '2026-09-18T09:00:01Z' } : {}) }],
+      context: { outgoing: { question: 'The frozen question <script>', selection: { exact: 'Reviewed passage' }, availableCapabilities: ['samples', 'solver'] } },
+    };
+    const requests: { path: string; method: string; body: unknown }[] = [];
+    replaceGlobals(t, { fetch: async (url: string, init: RequestInit) => {
+      requests.push({ path: new URL(url).pathname, method: init.method!, body: init.body }); return Response.json(job);
+    } });
+    const writes: string[] = []; e.onWrite(async key => { writes.push(key); });
+    const dot = e.root.querySelector('.m-activity')!; dot.click();
+    const sheet = e.root.querySelector('[aria-label="What was sent"]')!;
+    await until(() => sheet.textContent.includes('recorded-model'));
+    assert.equal(sheet.hidden, false);
+    for (const text of ['What was sent', 'app-server', 'recorded-model', job.createdAt, job.updatedAt, 'samples, solver', job.preparedPayloadDigest, 'full reviewed text is no longer stored', 'The frozen question <script>', 'Reviewed passage']) assert.ok(sheet.textContent.includes(text), text);
+    assert.equal(sheet.querySelectorAll('textarea,input,select,script').length, 0);
+    assert.equal(sheet.textContent.includes('Nothing left this machine'), noSend);
+    if (!noSend) assert.match(sheet.textContent, /2026-09-18T09:00:01Z/);
+    if (outcome === 'succeeded') assert.match(sheet.textContent, /Ready/);
+    if (outcome === 'outcome_unknown') assert.match(sheet.textContent, /Outcome unconfirmed/);
+    assert.deepEqual(requests, [{ path: '/api/jobs/stored-job', method: 'GET', body: undefined }]);
+    assert.deepEqual(writes, []);
+    sheet.fire('keydown', { key: 'Escape' }); assert.equal(sheet.hidden, true); assert.equal(e.document.activeElement, dot);
+    dot.click(); await until(() => sheet.textContent.includes('recorded-model'));
+    button(sheet, 'Close').click(); assert.equal(sheet.hidden, true); assert.deepEqual(writes, []);
+    api.destroy(); await api.drain();
+  });
+}
 test('reading-position editor is connected, anchored and single-map across save failure, collapse and suspend', async t => {
   const e = env(t); const api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false });
   button(e.root, 'Settings').click(); assert.equal(e.root.querySelectorAll('button').some(node => node.textContent === 'Retry saving'), false, 'clean hydrated settings do not claim recovery is needed'); button(e.root, 'Close settings').click();
