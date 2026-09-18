@@ -7,7 +7,7 @@ function publicError(error: unknown): string {
     'Source changed.', 'This page is excluded.', 'This page is not active.',
     'The page changed. Select the passage again.', 'Open this margin from the source.',
     'Reopen this margin from the source.', 'The source changed. Reopen the margin from that page.',
-    'Open the margin from the page.', 'This site is excluded or changed.',
+    'Open the margin from the page.', 'This page is excluded or changed.',
     'Reopen the margin after navigation.', 'Reopen the margin.',
     'Open the native margin.', 'Choose a supported page.',
     'This source is unavailable.', 'Stale source request.',

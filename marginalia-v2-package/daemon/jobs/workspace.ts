@@ -82,6 +82,6 @@ export function provisionalForDisplay(reply: CandidateReply): CandidateReply {
 async function atomicWrite(path: string, contents: string) {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${randomUUID()}.tmp`;
-  await writeFile(temporary, contents, { encoding: 'utf8', flag: 'wx' });
+  await writeFile(temporary, contents, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
   await rename(temporary, path);
 }
