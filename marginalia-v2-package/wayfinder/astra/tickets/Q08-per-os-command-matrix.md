@@ -2,7 +2,7 @@
 
 label: wayfinder:task
 mode: AFK
-status: open
+status: claimed (astra, 2026-09-18)
 blocked_by: E02
 route: CI, then Luna xhigh reads the runs
 
