@@ -1,11 +1,11 @@
 import type { SolverExecuteRequest, SolverOutcome, SolverPlan, SolverPlanOutcome, SolverPlanRequest, SolverRejectionCode, SolverResult, SolverUnavailableCode, SOLVER_EXECUTE_SCHEMA, SOLVER_PLAN_REQUEST_SCHEMA, SOLVER_STATE_KEY_INPUT_MAX_BYTES } from '../contracts/solver.ts';
+import { isDigest } from '../contracts/digest.ts';
 import type { RecomputeRequest } from '../renderer/index.ts';
 import type { HelperClient } from './helper.ts';
 
 const PLAN_REQUEST_SCHEMA: typeof SOLVER_PLAN_REQUEST_SCHEMA = 'marginalia.solver-plan-request.v1';
 const EXECUTE_SCHEMA: typeof SOLVER_EXECUTE_SCHEMA = 'marginalia.solver-execute.v1';
 const MAX_CANONICAL_BYTES: typeof SOLVER_STATE_KEY_INPUT_MAX_BYTES = 256 * 1024 + 16 * 1024;
-const STATE_KEY = /^[a-f0-9]{64}$/;
 const REQUEST_ID = /^[\w-]{1,100}$/;
 
 export type RecomputePathId = 'local-kernel' | 'saved-samples' | 'saved-solver' | 'ask-again';
@@ -97,7 +97,7 @@ const baseView = (state: SolverRecomputeState, headline: string, detail: string,
 
 function outcomeView(outcome: SolverOutcome | SolverPlanOutcome, stateKey: string): SolverRecomputeView {
   if (outcome.status === 'succeeded') {
-    if (!STATE_KEY.test(stateKey) || !STATE_KEY.test(outcome.result.stateKey) || outcome.result.stateKey !== stateKey) {
+    if (!isDigest(stateKey) || !isDigest(outcome.result.stateKey) || outcome.result.stateKey !== stateKey) {
       return baseView('unknown', 'Your inputs changed while this ran, so the result was discarded.',
         'Nothing was painted over your current view. Run it again for these inputs.');
     }

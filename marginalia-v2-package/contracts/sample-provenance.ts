@@ -5,6 +5,7 @@ import {
   type ReplyParameterState,
   type SamplesBlock,
 } from './reply.ts';
+import { isDigest } from './digest.ts';
 
 export const SAMPLE_GENERATION_SCHEMA = 'marginalia.samples-generation.v1' as const;
 
@@ -34,8 +35,6 @@ export type SampleGenerationRecord = SampleGenerationRecordBase & (
 export type SamplesInterpolationReadiness =
   | { ok: true; binding: SampleBindingDigests; block: SamplesBlock; parameters: ReplyParameterState }
   | { ok: false; state: 'historical' | 'mismatch' | 'invalid'; reason: string };
-
-const sha256Pattern = /^[a-f0-9]{64}$/;
 
 function unavailable(state: 'historical' | 'mismatch' | 'invalid', reason: string): SamplesInterpolationReadiness {
   return { ok: false, state, reason };
@@ -129,7 +128,7 @@ function generationRecordError(record: SampleGenerationRecord): string | undefin
   if (!record.blockId) return 'The sample generation record has no block identity.';
   if (record.origin !== 'host-execution' && record.origin !== 'imported') return 'The sample generation record has an unsupported origin.';
   for (const field of ['replyDigest', 'computationDigest', 'inputDigest', 'sampleDataDigest'] as const) {
-    if (!sha256Pattern.test(record[field])) return `The sample generation record has an invalid ${field}.`;
+    if (!isDigest(record[field])) return `The sample generation record has an invalid ${field}.`;
   }
   for (const field of ['executionId', 'runtime', 'solver'] as const) {
     const value = record[field];

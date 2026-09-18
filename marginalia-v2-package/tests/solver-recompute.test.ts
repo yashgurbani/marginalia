@@ -192,6 +192,7 @@ test('the adapter imports nothing Node-only and nothing from the daemon', () => 
   assert.equal(source.split(/\r?\n/).some(line => /from ['"]node:/.test(line)), false);
   assert.equal(/daemon\//.test(source), false);
   for (const line of source.split(/\r?\n/).filter(line => line.includes("from '../contracts/"))) {
-    assert.match(line, /^import type/);
+    if (line.includes("from '../contracts/digest.ts'")) assert.match(line, /^import \{ isDigest \}/);
+    else assert.match(line, /^import type/);
   }
 });

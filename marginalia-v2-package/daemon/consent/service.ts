@@ -8,10 +8,10 @@ import type {
   PrepareConsentInput, SiteExclusion,
 } from '../../contracts/consent.ts';
 import type { JobConsentAuthority, JobConsentDecision, JobConsentStage, JobSnapshot } from '../../contracts/jobs.ts';
+import { isDigest } from '../../contracts/digest.ts';
 import type { ReaderStore } from '../store.ts';
 
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
-const SHA256 = /^[a-f0-9]{64}$/;
 const PREVIEW_TTL_MS = 10 * 60 * 1000;
 
 type PreviewRow = {
@@ -224,7 +224,7 @@ export class ConsentSessionService implements JobConsentAuthority {
   /** Caller-owned JobStore transaction atomically finalizes consent and provider handoff markers. */
   finalizeDispatch(job: Readonly<JobSnapshot>, attemptId: string, expectedEligibilityFingerprint: string): ConsentAuthorization {
     if (!this.db.inTransaction) throw new ConsentDeniedError('Dispatch consent must be finalized inside the caller-owned job transaction.');
-    if (!SHA256.test(expectedEligibilityFingerprint)) throw new ConsentDeniedError('Dispatch eligibility is missing or invalid.');
+    if (!isDigest(expectedEligibilityFingerprint)) throw new ConsentDeniedError('Dispatch eligibility is missing or invalid.');
     if (this.authorizationRow(attemptId)) throw new ConsentDeniedError('This attempt was already finalized for dispatch.');
     const eligibility = this.dispatchEligibility(job, attemptId);
     if (eligibility.eligibilityFingerprint !== expectedEligibilityFingerprint) {
@@ -305,7 +305,7 @@ export class ConsentSessionService implements JobConsentAuthority {
   recordFetchedResources(attemptId: string, fetched: readonly FetchedResourceRecord[], complete: boolean) {
     if (!Array.isArray(fetched) || fetched.length > 100 || typeof complete !== 'boolean') throw new Error('Invalid fetched-resource record.');
     const safe = structuredClone(fetched);
-    for (const item of safe) if ((item.outcome === 'fetched' ? !item.sha256 || !SHA256.test(item.sha256) : item.sha256 !== null) || item.bytes < 0 || !Number.isSafeInteger(item.bytes)) throw new Error('Invalid fetched-resource record.');
+    for (const item of safe) if ((item.outcome === 'fetched' ? !item.sha256 || !isDigest(item.sha256) : item.sha256 !== null) || item.bytes < 0 || !Number.isSafeInteger(item.bytes)) throw new Error('Invalid fetched-resource record.');
     this.db.transaction(() => {
       const authorization = this.authorizationRow(attemptId);
       if (!authorization) throw new Error('No authorized egress attempt exists.');
@@ -418,7 +418,7 @@ export class ConsentSessionService implements JobConsentAuthority {
     }
     const hashes: unknown = JSON.parse(row.contextHashes);
     if (!Array.isArray(hashes) || hashes.length < 1 || hashes.length > 16 ||
-        hashes.some(value => typeof value !== 'string' || !SHA256.test(value))) {
+        hashes.some(value => typeof value !== 'string' || !isDigest(value))) {
       throw new ConsentDeniedError('The current outgoing preview hashes are unavailable. Review it again.');
     }
     return hashes;
@@ -432,14 +432,14 @@ export class ConsentDeniedError extends Error { override name = 'ConsentDenied';
 export class ConsentConflictError extends Error { override name = 'ConsentConflict'; }
 
 function validatePrepare(input: PrepareConsentInput) {
-  if (!input || typeof input !== 'object' || !ID.test(input.requestId) || !SHA256.test(input.bindingDigest) || !SHA256.test(input.policyKey)) throw new Error('Invalid consent request binding.');
+  if (!input || typeof input !== 'object' || !ID.test(input.requestId) || !isDigest(input.bindingDigest) || !isDigest(input.policyKey)) throw new Error('Invalid consent request binding.');
   siteFor(input.sourceUrl);
   if (!['cloud-inference', 'open-session'].includes(input.scope) || !['app-server', 'mcp-server'].includes(input.provider)) throw new Error('Invalid consent scope or provider.');
   if (!input.recipient || input.recipient.length > 200 || !input.recipientLabel || input.recipientLabel.length > 200) throw new Error('Invalid consent recipient.');
   if (!Array.isArray(input.outgoing) || input.outgoing.length < 1 || input.outgoing.length > 16) throw new Error('Invalid outgoing preview.');
   let bytes = 0;
   for (const part of input.outgoing) {
-    if (!part || !part.label || part.label.length > 100 || typeof part.text !== 'string' || !SHA256.test(part.sha256) || hash(part.text) !== part.sha256) throw new Error('Outgoing preview text and hash do not match.');
+    if (!part || !part.label || part.label.length > 100 || typeof part.text !== 'string' || !isDigest(part.sha256) || hash(part.text) !== part.sha256) throw new Error('Outgoing preview text and hash do not match.');
     bytes += Buffer.byteLength(part.text);
   }
   if (bytes > 64 * 1024) throw new Error('Outgoing preview is too large.');
@@ -452,7 +452,7 @@ function validatePrincipal(principal: ConsentPrincipal) {
   if (!browserOwned && !settings) throw new ConsentDeniedError('This surface cannot grant permission.');
 }
 function validateJobBinding(job: Readonly<JobSnapshot>, attemptId: string) {
-  if (!job || !ID.test(job.id) || !ID.test(attemptId) || job.latestAttemptId !== attemptId || !SHA256.test(job.preparedPayloadDigest) || !SHA256.test(job.policyKey)) throw new ConsentDeniedError('Consent requires the current persisted attempt and policy.');
+  if (!job || !ID.test(job.id) || !ID.test(attemptId) || job.latestAttemptId !== attemptId || !isDigest(job.preparedPayloadDigest) || !isDigest(job.policyKey)) throw new ConsentDeniedError('Consent requires the current persisted attempt and policy.');
 }
 function previewFrom(row: PreviewRow, outgoing: PrepareConsentInput['outgoing'], state: ConsentPreview['state']): ConsentPreview {
   return { id: row.id, revision: row.revision, requestId: row.requestId, site: row.site, scope: row.scope,

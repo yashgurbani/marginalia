@@ -1,11 +1,11 @@
 import type { ConsentChoice, ConsentGrant, ConsentPreview } from '../../contracts/consent.ts';
+import { isDigest } from '../../contracts/digest.ts';
 import type { JobSnapshot, PrepareJobInput, ProviderJobPacket } from '../../contracts/jobs.ts';
 import type { NoteVersion, SourceVersion, Thread } from '../../contracts/reader.ts';
 import type { CandidateReply } from '../../contracts/reply.ts';
 import type { AskingBinding, AskingPreparation, AskingValidator, PageDefinition, SavedAskingReply } from './types.ts';
 
 export const isId = (value: unknown): value is string => typeof value === 'string' && /^[\w-]{1,100}$/.test(value);
-const hash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const date = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const text = (value: unknown, max: number, empty = false): value is string => typeof value === 'string' && (empty || value.length > 0) && value.length <= max;
@@ -46,7 +46,7 @@ export function sameData(a: unknown, b: unknown): boolean {
 }
 
 export function assertBinding(b: AskingBinding): void {
-  requireMatch(b && isId(b.threadId) && isId(b.anchorId) && isId(b.captureId) && isId(b.sourceVersionId) && hash(b.sourceHash));
+  requireMatch(b && isId(b.threadId) && isId(b.anchorId) && isId(b.captureId) && isId(b.sourceVersionId) && isDigest(b.sourceHash));
   requireMatch(text(b.sourceUrl, 8000));
   let url: URL; try { url = new URL(b.sourceUrl); } catch { throw new AskingBindingError(); }
   requireMatch(['http:', 'https:'].includes(url.protocol) && !url.username && !url.password);
@@ -130,14 +130,14 @@ export function assertPreparation(p: AskingPreparation, expected: ExpectedReques
   requireMatch(noteExpected ? sameData(j.answeredNote, input.answeredNote) : !j.answeredNote);
   const allowed = new Set(['id', 'idempotencyKey', 'threadId', 'intent', 'question', 'provider', 'model', 'mode', 'policyKey', 'preparedPayloadDigest', 'answeredNote', 'parentReplyId', 'capabilities']);
   requireMatch(Object.keys(j).every(k => allowed.has(k)) && isId(v.id) && Number.isSafeInteger(v.revision) && v.revision > 0 &&
-    v.requestId === j.id && hash(j.preparedPayloadDigest) && v.bindingDigest === j.preparedPayloadDigest && hash(v.payloadDigest) &&
-    hash(j.policyKey) && v.policyKey === j.policyKey && v.provider === j.provider && ['app-server', 'mcp-server'].includes(j.provider) &&
+    v.requestId === j.id && isDigest(j.preparedPayloadDigest) && v.bindingDigest === j.preparedPayloadDigest && isDigest(v.payloadDigest) &&
+    isDigest(j.policyKey) && v.policyKey === j.policyKey && v.provider === j.provider && ['app-server', 'mcp-server'].includes(j.provider) &&
     ['structured-final', 'workspace-files'].includes(j.mode) && text(j.model, 100) && /^[A-Za-z0-9._-]+$/.test(j.model) &&
     text(v.recipient, 1000) && text(v.recipientLabel, 1000) && text(v.scopeLabel, 1000) && v.site === new URL(b.sourceUrl).origin &&
     v.scope === (['evidence', 'explore'].includes(input.intent) ? 'open-session' : 'cloud-inference') &&
     ['ready', 'denied', 'excluded'].includes(v.state) && date(v.expiresAt) && Date.parse(v.expiresAt) > now);
   requireMatch(Array.isArray(v.outgoing) && v.outgoing.length > 0 && v.outgoing.length <= 16 &&
-    v.outgoing.every(part => part && text(part.label, 1000) && text(part.text, 1_000_000, true) && hash(part.sha256)));
+    v.outgoing.every(part => part && text(part.label, 1000) && text(part.text, 1_000_000, true) && isDigest(part.sha256)));
   const packets = v.outgoing.filter(part => part.label === 'Bounded reading packet');
   requireMatch(packets.length === 1);
   let packet: ProviderJobPacket;
@@ -156,8 +156,8 @@ export function assertGrant(g: ConsentGrant, v: ConsentPreview, choice: ConsentC
 const states = new Set(['queued', 'preparing', 'sending', 'running', 'validating', 'succeeded', 'failed', 'cancelled', 'timed_out', 'outcome_unknown', 'cancel_requested']);
 export function assertJob(j: JobSnapshot, b: AskingBinding, requestId: string, expected?: ExpectedRequest, preparation?: AskingPreparation): void {
   const c = j?.context;
-  requireMatch(j && c && j.id === requestId && isId(j.idempotencyKey) && j.threadId === b.threadId && hash(j.preparedPayloadDigest) && hash(j.packetDigest) &&
-    hash(j.policyKey) && isId(j.grantId) && ['app-server', 'mcp-server'].includes(j.provider) && text(j.model, 100) &&
+  requireMatch(j && c && j.id === requestId && isId(j.idempotencyKey) && j.threadId === b.threadId && isDigest(j.preparedPayloadDigest) && isDigest(j.packetDigest) &&
+    isDigest(j.policyKey) && isId(j.grantId) && ['app-server', 'mcp-server'].includes(j.provider) && text(j.model, 100) &&
     ['structured-final', 'workspace-files'].includes(j.mode) && states.has(j.state) && typeof j.cancelRequested === 'boolean' && date(j.createdAt) && date(j.updatedAt));
   requireMatch(c.threadId === b.threadId && c.sourceVersionId === b.sourceVersionId && c.sourceHash === b.sourceHash && c.sourceUrl === b.sourceUrl &&
     c.sourceText === b.sourceText && c.sourceTitle === b.sourceTitle && c.sourcePageType === b.sourcePageType && c.sourceCapturedAt === b.sourceCapturedAt &&
@@ -197,13 +197,13 @@ export function checkedCandidate(raw: unknown, b: AskingBinding, validate: Askin
 export function assertSavedReply(saved: SavedAskingReply, j: JobSnapshot, b: AskingBinding, validate: AskingValidator): CandidateReply {
   const r = saved?.reply, s = saved?.source;
   requireMatch(r && s && j.state === 'succeeded' && j.latestAttemptId && r.id === j.replyVersionId && r.threadId === b.threadId &&
-    r.parentId === (j.context.parentReplyId ?? null) && !r.deletedAt && hash(r.hash) && Number.isSafeInteger(r.revision) && r.revision > 0 && date(r.createdAt) &&
+    r.parentId === (j.context.parentReplyId ?? null) && !r.deletedAt && isDigest(r.hash) && Number.isSafeInteger(r.revision) && r.revision > 0 && date(r.createdAt) &&
     s.id === b.sourceVersionId && s.hash === b.sourceHash && s.text === b.sourceText && s.capturedAt === b.sourceCapturedAt && s.pageType === b.sourcePageType);
   const n = b.answeredNote;
   requireMatch(n ? r.answeredNote && r.answeredNote.noteId === n.noteId && r.answeredNote.revision === n.revision && r.answeredNote.text === n.text : !r.answeredNote);
   const reply = checkedCandidate(r.reply, b, validate, 'complete');
   requireMatch(reply.intent === j.context.intent && r.validation?.schema === 'marginalia.host-report.v1' && r.validation.checkVersion === 'host-checks.v1' &&
-    hash(r.validation.replyDigest) && r.validation.replyDigest === r.hash && hash(r.validation.parameterDigest) && Array.isArray(r.validation.results) && r.validation.results.length <= 64);
+    isDigest(r.validation.replyDigest) && r.validation.replyDigest === r.hash && isDigest(r.validation.parameterDigest) && Array.isArray(r.validation.results) && r.validation.results.length <= 64);
   // Check the report's transport shape, not the scientific truth or headline authority it reports.
   requireMatch(r.validation.results.every(result => record(result) && text(result.requestId, 100) && text(result.criterion, 100) &&
     text(result.model, 100) && text(result.classification, 100) && ['pass', 'fail', 'unsupported'].includes(result.status) &&

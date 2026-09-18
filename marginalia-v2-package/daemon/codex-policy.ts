@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix, win32 } from 'node:path';
+import { isDigest } from '../contracts/digest.ts';
 
 /** Pure policy preparation, not an app-server client or an isolation certificate. */
 export const PINNED_CODEX_VERSION = '0.153.4' as const;
@@ -77,7 +78,6 @@ const disabledFeatures = [
   'multi_agent', 'multi_agent_v2', 'memories', 'shell_snapshot', 'shell_snapshot_v2', 'code_mode', 'code_mode_host',
 ] as const;
 const generationTools = new Set(['shell_command', 'exec_command', 'write_stdin', 'apply_patch', 'update_plan', 'view_image']);
-const SHA256_DIGEST = /^[a-f0-9]{64}$/;
 export const REVIEWED_PROVIDER_ENVIRONMENT_KEYS = [
   'SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'PATH', 'HOME', 'USERPROFILE', 'TEMP', 'TMP', 'LANG', 'LC_ALL',
 ] as const;
@@ -397,7 +397,7 @@ export function auditCodexPolicy(policy: CodexPolicy, evidence: PolicyEvidence, 
       environment.environmentReviewed !== true || !Array.isArray(environment.inheritedEnvironmentKeys) ||
       environment.inheritedEnvironmentKeys.some(key => typeof key !== 'string' || !allowedEnvironment.has(key)) ||
       !environmentDigests || (policy.platform === 'win32' && environment.windowsKeyCasingReviewed !== true) ||
-      environment.executableResolutionReviewed !== true || environment.inheritedEnvironmentKeys.some(key => !SHA256_DIGEST.test(String(environmentDigests[key] ?? '')))) {
+      environment.executableResolutionReviewed !== true || environment.inheritedEnvironmentKeys.some(key => !isDigest(String(environmentDigests[key] ?? '')))) {
     issue('environment-unresolved', 'environment');
   }
   const runtime = read('runtime', 'controlled-sandbox-probe');

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ProviderNotSentError, type ProviderHandle, type ProviderRequest } from '../../contracts/job-runner.ts';
 import { capabilitiesForIntent, canonicalReplyData, parseAndValidateReply, type CandidateReply, type ReplyCapability } from '../../contracts/reply.ts';
+import { isDigest } from '../../contracts/digest.ts';
 import type { FollowupJobInput, FrozenJobContext, JobSnapshot, PreparedJobResult, PrepareFollowupJobInput, PrepareJobInput, PrepareRetryJobInput, RetryJobInput, StartJobInput } from '../../contracts/jobs.ts';
 import type { OutgoingPart, PrepareConsentInput } from '../../contracts/consent.ts';
 import type { ReaderStore } from '../store.ts';
@@ -74,7 +75,7 @@ export class JobService {
       (defaults.policyFor === undefined || typeof defaults.policyFor === 'function')
       ? { ...defaults, capabilities: [...new Set(defaults.capabilities)] } : undefined;
     this.configured = !!options.runtimeFactory && !!this.defaults &&
-      (typeof this.defaults.policyFor === 'function' || !!this.defaults.policyKey && /^[a-f0-9]{64}$/.test(this.defaults.policyKey));
+      (typeof this.defaults.policyFor === 'function' || !!this.defaults.policyKey && isDigest(this.defaults.policyKey));
     this.timeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1_000 || this.timeoutMs > 60 * 60 * 1000) throw new Error('Invalid job timeout.');
   }
@@ -339,7 +340,7 @@ export class JobService {
     const decision = await factory.consent.revalidate(job, 'dispatch');
     if (decision.grantId !== job.grantId || decision.policyKey !== job.policyKey) throw new Error('Current consent no longer matches the persisted request.');
     if (!decision.auditScope) throw new Error('Consent authorization identity is unavailable.');
-    if (!decision.eligibilityFingerprint || !/^[a-f0-9]{64}$/.test(decision.eligibilityFingerprint)) throw new Error('Current consent eligibility token is unavailable.');
+    if (!decision.eligibilityFingerprint || !isDigest(decision.eligibilityFingerprint)) throw new Error('Current consent eligibility token is unavailable.');
     if (!this.active(jobId, attemptId)) { this.store.releaseUndispatchedContinuation(attemptId); await this.releaseRuntime(attemptId); return; }
     const compatible = this.store.bindAuthorization(attemptId, this.library.continuationIdentity({ model: job.model,
       settingsRevision: job.context.modelSettingsRevision, compatibilityKey: job.context.modelCompatibilityKey }, decision.auditScope));
@@ -633,7 +634,7 @@ function assertAdmission(admit?: () => boolean) {
 function validateStart(value: StartJobInput): StartJobInput {
   if (!value || typeof value !== 'object') throw new Error('Invalid work request.');
   for (const [name, item] of [['id', value.id], ['idempotencyKey', value.idempotencyKey], ['threadId', value.threadId], ['policyKey', value.policyKey], ['grantId', value.grantId]] as const) requireId(item, name);
-  if (!/^[a-f0-9]{64}$/.test(value.preparedPayloadDigest)) throw new Error('Invalid prepared outgoing digest.');
+  if (!isDigest(value.preparedPayloadDigest)) throw new Error('Invalid prepared outgoing digest.');
   if (!['define', 'simulate', 'instantiate', 'derive', 'diagram', 'evidence', 'explore', 'unsure'].includes(value.intent)) throw new Error('Invalid help type.');
   if (typeof value.question !== 'string' || !value.question.trim() || value.question.length > 4000) throw new Error('Invalid question.');
   if (!['app-server', 'mcp-server'].includes(value.provider) || !['structured-final', 'workspace-files'].includes(value.mode)) throw new Error('Invalid execution mode.');
@@ -657,14 +658,14 @@ function validatePrepare(value: PrepareJobInput): PrepareJobInput {
 function validateFollowup(value: FollowupJobInput) {
   if (!value || typeof value !== 'object') throw new Error('Invalid follow-up.');
   requireId(value.id, 'job'); requireId(value.idempotencyKey, 'request'); requireId(value.grantId, 'grant');
-  if (!/^[a-f0-9]{64}$/.test(value.preparedPayloadDigest)) throw new Error('Invalid prepared outgoing digest.');
+  if (!isDigest(value.preparedPayloadDigest)) throw new Error('Invalid prepared outgoing digest.');
   if (typeof value.question !== 'string' || !value.question.trim() || value.question.length > 4000) throw new Error('Invalid follow-up.');
   value.question = value.question.trim();
 }
 function validateRetry(value: RetryJobInput) {
   if (!value || typeof value !== 'object') throw new Error('Invalid retry.');
   requireId(value.id, 'job'); requireId(value.idempotencyKey, 'request'); requireId(value.grantId, 'grant');
-  if (!/^[a-f0-9]{64}$/.test(value.preparedPayloadDigest)) throw new Error('Invalid prepared outgoing digest.');
+  if (!isDigest(value.preparedPayloadDigest)) throw new Error('Invalid prepared outgoing digest.');
 }
 function requireId(value: unknown, name: string): asserts value is string { if (typeof value !== 'string' || !ID.test(value)) throw new Error(`Invalid ${name} identifier.`); }
 function safeReason(error: unknown) { const message = error instanceof Error ? error.message : 'execution-failed'; return message.slice(0, 500); }
