@@ -26,12 +26,29 @@ test('reader work survives reopening; replay is idempotent; conflicting revision
     assert.equal(store.get('thread-1')!.notes[0].text, 'My revised question.');
     assert.equal(store.exportThread('thread-1').noteVersions.length, 2);
     assert.equal(store.events().length, 2);
+    store.reattach(keep.threadId, 'A replaced page.', 'erasure-target');
     store.apply({ id: 'remove-1', kind: 'remove', threadId: 'thread-1', expectedRevision: 2, removed: true });
     assert.equal(store.list().length, 0);
+    assert.deepEqual(store.db.prepare('SELECT entityId FROM search ORDER BY entityId').all(), []);
     store.apply({ id: 'restore-1', kind: 'remove', threadId: 'thread-1', expectedRevision: 3, removed: false });
     assert.equal(store.list().length, 1);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM search').pluck().get(), 3);
     assert.throws(() => store.apply({ ...keep, note: 'Different data under the same ID.' }), ConflictError);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('active thread listing pushes filters into SQL and uses its covering index', () => {
+  const store = new ReaderStore(':memory:');
+  try {
+    store.apply(keep);
+    assert.deepEqual(store.list(keep.capture.url).map(thread => thread.id), [keep.threadId]);
+    assert.deepEqual(store.list('https://elsewhere.example/'), []);
+    const plan = store.db.prepare(`EXPLAIN QUERY PLAN SELECT t.id FROM threads t JOIN anchors a ON a.id=t.anchorId
+      JOIN source_versions v ON v.id=a.sourceVersionId JOIN sources s ON s.id=v.sourceId
+      WHERE t.deletedAt IS NULL ORDER BY t.createdAt,t.id`).all() as { detail: string }[];
+    assert.ok(plan.some(row => /SEARCH t USING (?:COVERING )?INDEX threads_list/.test(row.detail)), JSON.stringify(plan));
+    assert.ok(plan.every(row => !/^SCAN t(?:$|\s)/.test(row.detail)), JSON.stringify(plan));
+  } finally { store.close(); }
 });
 
 test('removing and restoring one note tombstones only that note and advances note and thread revisions', () => {
@@ -42,6 +59,7 @@ test('removing and restoring one note tombstones only that note and advances not
     const before = store.get(keep.threadId)!;
     const target = before.notes.find(note => note.id !== 'note-2')!;
     store.apply({ id: 'note-1-remove', kind: 'note-remove', threadId: keep.threadId, noteId: target.id, expectedRevision: target.revision, removed: true });
+    assert.equal(store.db.prepare("SELECT 1 FROM search WHERE entityId=? AND kind='note'").get(target.id), undefined);
     const removed = store.get(keep.threadId)!;
     assert.equal(removed.revision, before.revision + 1);
     assert.equal(removed.notes.find(note => note.id === target.id)!.revision, target.revision + 1);
@@ -156,12 +174,14 @@ test('immutable validated reply versions quote the answered note and persist ind
     assert.throws(() => store.commitReply({ ...input, id: 'invalid-reply', reply: { ...growthReply, blocks: [{ type: 'text', id: 'bad', md: '<script>bad()</script>' }] } }), /raw HTML/);
     const remove = { id: 'remove-reply', replyVersionId: input.id, removed: true, expectedRevision: 1 };
     store.setReplyRemoved(remove); store.setReplyRemoved(remove);
+    assert.equal(store.db.prepare("SELECT 1 FROM search WHERE entityId=? AND kind='reply'").get(input.id), undefined);
     assert.equal(store.replies(keep.threadId).length, 1);
     store.close(); store = new ReaderStore(filename);
     assert.equal(store.replies(keep.threadId, true).length, 2);
     assert.deepEqual(store.replyView(input.id), view);
     assert.equal(store.reply(input.id)!.answeredNote!.revision, 1);
     store.setReplyRemoved({ id: 'undo-reply', replyVersionId: input.id, removed: false, expectedRevision: 2 });
+    assert.ok(store.db.prepare("SELECT 1 FROM search WHERE entityId=? AND kind='reply'").get(input.id));
     assert.equal(store.replies(keep.threadId).length, 2);
     assert.equal(store.exportThread(keep.threadId).replyViews.length, 2);
     assert.throws(() => store.db.prepare('UPDATE reply_versions SET json=? WHERE id=?').run('{}', input.id), /immutable/);
@@ -215,7 +235,7 @@ test('v1 database migration preserves original captures and labels unrecoverable
     assert.deepEqual(store.exportThread('t').targetVersions, []);
     store.close(); store = new ReaderStore(filename);
     assert.equal(store.list().length, 1);
-    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 4, 7001, 7002]);
+    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 4, 7001, 7002, 7004]);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -294,7 +314,7 @@ test('T07 F2 v4 upgrade preserves old IDs, legacy/unavailable metadata and forei
     assert.throws(() => store.db.prepare("UPDATE source_versions SET title='changed' WHERE id='legacy-id'").run(), /immutable/);
     store.close(); store = new ReaderStore(filename);
     assert.deepEqual(store.db.pragma('foreign_key_check'), []);
-    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 3, 4, 13, 7001, 7002]);
+    assert.deepEqual(store.db.prepare('SELECT version FROM migrations ORDER BY version').all().map(row => (row as { version: number }).version), [1, 2, 3, 4, 13, 7001, 7002, 7004]);
     assert.equal(store.sourceVersion('unavailable-id')!.capturedAt, null);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
