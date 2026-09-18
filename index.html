@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A personalized, agentic margin for the web.</title>
+<link rel="canonical" href="https://yashgurbani.github.io/marginalia/">
+<meta name="description" content="A personalized, agentic margin for the web.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='none'/%3E%3Cpath d='M11.5 1.5v13' stroke='%23566' stroke-width='1'/%3E%3Cpath d='M2 4h7M2 6.5h7M2 9h7M2 11.5h5' stroke='%23334' stroke-width='1.2'/%3E%3C/svg%3E">
+<style>
+/* Tokens ported from marginalia-v2-package/ui/tokens.css (ink blue, hue 255). */
+:root {
+  --m-page: oklch(0.990 0.004 255);
+  --m-margin: oklch(0.968 0.007 255);
+  --m-surface: oklch(0.993 0.003 255);
+  --m-sunken: oklch(0.940 0.008 255);
+  --m-ink: oklch(0.245 0.016 255);
+  --m-ink-2: oklch(0.400 0.014 255);
+  --m-ink-3: oklch(0.475 0.012 255);
+  --m-rule: oklch(0.895 0.008 255);
+  --m-rule-strong: oklch(0.800 0.010 255);
+  --m-edge: oklch(0.620 0.012 255);
+  --m-accent: oklch(0.470 0.120 255);
+  --m-accent-soft: oklch(0.925 0.030 255);
+  --m-on-accent: oklch(0.990 0.004 255);
+  --m-highlight: oklch(0.935 0.065 95);
+  --m-sec-1: oklch(0.800 0.060 255);
+  --m-sec-2: oklch(0.800 0.060 195);
+  --m-sec-3: oklch(0.800 0.060 145);
+  --m-serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --m-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --m-mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --m-page: oklch(0.185 0.010 255);
+    --m-margin: oklch(0.215 0.011 255);
+    --m-surface: oklch(0.250 0.012 255);
+    --m-sunken: oklch(0.230 0.010 255);
+    --m-ink: oklch(0.925 0.008 255);
+    --m-ink-2: oklch(0.800 0.010 255);
+    --m-ink-3: oklch(0.720 0.010 255);
+    --m-rule: oklch(0.320 0.012 255);
+    --m-rule-strong: oklch(0.440 0.012 255);
+    --m-edge: oklch(0.540 0.012 255);
+    --m-accent: oklch(0.790 0.095 255);
+    --m-accent-soft: oklch(0.330 0.050 255);
+    --m-on-accent: oklch(0.180 0.020 255);
+    --m-highlight: oklch(0.380 0.055 95);
+    --m-sec-1: oklch(0.560 0.060 255);
+    --m-sec-2: oklch(0.560 0.060 195);
+    --m-sec-3: oklch(0.560 0.060 145);
+    color-scheme: dark;
+  }
+}
+/* Same dark values, reachable for checking without changing the system setting. */
+:root[data-theme="dark"] {
+  --m-page: oklch(0.185 0.010 255);
+  --m-margin: oklch(0.215 0.011 255);
+  --m-surface: oklch(0.250 0.012 255);
+  --m-sunken: oklch(0.230 0.010 255);
+  --m-ink: oklch(0.925 0.008 255);
+  --m-ink-2: oklch(0.800 0.010 255);
+  --m-ink-3: oklch(0.720 0.010 255);
+  --m-rule: oklch(0.320 0.012 255);
+  --m-rule-strong: oklch(0.440 0.012 255);
+  --m-edge: oklch(0.540 0.012 255);
+  --m-accent: oklch(0.790 0.095 255);
+  --m-accent-soft: oklch(0.330 0.050 255);
+  --m-on-accent: oklch(0.180 0.020 255);
+  --m-highlight: oklch(0.380 0.055 95);
+  --m-sec-1: oklch(0.560 0.060 255);
+  --m-sec-2: oklch(0.560 0.060 195);
+  --m-sec-3: oklch(0.560 0.060 145);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--m-page);
+  color: var(--m-ink);
+  font: 1.0625rem/1.65 var(--m-serif);
+  text-rendering: optimizeLegibility;
+}
+:focus-visible { outline: 2px solid var(--m-accent); outline-offset: 3px; border-radius: 2px; }
+a { color: var(--m-accent); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { text-decoration-thickness: 2px; }
+img { max-width: 100%; height: auto; display: block; }
+code { font: 0.875em/1.5 var(--m-mono); background: var(--m-sunken); padding: 0.1em 0.35em; border-radius: 3px; overflow-wrap: anywhere; }
+
+.skip {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--m-surface); color: var(--m-ink);
+  border: 1px solid var(--m-edge); border-radius: 4px;
+  padding: 8px 12px; font: 0.875rem/1.4 var(--m-sans); z-index: 5;
+}
+.skip:focus { left: 12px; top: 12px; }
+
+.sheet { max-width: 70rem; margin: 0 auto; padding: 0 1rem 4rem; position: relative; }
+
+/* One hairline running the height of the page: the margin. */
+@media (min-width: 60rem) {
+  .sheet { padding: 0 2.5rem 6rem; }
+  .sheet::after {
+    content: ""; position: absolute; top: 0; bottom: 0;
+    right: calc(2.5rem + 15rem + 1.25rem); width: 1px;
+    background: var(--m-rule); pointer-events: none;
+  }
+}
+
+.band { padding: 2.5rem 0; border-top: 1px solid var(--m-rule); }
+.band:first-of-type { border-top: 0; }
+@media (min-width: 60rem) {
+  .band { display: grid; grid-template-columns: minmax(0, 1fr) 15rem; column-gap: 2.5rem; align-items: start; padding: 3.5rem 0; }
+  .band > * { grid-column: 1; }
+  .band > .note { grid-column: 2; grid-row: 2; margin: 0; padding: 0; border: 0; }
+}
+
+h1, h2, h3 { font-weight: 400; margin: 0; text-wrap: balance; letter-spacing: -0.015em; }
+h2 { font-size: 1.45rem; line-height: 1.3; margin-bottom: 1rem; }
+h3 { font-size: 1.125rem; line-height: 1.35; margin-bottom: 0.35rem; }
+p { margin: 0 0 1rem; max-width: 40rem; }
+p:last-child { margin-bottom: 0; }
+
+.label {
+  font: 600 0.75rem/1.4 var(--m-sans);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--m-ink-3); margin: 0 0 0.75rem;
+}
+
+/* Margin notes: sans, quieter than the text, like the product's margin. */
+.note {
+  font: 0.8125rem/1.6 var(--m-sans);
+  color: var(--m-ink-2);
+  border-inline-start: 2px solid var(--m-rule);
+  padding-inline-start: 0.75rem;
+  margin: 1.25rem 0 0;
+  max-width: 34rem;
+}
+.note p { margin: 0 0 0.6rem; max-width: none; }
+
+/* Masthead */
+.masthead { padding: 2.25rem 0 0; }
+@media (min-width: 60rem) { .masthead { display: grid; grid-template-columns: minmax(0, 1fr) 15rem; column-gap: 2.5rem; padding-top: 3rem; } }
+.wordmark { font: 600 1.0625rem/1.4 var(--m-sans); letter-spacing: -0.02em; }
+.masthead nav { font: 0.8125rem/1.6 var(--m-sans); margin-top: 0.4rem; }
+.masthead nav a { margin-inline-end: 1rem; display: inline-block; }
+@media (min-width: 60rem) { .masthead nav { grid-column: 2; margin-top: 0.15rem; font-size: 0.78125rem; } .masthead nav a { margin-inline-end: 0.7rem; } .masthead nav a:last-child { margin-inline-end: 0; } }
+
+/* Hero */
+.hero { padding-top: 2rem; }
+.hero h1 { font-size: 2.25rem; line-height: 1.15; margin-bottom: 1.25rem; }
+@media (min-width: 60rem) { .hero h1 { font-size: 3rem; } }
+.hero .lede { font-size: 1.1875rem; color: var(--m-ink-2); max-width: 36rem; }
+
+/* Promises and steps */
+.stack { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+.stack > li { border-top: 1px solid var(--m-rule); padding: 1.25rem 0; max-width: 40rem; }
+.stack > li:first-child { border-top: 0; padding-top: 0; }
+.stack > li:last-child { padding-bottom: 0; }
+.stack p { color: var(--m-ink-2); }
+.steps > li { padding-inline-start: 2.25rem; position: relative; }
+.steps > li::before {
+  counter-increment: step; content: counter(step);
+  position: absolute; inset-inline-start: 0; top: 1.3rem;
+  font: 600 0.75rem/1 var(--m-sans); color: var(--m-ink-3);
+  border: 1px solid var(--m-rule-strong); border-radius: 50%;
+  width: 1.5rem; height: 1.5rem; display: grid; place-items: center;
+}
+.steps > li:first-child::before { top: 0.15rem; }
+
+/* Screenshot slots. The frame stands in when the file is absent. */
+.shots { margin: 0; padding: 0; display: grid; gap: 1.75rem; }
+.shot { margin: 0; }
+.shot .frame {
+  border: 1px solid var(--m-rule-strong);
+  border-radius: 6px;
+  background: var(--m-margin);
+  background-image: linear-gradient(to right, transparent calc(100% - 4.5rem), var(--m-sunken) calc(100% - 4.5rem));
+  min-height: 12rem;
+  display: grid; align-items: center;
+  overflow: hidden;
+}
+.shot .frame img { width: 100%; border-radius: 5px; }
+.shot .frame .pending {
+  font: 0.75rem/1.5 var(--m-sans); color: var(--m-ink-3);
+  padding: 1rem 1.25rem; text-align: start; margin: 0;
+}
+/* When the screenshot loads, the standing text steps aside. When the file is
+   missing the img element removes itself and the text stays. */
+.shot .frame img + .pending { display: none; }
+.shot figcaption { font: 0.8125rem/1.6 var(--m-sans); color: var(--m-ink-2); margin-top: 0.6rem; max-width: 34rem; }
+
+/* Download */
+.cta {
+  display: inline-block;
+  font: 600 0.9375rem/1 var(--m-sans);
+  background: var(--m-accent); color: var(--m-on-accent);
+  text-decoration: none; border-radius: 5px;
+  padding: 0.85rem 1.25rem; margin: 0.25rem 0 1rem;
+  border: 1px solid transparent;
+  transition: background 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.cta:hover { background: oklch(from var(--m-accent) calc(l - 0.05) c h); text-decoration: none; }
+.install { margin: 1.25rem 0 0; padding: 0 0 0 1.35rem; max-width: 40rem; }
+.install li { margin-bottom: 0.6rem; }
+.install li:last-child { margin-bottom: 0; }
+
+/* Limits */
+.limits { margin: 0; max-width: 40rem; }
+.limits dt { font: 600 0.9375rem/1.5 var(--m-sans); margin-top: 1.25rem; }
+.limits dt:first-child { margin-top: 0; }
+.limits dd { margin: 0.3rem 0 0; color: var(--m-ink-2); }
+
+/* Footer */
+.foot { border-top: 1px solid var(--m-rule); padding-top: 1.75rem; font: 0.8125rem/1.7 var(--m-sans); color: var(--m-ink-3); }
+.foot ul { list-style: none; margin: 0 0 0.9rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem; }
+.foot p { max-width: 36rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="sheet">
+
+  <header class="masthead">
+    <p class="wordmark">Marginalia</p>
+    <nav aria-label="Page sections">
+      <a href="#download">Download</a>
+      <a href="#limits">Limits</a>
+      <a href="site/privacy.html">Privacy</a>
+      <a href="https://github.com/yashgurbani/marginalia">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="main">
+<section class="band hero" aria-labelledby="t-hero">
+<h1 id="t-hero">A personalized, agentic margin for the web.</h1>
+<p class="lede">Read a passage, keep your own note beside it, and ask for help when you need it. Your notes are senior to model replies. The page is never rewritten.</p>
+<p><a href="site/Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+</p>
+<aside class="note">
+<p>A Chrome MV3 extension and a local helper on <code>127.0.0.1</code>. Reading data lives in local SQLite, with browser copies for recovery. MIT licensed.</p>
+</aside>
+</section>
+<section class="band" id="read-now" aria-labelledby="t-read-now">
+<h2 id="t-read-now">Read now</h2>
+<p>Select a passage. Keep a highlight, write a note in your own words, or choose Ask. Notes stay attached to their source, with replies beneath them. The app does not infer what you know.</p>
+<figure class="shot">
+<div class="frame"><img src="site/media/01-note-beside-passage.png" alt="A reading page with the margin open. Two reader notes sit beside the passage they quote." onerror="this.closest('figure').remove()">
+</div>
+<figcaption>Your note stays beside the passage that prompted it.</figcaption>
+</figure>
+</section>
+<section class="band" id="read-later" aria-labelledby="t-read-later">
+<h2 id="t-read-later">Read it later</h2>
+<p>Park a passage or thread and return to a “You were here” resume line. Saved marks repaint when the page can be matched again. If the source has moved or the anchor is uncertain, the margin shows that state.</p>
+<p>Retained local copies preserve source versions, notes and replies. Removing a thread does not erase every retained copy.</p>
+</section>
+<section class="band" id="knowledge" aria-labelledby="t-knowledge">
+<h2 id="t-knowledge">Your knowledge base</h2>
+<p>Kept passages, notes and replies collect in your local library with source attribution. Filter threads by state and export your work as plain files. Each page adds to a record you own.</p>
+</section>
+<section class="band" id="ask" aria-labelledby="t-ask">
+<h2 id="t-ask">How Ask works</h2>
+<p>Ask sends an approved passage and your chosen note to a Codex agent, with GPT-6 Astra available for deeper work. It can define a term, work an example or explain a passage step by step. Supported saved solvers can run again without another model turn.</p>
+<p>Review the exact outgoing text, recipient and permission scope before dispatch. Choose this time, always on this site, or never on this site. Selecting, keeping and writing a note do not send a model request. Ask is a deliberate action; nothing sends on its own.</p>
+<p>The Codex process starts locally; model inference runs on the provider’s service. The reader-authorized runtime has the limits below.</p>
+<figure class="shot">
+<div class="frame"><img src="site/media/02-ask-draft.png" alt="A selected passage with a question drafted in the margin and a Review with local helper control." onerror="this.closest('figure').remove()">
+</div>
+<figcaption>Draft a question beside the selected passage. It stays on this device until you review and approve it.</figcaption>
+</figure>
+<p>Library search and “Related saved passages” are available in the local library page. Code and automated tests support this claim; native browser acceptance has not been recorded.</p>
+</section>
+<section class="band" id="next" aria-labelledby="t-next">
+<h2 id="t-next">Next</h2>
+<p>PDF reading and listening (“Hear it”) are next. Topics and reading paths across papers, sharing, connectors and Firefox are also planned.</p>
+</section>
+<section class="band" id="limits" aria-labelledby="t-limits">
+<h2 id="t-limits">Honest limits</h2>
+<p>Real asks use a reader-authorized mode where solver confinement is requested but not observed. The mode is off by default. No recorded real run is in the evidence folder yet. <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/READER-AUTHORIZED-RUNTIME.md">Read the runtime conditions</a>.</p>
+<p>Windows install is proven. macOS and Linux have command-level CI evidence. PDF is not supported yet.</p>
+</section>
+<section class="band" id="built" aria-labelledby="t-built">
+<h2 id="t-built">The Astra build</h2>
+<p>Marginalia is built by Yash Gurbani, a team of one, with GPT-6 Astra via Codex and ChatGPT Pro. Claude Code supports integration and review. The Astra Challenge build used bounded tasks and review against the code; passing tests do not close the real-run or confinement gates.</p>
+<p>The suite result is 961 tests: 955 pass, 0 fail, 6 skipped.</p>
+</section>
+<section class="band" id="research" aria-labelledby="t-research">
+<h2 id="t-research">Research and credits</h2>
+<p>ScholarPhi (Head et al., CHI 2021) showed definitions beside the text. Marginalia uses no ScholarPhi code; the debt is that idea. The Semantic Reader project (Lo et al., 2023 preprint, published in 2024) is part of the same research lineage.</p>
+<p><a href="https://scholarphi.org/">ScholarPhi</a> · <a href="https://scholarphi.org/assets/pdf/scholarphi-chi-2021.pdf">Head et al. paper</a> · <a href="https://arxiv.org/abs/2303.14334">Semantic Reader paper</a>
+</p>
+<p><a href="site/Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+</p>
+</section>    <section class="band" id="download" aria-labelledby="t-download">
+      <p class="label">Download</p>
+      <h2 id="t-download">Install it.</h2>
+      <p><a class="cta" href="https://github.com/yashgurbani/marginalia/releases/latest">Get the latest release</a>
+</p>
+      <ol class="install">
+        <li>Unzip the download.</li>
+        <li>Open <code>chrome://extensions</code> in Chrome.</li>
+        <li>Turn on Developer mode.</li>
+        <li>Choose Load unpacked and select the extension folder.</li>
+        <li>In the package folder, run <code>.\scripts\install-helper.ps1</code> in PowerShell on Windows, or <code>bash scripts/install-helper.sh</code> on macOS or Linux.</li>
+        <li>Read the six-digit pairing code from the helper output and enter it in the extension options.</li>
+      </ol>
+      <aside class="note">
+        <p>If no release is listed yet, clone the repository and run the installer from <code>marginalia-v2-package</code>.</p>
+        <p>Both installers take <code>-DryRun</code> or <code>--dry-run</code>. To remove the login task or service, use <code>-Uninstall</code> or <code>--uninstall</code>. Uninstalling keeps your reading data.</p>
+      </aside>
+    </section>
+</main>
+
+  <footer class="foot">
+<ul>
+<li><a href="./">Home</a>
+</li>
+<li><a href="site/privacy.html">Privacy</a>
+</li>
+<li><a href="https://github.com/yashgurbani/marginalia/blob/main/LICENSE">MIT license</a>
+</li>
+<li><a href="https://github.com/yashgurbani/marginalia">Source on GitHub</a>
+</li>
+</ul>
+<p><a href="site/Marginalia-Research-Whitepaper.pdf">Research whitepaper</a> (<a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/sources/RESEARCH-WHITEPAPER-v3.md">source</a>) · <a href="https://github.com/yashgurbani/marginalia/blob/main/CREDITS.md">Credits</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> · <a href="https://github.com/yashgurbani/marginalia/blob/main/marginalia-v2-package/docs/SCOPE-COVERAGE.md">Build scope</a>
+</p>
+</footer>
+
+</div>
+</body>
+</html>
