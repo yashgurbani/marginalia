@@ -5,22 +5,45 @@ import { HELPER_ORIGIN_KEY, helperOrigin } from './helper-origin.ts';
 import { browser } from 'wxt/browser';
 
 const STORAGE = 'marginalia-extension-reader';
+export const HELPER_RECONNECT_ALARM = 'marginalia-helper-reconnect';
+const BACKOFF_KEY = 'helper-reconnect-backoff';
 type Replay = { token: string; after: number };
+type Backoff = { retryAt: number; delay: number };
 
 /** Rebuildable worker transport. Only explicit local-sync opt-in enables it.
  * No provider request is created or retried here. Mutation IDs belong to the journal. */
 export function helperReconnect() {
   const persistence = localPersistence(STORAGE);
   const channel = new BroadcastChannel(STORAGE);
-  let socket: WebSocket | undefined, connecting = false, retryAt = 0, backoff = 1000;
+  let socket: WebSocket | undefined, connecting = false, retryAt = 0, backoff = 1000, backoffLoaded = false;
+  let retryUpdate = Promise.resolve();
   let state = 'Local helper updates are off.';
   let generation = 0;
   browser.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !changes[HELPER_ORIGIN_KEY]) return;
-    ++generation; socket?.close(); socket = undefined; retryAt = 0;
+    ++generation; socket?.close(); socket = undefined; retryAt = 0; void clearRetry().catch(() => {});
     state = 'Helper address changed. Pair again in Settings, then reconnect.';
   });
   async function enabled() { return await persistence.read<boolean>('extension-helper-enabled') === true; }
+  async function loadBackoff() {
+    if (backoffLoaded) return;
+    const saved = (await browser.storage.session.get(BACKOFF_KEY))[BACKOFF_KEY] as Backoff | undefined;
+    if (saved && Number.isFinite(saved.retryAt) && Number.isFinite(saved.delay)) {
+      retryAt = saved.retryAt; backoff = Math.min(30000, Math.max(1000, saved.delay));
+    }
+    backoffLoaded = true;
+  }
+  async function clearRetry() {
+    retryAt = 0; backoff = 1000;
+    await (retryUpdate = retryUpdate.catch(() => {}).then(async () => { await browser.alarms.clear(HELPER_RECONNECT_ALARM); await browser.storage.session.remove(BACKOFF_KEY); }));
+  }
+  async function scheduleRetry() {
+    retryAt = Date.now() + backoff; backoff = Math.min(30000, backoff * 2); backoffLoaded = true;
+    await (retryUpdate = retryUpdate.catch(() => {}).then(async () => {
+      await browser.storage.session.set({ [BACKOFF_KEY]: { retryAt, delay: backoff } satisfies Backoff });
+      browser.alarms.create(HELPER_RECONNECT_ALARM, { periodInMinutes: 1 });
+    }));
+  }
   async function synchronize(token: string) {
     const origin = await helperOrigin();
     await navigator.locks.request(STORAGE, async () => {
@@ -45,10 +68,11 @@ export function helperReconnect() {
     if (connecting) return;
     connecting = true;
     try {
-      if (!await enabled()) { socket?.close(); socket = undefined; state = 'Local helper updates are off.'; return; }
+      if (!await enabled()) { socket?.close(); socket = undefined; await clearRetry(); state = 'Local helper updates are off.'; return; }
       const pairing = await persistence.read<{ origin: string; token: string }>('pairing');
       const origin = await helperOrigin();
       if (pairing?.origin !== origin || !/^[A-Za-z0-9_-]{43}$/.test(pairing.token)) { socket?.close(); socket = undefined; state = 'Pair in Settings before connecting saved work.'; return; }
+      await loadBackoff();
       if (socket || Date.now() < retryAt) return;
       const token = pairing.token, thisGeneration = ++generation;
       const saved = await persistence.read<Replay>('extension-helper-replay');
@@ -56,7 +80,7 @@ export function helperReconnect() {
       const ws = new WebSocket(origin.replace(/^http:/, 'ws:') + '/events'); socket = ws;
       state = 'Connecting to the local helper…';
       let processing = Promise.resolve();
-      ws.onopen = () => { if (thisGeneration === generation) ws.send(JSON.stringify({ token, after })); };
+      ws.onopen = () => { if (thisGeneration === generation) { void clearRetry().catch(() => {}); ws.send(JSON.stringify({ token, after })); } };
       ws.onmessage = event => {
         processing = processing.then(async () => {
           if (thisGeneration !== generation || typeof event.data !== 'string' || event.data.length > 2_000_000) throw new Error('Invalid helper update.');
@@ -68,14 +92,15 @@ export function helperReconnect() {
           // Commit the cursor only after the authoritative journal snapshot is durable.
           await persistence.write('extension-helper-replay', { token, after: last });
           after = last;
-          backoff = 1000; state = 'Saved work connected to the local helper.';
+          state = 'Saved work connected to the local helper.';
         }).catch(() => { state = 'Local helper updates paused. Your notes remain on this device.'; ws.close(); });
       };
       ws.onerror = () => { state = 'Local helper unavailable. Your notes remain on this device.'; };
       ws.onclose = event => {
         if (thisGeneration !== generation) return;
-        socket = undefined; retryAt = Date.now() + backoff; backoff = Math.min(30000, backoff * 2);
-        if (event.code === 1008) { state = 'The helper declined this connection. Check pairing in Settings, then reconnect.'; void persistence.write('extension-helper-enabled', false); }
+        socket = undefined;
+        if (event.code === 1008) { state = 'The helper declined this connection. Check pairing in Settings, then reconnect.'; void persistence.write('extension-helper-enabled', false); void clearRetry().catch(() => {}); }
+        else void scheduleRetry().catch(() => {});
       };
     } catch { state = 'Local helper unavailable. Your notes remain on this device.'; }
     finally { connecting = false; }
@@ -84,9 +109,11 @@ export function helperReconnect() {
     async setEnabled(value: boolean) {
       ++generation; socket?.close(); socket = undefined; retryAt = 0;
       await persistence.write('extension-helper-enabled', value);
+      await clearRetry();
       if (value) await wake(); else state = 'Local helper updates are off.';
       return state;
     },
     async status() { await wake(); return state; },
+    async reconnect() { await wake(); },
   };
 }
