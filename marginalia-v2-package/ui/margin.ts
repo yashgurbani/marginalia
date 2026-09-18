@@ -25,6 +25,8 @@ export type MarginOptions = {
   sourceRoot?: HTMLElement;
   onSource?: (anchor: QuoteAnchor) => void;
   onHighlight?: (anchor: QuoteAnchor | null) => void;
+  /** Read a fresh page snapshot only when the reader asks to look again. */
+  captureCurrentPage?: () => Promise<{ capture: SourceCapture; tabCapture: string }>;
   helperOrigin?: string;
   storageName?: string;
   initialOpen?: boolean;
@@ -139,6 +141,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   let needsReconciliation = false;
   let lastOpener: HTMLElement | null = null;
   const expanded = new Set<string>();
+  const attachmentMessages = new Map<string, string>();
+  const attachmentPending = new Set<string>();
   const threadNodes = new Map<string, { signature: string; node: HTMLElement }>();
   const replyMounts = new Map<string, { threadId: string; node: HTMLElement; mounted: MountedReply; flush(): Promise<void>; close(): void }>();
   const replyLoads = new Map<string, number>();
@@ -588,7 +592,42 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     sourceButton.addEventListener('mouseenter', () => highlight(thread.anchor)); sourceButton.addEventListener('mouseleave', () => highlight(null));
     sourceButton.addEventListener('focus', () => highlight(thread.anchor)); sourceButton.addEventListener('blur', () => highlight(null));
     body.append(sourceButton);
-    if (location.state !== 'exact') body.append(el('p', `Attachment ${location.state}. Saved quote preserved.`, 'm-meta'));
+    if (location.state === 'lost' || location.state === 'unsure') {
+      const marker = el('div', undefined, 'm-reader-note');
+      marker.append(el('p', 'You were here', 'm-meta'));
+      const message = el('p', attachmentMessages.get(thread.id) ?? 'We can’t find this passage on the current page. Your note is still here.', 'm-meta m-attachment-status');
+      message.setAttribute('role', 'status');
+      const look = button('Look again', () => {
+        if (attachmentPending.has(thread.id)) return;
+        attachmentPending.add(thread.id); look.disabled = true;
+        const show = (text: string) => {
+          attachmentMessages.set(thread.id, text);
+          const current = threadNodes.get(thread.id)?.node.querySelector('.m-attachment-status');
+          if (alive() && current) current.textContent = text;
+        };
+        show('Looking for this passage…');
+        void track((async () => {
+          try {
+            if (!options.captureCurrentPage) throw new Error('Reopen this page in the browser margin to look again.');
+            const client = await replyClient(thread.id), epoch = client.connectionVersion;
+            const page = await options.captureCurrentPage();
+            if (page.capture.url !== capture.url || !page.tabCapture) throw new Error('The page changed. Reopen its margin to look again.');
+            if (await replyClient(thread.id) !== client || client.connectionVersion !== epoch) throw new Error('The helper connection changed.');
+            const result = await client.request('/api/reattach', { threadId: thread.id, text: page.capture.text, tabCapture: page.tabCapture, capture: page.capture }, signal);
+            if (result.state === 'exact' || result.state === 'moved') show('Found again. Your note is still here.');
+            else if (result.state === 'lost' || result.state === 'unsure') show('Still not here. Your note is still here.');
+            else throw new Error('The result could not be confirmed. Try looking again.');
+          } catch (error) { show(error instanceof Error ? error.message : 'Could not look again. Your note is still here.'); }
+          finally {
+            attachmentPending.delete(thread.id);
+            const current = threadNodes.get(thread.id)?.node.querySelector<HTMLButtonElement>('.m-reattach-action');
+            if (alive() && current) current.disabled = false;
+          }
+        })());
+      });
+      look.className = 'm-reattach-action'; look.disabled = attachmentPending.has(thread.id);
+      marker.append(message, look); body.append(marker);
+    }
     for (const note of thread.notes.filter(note => !note.deletedAt)) {
       const edit = button('Edit note', () => beginDraft(thread.anchor, thread, note.id)); edit.dataset.focusKey = thread.id + ':note:' + note.id;
       const noteBlock = el('div', undefined, 'm-reader-note'); noteBlock.append(el('p', note.text, 'm-note'), edit, button('Ask about this note', () => ask(thread.anchor, currentThread(thread.id), { noteId: note.id, revision: note.revision, text: note.text }))); body.append(noteBlock);
@@ -602,7 +641,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       toast.replaceChildren(el('span', 'Thread removed.'), undo); undo.focus();
     }))));
     if (!journal.state.threads.some(item => item.id === thread.id)) {
-      for (const control of Array.from(body.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('button:not(.m-source-action),select'))) control.disabled = true;
+      for (const control of Array.from(body.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('button:not(.m-source-action):not(.m-reattach-action),select'))) control.disabled = true;
       body.append(el('p', 'Saved helper snapshot. Local work is not replaced; explicitly synchronize before editing or asking.', 'm-meta'));
     }
     const replyArea = el('section', undefined, 'm-saved-replies'); replyArea.setAttribute('aria-label', 'Saved replies');

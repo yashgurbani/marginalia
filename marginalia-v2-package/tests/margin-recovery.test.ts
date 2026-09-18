@@ -164,3 +164,44 @@ test('a retained unknown request reappears after remount and opens by reads only
  assert.equal(opened?.resumeJobId,jobId);assert.deepEqual(requests,[{url:'/api/jobs/'+jobId,method:'GET'}]);assert.equal(requests.some(request=>request.method==='POST'&&request.url==='/api/jobs'),false);
  second.destroy();await second.drain();
 });
+
+for (const outcome of ['exact', 'moved', 'lost', 'unsure', 'error'] as const) test(`Look again explicitly records the full current capture: ${outcome}`, async t => {
+  const e = { ...dom(t), ...storage(t), namespace: crypto.randomUUID() };
+  const persistence = localPersistence(e.namespace), journal = documentJournal(e.namespace, persistence.journal);
+  await journal.change(keep('missing'));
+  e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+  const missing = { ...capture, text: 'A changed page without the saved passage.' };
+  const fresh = { ...capture, text: 'New introduction. ' + capture.text };
+  const requests: Array<{ url: string; body: unknown }> = [];
+  let captures = 0;
+  replaceGlobals(t, { fetch: async (url: string, init: RequestInit = {}) => {
+    requests.push({ url, body: JSON.parse(String(init.body ?? '{}')) });
+    if (outcome === 'error') throw new Error('offline');
+    return Response.json({ state: outcome, candidates: [] });
+  } });
+  const mounted = await mountMargin(asHost(e.root), { capture: missing, storageName: e.namespace,
+    captureCurrentPage: async () => { captures++; return { capture: fresh, tabCapture: 'current-tab-capture' }; },
+  });
+  assert.match(e.root.textContent, /You were here/);
+  assert.match(e.root.textContent, /Reader words/);
+  assert.deepEqual(requests, [], 'missing quote on load causes no helper requests or writes');
+  assert.equal(captures, 0);
+  button(e.root, 'Look again').click();
+  await mounted.drain();
+  assert.equal(captures, 1);
+  assert.deepEqual(requests, [{ url: e.document.location.origin + '/api/reattach', body: {
+    threadId: 'missing-thread', text: fresh.text, tabCapture: 'current-tab-capture', capture: fresh,
+  } }]);
+  assert.match(e.root.textContent, outcome === 'error' ? /unconfirmed/ : outcome === 'exact' || outcome === 'moved' ? /Found again/ : /Still not here/);
+  assert.match(e.root.textContent, /Reader words/);
+  mounted.destroy(); await mounted.drain();
+});
+
+for (const text of [capture.text, 'New introduction. ' + capture.text]) test(`resolvable quote has no missing-passage marker: ${text}`, async t => {
+  const e = { ...dom(t), ...storage(t), namespace: crypto.randomUUID() };
+  await documentJournal(e.namespace, localPersistence(e.namespace).journal).change(keep('found'));
+  const mounted = await mountMargin(asHost(e.root), { capture: { ...capture, text }, storageName: e.namespace });
+  assert.doesNotMatch(e.root.textContent, /You were here|Look again/);
+  assert.match(e.root.textContent, /Reader words/);
+  mounted.destroy(); await mounted.drain();
+});

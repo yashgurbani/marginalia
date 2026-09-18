@@ -28,6 +28,11 @@ async function refresh() {
       current = next;
       mounted = await mountMargin(root, {
         capture: next.capture, sections: next.sections, helperOrigin: origin ?? DEFAULT_HELPER_ORIGIN, storageName: 'marginalia-extension-reader', initialOpen: true, allowHelper: !embedded && !!origin,
+        captureCurrentPage: async () => {
+          const snapshot: unknown = await send('read');
+          if (!validSnapshot(snapshot) || snapshot.document !== next.document || snapshot.capture.url !== next.capture.url) throw new Error('The page changed. Reopen its margin to look again.');
+          return { capture: snapshot.capture, tabCapture: snapshot.document };
+        },
         authorizeHelperSend: async sourceUrl => {
           const result = await send('authorize-helper-send', { sourceUrl });
           if ((result as { allowed?: boolean })?.allowed !== true) throw new Error('This site is excluded. Allow it in extension options before saving to the local helper.');
