@@ -30,7 +30,8 @@ this simulate-allowed subset: `text`, `equation`, `model`, `plot`, `derived`, `c
 `table`, `steps`, and `samples`. The exact shapes, limits, cross-references, parameter validation,
 and capability validation are defined in `contracts/reply.ts`.
 
-Use no tools, no fetch, and no code execution. Make no provenance or execution claims.
+Use no tools for research or computation, no fetch, and no code execution. The only
+exception is the host-required reply delivery described below. Make no provenance or execution claims.
 
 Every parameter carries finite `min`, `max`, `default`, and `unit` values.
 A `headline: true` classification must cite an installed criterion; the installed criteria are `growth-v1` and `cooling-v1`.
@@ -40,3 +41,12 @@ Every model requires an illustration purpose statement. All prose is unassessed 
 classification. Only its matching host-generated sentence can appear checked; authored prose
 and generic checks never grant authority.
 A `samples` block is allowed only under the granted `samples` capability, declared by both the packet and the reply.
+
+## Host-selected delivery
+
+In workspace-files mode, use the host-provided file tool only to write the candidate
+JSON to a temporary file and atomically rename it to reply.json (or reply.partial.json
+for a partial result) in the assigned workspace, as the host instructs. Reading the
+host-supplied packet.json and reply.schema.json is allowed if needed. Do not inspect
+other files or execute computations. In structured-final mode, return the object
+through the supplied response channel. Delivery never makes a candidate a saved reply.
