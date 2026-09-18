@@ -19,7 +19,7 @@ export const boundaries = {
     throw new Error('Canonical data must be JSON.');
   },
   validateReply(value: any) { return value?.schema === 't05.fixture' ? { ok: true, value } : { ok: false, errors: ['Rejected fixture; not a scientific validator.'] }; },
-  capabilitiesForIntent(intent: string) { return intent === 'evidence' ? ['samples', 'network.citations'] : intent === 'explore' ? ['samples', 'network.shelf'] : ['samples']; },
+  capabilitiesForIntent(intent: string) { return intent === 'simulate' ? ['samples', 'solver'] : intent === 'evidence' ? ['samples', 'network.citations'] : intent === 'explore' ? ['samples', 'network.shelf'] : ['samples']; },
   mountReply(root: HTMLElement, reply: any, options: any) {
     boundaries.replyMounts.push({ intent: reply.intent, capabilities: options.capabilities && [...options.capabilities], onFollowup: options.onFollowup });
     let state = structuredClone(options.initialState ?? { parameters: { x: 0 }, view: {} }) as ReplyState;
