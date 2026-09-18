@@ -22,6 +22,11 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 
 ## Decisions so far
 
+- 2026-09-18: E01 integrated installer recovery `5083e15`; all four original packet outcomes accounted for. Windows integration: 791 tests / 785 pass / 0 fail / 6 skipped on the authorized retry; known concurrent-click failure retained for Q09. Both typechecks clean. Evidence: `docs/evidence/qa-2026-09-18/e01-installer/`. Real service installation still belongs to Q05/Q08.
+- 2026-09-18: E21 closed with reproducible transcript/extraction verification and the byte-preserved historical `integrate_pro_review.py`; evidence in `docs/evidence/pro-review-triage/`. E14's 120 code findings remain independent claims until triaged.
+- 2026-09-18: Yash resolved H04 (underline Keep/tint Highlight), H05 (interim PDF prioritized after installation), and delegated H06 judgment: retain current journal/consent/solver functionality and require dependency-specific review before removal. No blanket deletion authorized.
+- 2026-09-18: Yash expanded concurrency to about 10–15 agents. Eleven independent MCP packets dispatched through the official complementary router; request/result and process ledger at `.local/router/`. Conflicting source changes are integrated sequentially. QA remains bound to its inspected commit.
+
 - 2026-09-18: Yash resolved H02 (explicit remember action only), H03 (See it / What supports this, overriding Fable's labels), H13 (ask before changing a draft's anchor, Keep/Switch). Implementation remains open. Latest routing: Sol medium/high by difficulty, Luna max for QA/computer use/bulk, Astra low for hard technical judgment, complementary MCP routing when available.
 
 - 2026-09-18: Yash resolved H01 (correct copy now, defer web path), H09 (keep FTS with erasure), H11 (unsupported receipts stay unverified), and H12 (one simulate decision with local execution shown before sending). Implementation and QA obligations remain open.
@@ -34,7 +39,7 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 ## Tickets
 
 ### Stream E: engineering
-- [E21 Pro review integration provenance](tickets/E21-pro-review-integration-provenance.md) · AFK · Luna max · claimed
+- [E21 Pro review integration provenance](tickets/E21-pro-review-integration-provenance.md) · AFK · Luna max · closed
 - [E01 Integrate the Sol runs in flight](tickets/E01-integrate-the-four-sol-runs-in-flight.md) · AFK · blocked by (none) · Astra low
 - [E02 P7 remainder: type parity and CI green on three OSes](tickets/E02-p7-remainder-type-parity-and-ci-green-on-three-oses.md) · AFK · blocked by E01 · Sol medium
 - [E03 P1(a): extension icons at 16, 32, 48 and 128](tickets/E03-p1a-extension-icons-at-16-32-48-and-128.md) · AFK · blocked by (none) · Astra low (visual), Opus 4.8 taste check optional
