@@ -12,6 +12,7 @@
     "dev": "vite --config webapp/vite.config.ts webapp",
     "build": "vite build --config webapp/vite.config.ts webapp",
     "start": "node daemon/main.ts",
+    "prepare": "wxt prepare extension",
     "extension:build": "wxt build extension",
     "extension:typecheck": "tsc --noEmit -p extension/tsconfig.json"
   },
