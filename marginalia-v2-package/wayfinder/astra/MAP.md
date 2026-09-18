@@ -116,3 +116,5 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 - Automatic sends of any kind, including on site grant (H08 recommendation; if Yash decides otherwise it re-enters as a fresh effort).
 - Deleting the solver, consent or journal code before H06 is resolved.
 - Market or competitor framing in product identity; personal utility is the moat.
+
+- 2026-09-18: Consolidation checkpoint for Fable: reviewed E35/E12/E07 merged and pushed at babd2c2; main 840 tests / 834 pass / 0 fail / 6 skip, both typechecks and preparation clean, three-OS CI 35311736674 green. All 143 worktrees preserved and all 64 ticket headers accounted for. Remaining reviews, corrections, unions and closure bookkeeping pass to Fable under Yash's wrap-up instruction; this entry closes no additional ticket or release gate. See ../../docs/CONSOLIDATION-HANDOFF-2026-09-18.md.
