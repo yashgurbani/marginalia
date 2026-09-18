@@ -13,6 +13,8 @@ const bundles = Object.freeze({
   explore: Object.freeze({ root: new URL('../../skills/explore/', import.meta.url), files: Object.freeze(['SKILL.md', 'IO.md']) }),
 } satisfies Record<SupportedInstructionIntent, Readonly<{ root: URL; files: readonly string[] }>>);
 const hash = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+/** Git may materialize text with CRLF or LF. Review and pin one portable byte contract. */
+const canonicalInstructionText = (text: string) => text.replace(/\r\n?/g, '\n');
 /** Only these installed, host-selected instruction bundles are supported here. No page input
  * selects a path, loads code, registers tools, or supplies an instruction document. */
 export async function loadHostInstructions(intent: StartJobInput['intent'], rootOverride?: URL): Promise<HostInstructionBundle | undefined> {
@@ -26,7 +28,7 @@ export async function loadHostInstructions(intent: StartJobInput['intent'], root
     const directory = await directoryIdentity(await realpath(dirname(path)));
     const bytes = await readWorkspaceBytes(directory, basename(path), 16 * 1024);
     if (!bytes || bytes.length === 0) throw new Error(`Installed ${kind} instructions are unavailable: ${name}`);
-    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    const text = canonicalInstructionText(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes));
     documents.push({ path: `skills/${kind}/${name}`, sha256: hash(text) });
     sections.push(`## Included host document: skills/${kind}/${name}\n${text}`);
   }

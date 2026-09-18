@@ -20,8 +20,9 @@ export function assertInside(root: string, path: string): void {
 }
 export async function directoryIdentity(path: string): Promise<DirectoryIdentity> {
   if (!isAbsolute(path)) throw new Error('Workspace identity must be absolute.');
-  const info = await lstat(path), canonical = await realpath(path);
-  if (!info.isDirectory() || info.isSymbolicLink() || !samePath(canonical, path)) throw new Error('Workspace directory is unsafe.');
+  const requested = await lstat(path), canonical = await realpath(path), info = await lstat(canonical);
+  if (!requested.isDirectory() || requested.isSymbolicLink() || !info.isDirectory() || info.isSymbolicLink() ||
+    requested.dev !== info.dev || requested.ino !== info.ino) throw new Error('Workspace directory is unsafe.');
   const result = { path: canonical, dev: info.dev, ino: info.ino };
   await assertDirectoryCurrent(result); return result;
 }

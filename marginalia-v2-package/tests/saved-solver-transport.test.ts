@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -684,7 +684,33 @@ test('a pinned solver artifact resolves and re-hashes to the committed digest', 
   assert.equal(resolved.ok, true);
   if (!resolved.ok) return;
   assert.equal(resolved.value.solverSha256, binding.solverSha256);
-  assert.equal(resolved.value.solverPath, resolve(workspace, 'solver', 'main.py'));
+  assert.equal(resolved.value.solverPath, resolve(await realpath(workspace), 'solver', 'main.py'));
+});
+
+test('solver artifacts canonicalize an aliased ancestor but reject a linked workspace', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-solver-alias-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const parent = join(root, 'real-parent'), workspace = join(parent, 'job'), alias = join(root, 'parent-alias');
+  const linkedWorkspace = join(root, 'workspace-link'), source = 'print("saved solver")\n';
+  await mkdir(join(workspace, 'solver'), { recursive: true });
+  await writeFile(join(workspace, 'solver', 'main.py'), source, 'utf8');
+  try {
+    await symlink(parent, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    await symlink(workspace, linkedWorkspace, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch {
+    t.skip('This host does not permit creating directory links.'); return;
+  }
+  const binding: SolverArtifactBinding = {
+    jobId: 'job-1', attemptId: 'attempt-1', workspace: join(alias, 'job'), workspaceGeneration: 'gen-1',
+    solverRelativePath: 'solver/main.py', solverSha256: createHash('sha256').update(source, 'utf8').digest('hex'),
+    runtimeExecutable: process.execPath,
+  };
+  const resolved = await resolveSolverArtifacts(binding);
+  assert.equal(resolved.ok, true);
+  if (resolved.ok) assert.equal(resolved.value.workspace, await realpath(workspace));
+  const linked = await resolveSolverArtifacts({ ...binding, workspace: linkedWorkspace });
+  assert.equal(linked.ok, false);
+  if (!linked.ok) assert.equal(linked.code, 'path-unsafe');
 });
 
 test('a modified solver file is rejected as artifact-modified', async (t) => {
@@ -759,7 +785,7 @@ test('the input tuple is written inside a fresh attempt directory and then disca
   const prepared = await prepareSolverInput(workspace, 'req-1', token, '{"k":0.2}');
   assert.equal(prepared.ok, true);
   if (!prepared.ok) return;
-  assert.equal(prepared.value.inputPath, resolve(workspace, RECOMPUTE_DIRECTORY, `req-1.${token}`, 'input.json'));
+  assert.equal(prepared.value.inputPath, resolve(await realpath(workspace), RECOMPUTE_DIRECTORY, `req-1.${token}`, 'input.json'));
 
   // A second attempt with the same token cannot reuse the directory.
   const again = await prepareSolverInput(workspace, 'req-1', token, '{"k":0.2}');
