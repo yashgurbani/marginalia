@@ -2,7 +2,7 @@
 
 label: wayfinder:task
 mode: AFK
-status: claimed (astra, 2026-09-18)
+status: closed
 blocked_by: E01
 route: Sol medium
 
@@ -13,3 +13,7 @@ route: Sol medium
 - `npm ci` on a clean clone followed by `npm run typecheck` passes without a manual prepare step, or README says the step plainly.
 - CI green on all three OSes; link the run in the resolution.
 - No behaviour change.
+
+## Resolution
+
+2026-09-18: Integrated cdd145a / 7b8f7c0. Registry evidence establishes @types/better-sqlite3 9.6.0 is the latest published version; nonexistent 13.x was not invented. Existing npm prepare lifecycle and README remain authoritative. CRLF-normalized instruction hashing and canonical OS ancestor aliases retain linked-root rejection. CI https://github.com/yashgurbani/marginalia/actions/runs/35303008259 passed Windows, Linux and macOS. Evidence: docs/evidence/qa-2026-09-18/e02-ci/ (ci-three-os.json, integrated-suite.log and checks); independent source review docs/evidence/pro-review-triage/INDEPENDENT-REVIEW.md. Integration suite 796 total, 790 pass, 0 fail, 6 skip; both typechecks clean. Worker requested Sol high; exact MCP runtime model/effort unobservable. Independent review actual GPT-5.6 Sol high.

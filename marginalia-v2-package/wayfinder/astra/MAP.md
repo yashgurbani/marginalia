@@ -22,6 +22,12 @@ Marginalia v2 ships as the whitepaper describes it: a quiet margin beside whatev
 
 ## Decisions so far
 
+- 2026-09-18: E02 closed: portable instruction digests and canonical OS aliases; three-OS CI 35303008259 green at 7b8f7c0. Published types remain 9.6.0; 13.x does not exist. Evidence: docs/evidence/qa-2026-09-18/e02-ci/.
+- 2026-09-18: E09 closed with two accessible rail dot types and named target/hit-box tests; evidence: docs/evidence/qa-2026-09-18/e09-rail/.
+- 2026-09-18: E16 closed with honest consent/calculation copy; integrated 797/791/0/6 and clean typechecks. Evidence: docs/evidence/qa-2026-09-18/e16-copy/. E24 owns H12 disclosure.
+- 2026-09-18: E14 closed after independent reconciliation of all120 findings (89 confirmed,29 unverified,1 superseded,1 refuted). E30-E38 track gaps; E36 is duplicate implementation, Q02 owns observation. Evidence: docs/evidence/pro-review-triage/.
+- 2026-09-18: E22-E29 translate owner decisions and the real-runtime blocker into bounded packets. E29 confirms default runtime unavailable; fixture results cannot close real-provider gates. User now requests one task per remaining ticket, with MCP bounded workers and native integration reviewers; queued tasks are not counted as running.
+
 - 2026-09-18: E01 integrated installer recovery `5083e15`; all four original packet outcomes accounted for. Windows integration: 791 tests / 785 pass / 0 fail / 6 skipped on the authorized retry; known concurrent-click failure retained for Q09. Both typechecks clean. Evidence: `docs/evidence/qa-2026-09-18/e01-installer/`. Real service installation still belongs to Q05/Q08.
 - 2026-09-18: E21 closed with reproducible transcript/extraction verification and the byte-preserved historical `integrate_pro_review.py`; evidence in `docs/evidence/pro-review-triage/`. E14's 120 code findings remain independent claims until triaged.
 - 2026-09-18: Yash resolved H04 (underline Keep/tint Highlight), H05 (interim PDF prioritized after installation), and delegated H06 judgment: retain current journal/consent/solver functionality and require dependency-specific review before removal. No blanket deletion authorized.

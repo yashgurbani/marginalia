@@ -227,11 +227,11 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
     const recompute = button(doc, 'Recompute with these inputs', () => {
       const snapshot = getState();
       announce('Recompute requested from the saved solver. No model turn is requested by this action.');
-      void invoke(options.onRecompute && solver ? () => options.onRecompute!({ ...snapshot, blockId, solverId: solver.id, reason, requestId: globalThis.crypto.randomUUID(), stateKey: canonicalReplyData({ reply, parameters: snapshot.parameters }) }) : undefined, 'Saved-solver recomputation is not connected in this view.');
+      void invoke(options.onRecompute && solver ? () => options.onRecompute!({ ...snapshot, blockId, solverId: solver.id, reason, requestId: globalThis.crypto.randomUUID(), stateKey: canonicalReplyData({ reply, parameters: snapshot.parameters }) }) : undefined, 'This example cannot run again here yet.');
     });
     recompute.disabled = !options.onRecompute || !capability('solver') || !solver || solver.inputNames.some(name => !Object.hasOwn(state.parameters, name));
     container.append(recompute);
-    if (recompute.disabled) container.append(el(doc, 'p', 'Saved-solver recomputation is not available in this view.', 'mr-meta'));
+    if (recompute.disabled) container.append(el(doc, 'p', 'This example cannot run again here yet. Your current inputs are unchanged.', 'mr-meta'));
     const ask = button(doc, 'Ask again with this change', () => onFollowup(`Please revise ${blockId} for my current inputs. ${reason}`)); ask.disabled = !options.onFollowup; container.append(ask);
   };
   // v1 does not distinguish descriptive titles from unchecked result claims.
@@ -256,9 +256,9 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
     made.append(authored);
   }
   rememberDetails(sources, 'details:sources'); rememberDetails(made, 'details:made');
-  made.append(el(doc, 'p', 'The author supplied structured content and mathematical expressions. The packaged renderer runs bounded local calculations. An independent local criterion supports only the conclusions it explicitly checks.'));
-  const hostStatus = el(doc, 'p', 'No current host verification is displayed here.', 'mr-meta'); made.append(hostStatus, el(doc, 'p', 'Recorded citation and error-evidence statements remain author-supplied.', 'mr-meta'));
-  authorityUpdates.push(() => { hostStatus.textContent = hostViews.some(view => view.state === 'verified') ? 'A genuine host report is bound to this reply and current inputs. It supports only the matching installed criterion.' : 'No current host report authorizes a classification for these inputs.'; });
+  made.append(el(doc, 'p', 'The author supplied structured content and mathematical expressions. The calculations run on this device. Only conclusions supported by a matching check are shown as checked.'));
+  const hostStatus = el(doc, 'p', 'No checked conclusion is available for these inputs.', 'mr-meta'); made.append(hostStatus, el(doc, 'p', 'Recorded citation and error-evidence statements remain author-supplied.', 'mr-meta'));
+  authorityUpdates.push(() => { hostStatus.textContent = hostViews.some(view => view.state === 'verified') ? 'This conclusion was checked for the inputs shown.' : 'No checked conclusion is available for these inputs.'; });
   const checks = el(doc, 'div'); made.append(checks);
   updates.push(() => {
     checks.replaceChildren();
@@ -369,7 +369,7 @@ export function mountReply(root: HTMLElement, validatedReply: CandidateReply, op
         const check = calculation.checks.find(c => c.requestId === block.check && c.model === block.model && c.classification === block.id);
         const view = hostViews.find(view => view.blockId === block.id);
         const authorized = view?.state === 'verified';
-        section.replaceChildren(el(doc, 'p', authorized ? view.label! : 'No conclusion beyond the shown interval. The requested headline is withheld.', 'mr-conclusion'), el(doc, 'p', authorized ? 'The current host report and independent packaged criterion agree for these inputs.' : view?.reason ?? (check?.status === 'pass' ? 'The local criterion was calculated for these inputs, but it does not authorize a headline without a matching current host report.' : check?.reason ?? 'No supported independent check backs this conclusion.'), 'mr-meta'));
+        section.replaceChildren(el(doc, 'p', authorized ? view.label! : 'No conclusion beyond the shown interval. The requested headline is withheld.', 'mr-conclusion'), el(doc, 'p', authorized ? 'This conclusion was checked for the inputs shown.' : check?.status === 'pass' ? 'The calculation was checked for these inputs, but no checked conclusion is available.' : check?.reason ?? 'No checked conclusion is available for these inputs.', 'mr-meta'));
       }; dynamic(update); authorityUpdates.push(update); break; }
       case 'table': section.append(pagedTable(doc, block.columns, block.rows, 'Table', tableView('data'))); break;
       case 'diagram': section.append(renderDiagram(doc, block, id, reply.sourceBindings, bind)); break;
