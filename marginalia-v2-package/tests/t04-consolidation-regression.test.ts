@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { captureSelection, locate } from '../extension/lib/capture.ts';
+import { captureSelection, locate, projectPage } from '../extension/lib/capture.ts';
+import { readingPositionAt } from '../extension/entrypoints/content.ts';
 import { validAnchor } from '../extension/lib/protocol.ts';
 
 const SHOW_TEXT = 4;
@@ -14,6 +15,7 @@ class FixtureNode {
   ownerDocument: FixtureDocument;
   parentNode: FixtureNode | null = null;
   childNodes: FixtureNode[] = [];
+  rect = { top: 0, bottom: 0, width: 0, height: 0 };
 
   constructor(nodeType: number, ownerDocument?: FixtureDocument) {
     this.nodeType = nodeType;
@@ -107,6 +109,8 @@ class FixtureElement extends FixtureNode {
     for (const child of this.childNodes) visit(child);
     return result;
   }
+  get isConnected() { return this.ownerDocument.body.contains(this); }
+  getBoundingClientRect() { return this.rect; }
   override toString() {
     const attributes = Object.entries(this.attributes).map(([name, value]) => value ? ` ${name}="${value}"` : ` ${name}`).join('');
     return `<${this.tagName}${attributes}>${this.childNodes.map(node => node.toString()).join('')}</${this.tagName}>`;
@@ -190,9 +194,12 @@ class FixtureRange {
   startOffset = 0;
   endContainer: Node | null = null;
   endOffset = 0;
+  selectedNode: Node | null = null;
 
   setStart(container: Node, offset: number) { this.startContainer = container; this.startOffset = offset; }
   setEnd(container: Node, offset: number) { this.endContainer = container; this.endOffset = offset; }
+  selectNodeContents(node: Node) { this.selectedNode = node; }
+  getBoundingClientRect() { return (this.selectedNode as unknown as FixtureNode).rect; }
   get collapsed() { return this.startContainer === this.endContainer && this.startOffset === this.endOffset; }
 
   toString() {
@@ -453,6 +460,37 @@ test('oversized source capture fails closed instead of truncating or sending', (
   } finally {
     fixture.restore();
   }
+});
+
+test('content position follows the first fully visible paragraph instead of its section start', () => {
+  const document = new FixtureDocument();
+  const heading = appendElement(document.body, 'h1', 'Heading');
+  const clipped = appendElement(document.body, 'p', 'Clipped paragraph.');
+  const visible = appendElement(document.body, 'p', 'Visible paragraph.');
+  heading.rect = { top: -100, bottom: -80, width: 100, height: 20 };
+  clipped.firstChild!.rect = { top: -5, bottom: 15, width: 200, height: 20 };
+  visible.firstChild!.rect = { top: 40, bottom: 60, width: 200, height: 20 };
+  const fixture = installPage(document, null, 'https://example.org/article');
+  try {
+    const projection = projectPage();
+    assert.equal(readingPositionAt(projection.nodes, projection.markers, 600), 25);
+    assert.notEqual(readingPositionAt(projection.nodes, projection.markers, 600), projection.sections[0].start);
+  } finally { fixture.restore(); }
+});
+
+test('content position falls back to the section start when the viewport has no text', () => {
+  const document = new FixtureDocument();
+  const introduction = appendElement(document.body, 'p', 'Introduction.');
+  const heading = appendElement(document.body, 'h2', 'Heading');
+  introduction.firstChild!.rect = { top: -100, bottom: -80, width: 120, height: 20 };
+  heading.rect = { top: -20, bottom: 0, width: 100, height: 20 };
+  heading.firstChild!.rect = heading.rect;
+  appendElement(document.body, 'img', []);
+  const fixture = installPage(document, null, 'https://example.org/figures');
+  try {
+    const projection = projectPage();
+    assert.equal(readingPositionAt(projection.nodes, projection.markers, 600), projection.sections[1].start);
+  } finally { fixture.restore(); }
 });
 
 test('source protocol keeps forty-character context and reserves the quote bound for explicit quotes', () => {
