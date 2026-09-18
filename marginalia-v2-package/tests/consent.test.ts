@@ -382,6 +382,30 @@ test('ui: Tab may leave the non-modal sheet; outgoing text is readable; Escape i
   assert.equal(dismissed, 1); assert.equal(decisions, 0); assert.equal(d.host.children.length, 0); assert.equal(d.doc.activeElement, d.opener);
 });
 
+test('ui: digest-bound solver plan says it can run the model locally before any consent decision', async t => {
+  const d = dom(t), reviewed = preview(); let decisions = 0;
+  mountConsentSheet(d.element, { preview: reviewed, canAuthorize: true,
+    reviewedPlan: { previewId: reviewed.id, previewRevision: reviewed.revision,
+      preparedPayloadDigest: reviewed.bindingDigest, capabilities: ['samples', 'solver'] },
+    decide: async () => { decisions++; return allowed; } });
+  d.flush(); const root = d.host.children[0];
+  assert.match(root.textContent, /can run the model locally/);
+  assert.equal(root.querySelector('pre')!.textContent, reviewed.outgoing[0].text);
+  assert.equal(decisions, 0, 'mounting and inspecting the review do not decide or send');
+  root.querySelector('button')!.click(); await tick(); assert.equal(decisions, 1);
+});
+
+test('ui: local solver disclosure fails closed for absent capability or stale preview binding', t => {
+  const d = dom(t), reviewed = preview();
+  for (const reviewedPlan of [
+    { previewId: reviewed.id, previewRevision: reviewed.revision, preparedPayloadDigest: reviewed.bindingDigest, capabilities: ['samples'] as const },
+    { previewId: reviewed.id, previewRevision: reviewed.revision, preparedPayloadDigest: hash('stale'), capabilities: ['solver'] as const },
+  ]) {
+    const sheet = mountConsentSheet(d.element, { preview: reviewed, reviewedPlan, canAuthorize: true, decide: async () => allowed });
+    assert.doesNotMatch(d.host.children[0].textContent, /can run the model locally/); sheet.destroy();
+  }
+});
+
 test('ui: network copy is honest and leaves reviewed outgoing bytes and recipient unchanged', async t => {
   const d = dom(t), exactBytes = '<question>Why?</question>\n\u0000Exact UTF-8: café';
   const cloud = { ...preview('cloud-copy'), outgoing: [{ label: 'Exact outgoing', text: exactBytes, sha256: hash(exactBytes) }] };

@@ -1,7 +1,19 @@
 import type { ConsentChoice, ConsentGrant, ConsentPreview, SiteExclusion } from '../contracts/consent.ts';
+import type { ReplyCapability } from '../contracts/reply.ts';
+
+export type ConsentReviewedPlan = {
+  /** Identity of the exact consent preview this host-owned plan accompanies. */
+  previewId: string;
+  previewRevision: number;
+  /** Must remain the same digest as the reviewed, model-visible envelope. */
+  preparedPayloadDigest: string;
+  capabilities: readonly ReplyCapability[];
+};
 
 export type ConsentSheetOptions = {
   preview: ConsentPreview;
+  /** Display-only projection of the already prepared host plan. It grants no authority. */
+  reviewedPlan?: ConsentReviewedPlan;
   canAuthorize: boolean;
   /** Layout context, not a grant of authority. Floating page hosts cannot authorize. */
   surface?: 'native-panel' | 'floating' | 'localhost';
@@ -46,6 +58,14 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
       const outgoing = element('pre', part.text); outgoing.tabIndex = 0; outgoing.setAttribute('aria-labelledby', heading.id);
       item.append(heading, outgoing); exact.append(item);
     }
+    const reviewedPlan = options.reviewedPlan;
+    const canRunSavedSolver = reviewedPlan?.previewId === preview.id &&
+      reviewedPlan.previewRevision === preview.revision &&
+      reviewedPlan.preparedPayloadDigest === preview.bindingDigest &&
+      reviewedPlan.capabilities.includes('solver');
+    const capability = canRunSavedSolver
+      ? element('p', 'If the reply includes a saved solver, Marginalia can run the model locally when you use its controls.', 'm-consent__note')
+      : undefined;
     const explanation = preview.scope === 'open-session'
       ? element('p', 'Web checks are not available yet. Nothing will be looked up.', 'm-consent__note')
       : element('p', 'Your question is sent to Codex. Other internet access has not been established as blocked on this device.', 'm-consent__note');
@@ -67,7 +87,7 @@ export function mountConsentSheet(host: HTMLElement, options: ConsentSheetOption
       );
     }
     const dismiss = action('Not now', notNow); dismiss.dataset.dismiss = 'true'; controls.append(dismiss);
-    root.replaceChildren(title, summary, exact, explanation, ...(unavailable ? [unavailable] : []), controls, live);
+    root.replaceChildren(title, summary, exact, ...(capability ? [capability] : []), explanation, ...(unavailable ? [unavailable] : []), controls, live);
     setBusy(busy);
   };
 
