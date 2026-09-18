@@ -2,6 +2,7 @@ import type { ReaderMutation, Thread, ReplyVersion, ReplyViewState, SourceVersio
 import type { HostCheckReport } from '../contracts/host-checks.ts';
 import type { ConsentGrant, SiteExclusion } from '../contracts/consent.ts';
 import type { ModelSettings, VocabularyEntry } from '../contracts/library.ts';
+import type { SolverExecuteRequest, SolverOutcome, SolverPlanOutcome, SolverPlanRequest } from '../contracts/solver.ts';
 import type { ReplyViewChange } from './persistence.ts';
 
 const readRoutes = new Map([
@@ -149,6 +150,15 @@ export class HelperClient {
   }
   async checkReply(threadId: string, replyVersionId: string, parameters: Readonly<Record<string, number>>): Promise<HostCheckReport> {
     return (await this.request('/api/reply-check', { threadId, replyVersionId, parameters })).report;
+  }
+  async prepareSolver(request: SolverPlanRequest, signal?: AbortSignal): Promise<SolverPlanOutcome> {
+    return (await this.request('/api/solver/prepare', request, signal)).outcome;
+  }
+  async executeSolver(request: SolverExecuteRequest, signal?: AbortSignal): Promise<SolverOutcome> {
+    return (await this.request('/api/solver/recompute', request, signal)).outcome;
+  }
+  async solverResult(requestId: string, signal?: AbortSignal): Promise<SolverOutcome | null> {
+    return (await this.request('/api/solver/result?requestId=' + encodeURIComponent(requestId), undefined, signal)).outcome ?? null;
   }
 }
 // A library and a retained margin use one connection lifetime. Disconnect fences both.

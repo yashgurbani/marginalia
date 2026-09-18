@@ -143,7 +143,7 @@ export async function startServer(options: { database: string; port?: number; we
               return send(response, 404, { error: 'This reply is unavailable.' });
             }
             paired = pairing.bindThread(token, authOrigin!, reply.threadId);
-            if (!paired) return send(response, 403, { error: 'This reply belongs to a different paired thread context.' });
+            if (!paired) return send(response, 401, { error: 'Pair with the local helper to recompute saved work.' });
           }
           const solverPrincipal = paired.threadId
             ? { siteOrigin: authOrigin!, threadId: paired.threadId, sessionId: paired.sessionId }

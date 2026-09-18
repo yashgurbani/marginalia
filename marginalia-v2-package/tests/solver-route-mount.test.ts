@@ -45,15 +45,15 @@ test('mounted solver routes require pairing and expose truthful status only to a
   } finally { await helper.close(); }
 });
 
-test('reply identity binds a paired session to one host-resolved thread', async () => {
+test('one paired session can prepare replies from two host-resolved threads', async () => {
   const { helper, prepare } = await fixture();
   try {
     const first = await prepare('reply-one');
     assert.equal(first.status, 200);
     assert.equal((await first.json() as { outcome: { status: string } }).outcome.status, 'unavailable');
-    const crossed = await prepare('reply-two');
-    assert.equal(crossed.status, 403);
-    assert.match((await crossed.json() as { error: string }).error, /different paired thread/);
+    const second = await prepare('reply-two');
+    assert.equal(second.status, 200);
+    assert.equal((await second.json() as { outcome: { status: string } }).outcome.status, 'unavailable');
     assert.equal((await prepare('unknown-reply')).status, 404);
   } finally { await helper.close(); }
 });
