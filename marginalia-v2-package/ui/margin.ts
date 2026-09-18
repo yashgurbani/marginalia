@@ -149,6 +149,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   let draftSaveFailed = false;
   let needsReconciliation = false;
   let lastOpener: HTMLElement | null = null;
+  let panelOpener: HTMLElement | null = null;
+  const narrowViewport = () => matchMedia('(max-width: 899px)').matches;
   const expanded = new Set<string>();
   const expandedKey = 'expanded:' + capture.url;
   const rememberExpanded = (threadId: string) => { void track(persistence.write(expandedKey, threadId)).catch(() => {}); };
@@ -242,14 +244,30 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function currentAnchor() { const section = sections[sectionIndex]; return anchorAt(capture.text, section.start, section.end); }
   function hold(index = sectionIndex) { if (!alive()) return; held = true; if (sectionIndex !== index) readingPosition = sections[index].start; sectionIndex = index; renderPosition(); }
-  function showPanel(focus = false) { if (!alive()) return; shell.classList.remove('is-collapsed'); mapSlot.append(map); updateManagement(); if (focus) writeButton.focus(); }
-  function closePanel() { if (!alive()) return; shell.classList.add('is-collapsed'); rail.append(map); management?.close(); openButton.focus(); }
-  const openButton = button('Open margin', () => showPanel(true)); openButton.className = 'm-open';
+  function showPanel(focus = false, opener?: HTMLElement) {
+    if (!alive()) return;
+    if (shell.classList.contains('is-collapsed') && focus && narrowViewport()) panelOpener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    shell.classList.remove('is-collapsed'); openButton.setAttribute('aria-expanded', 'true'); mapSlot.append(map); updateManagement();
+    if (focus) (narrowViewport() ? collapse : writeButton).focus();
+  }
+  function closePanel() {
+    if (!alive() || shell.classList.contains('is-collapsed')) return;
+    shell.classList.add('is-collapsed'); openButton.setAttribute('aria-expanded', 'false'); rail.append(map); management?.close();
+    const target = panelOpener?.isConnected ? panelOpener : openButton; panelOpener = null; target.focus({ preventScroll: true });
+  }
+  const openButton = button('Open margin', () => showPanel(true, openButton)); openButton.className = 'm-open';
+  openButton.setAttribute('aria-controls', shell.id); openButton.setAttribute('aria-expanded', 'true');
   rail.append(openButton);
   const collapse = button('Collapse', closePanel);
   const openSettings = () => { setup.hidden = false; updateManagement(); setup.querySelector<HTMLElement>('input,button')?.focus(); };
   const settingsButton = button('Settings', () => { if (setup.hidden) openSettings(); else setup.hidden = true; });
-  bar.append(el('span', 'Marginalia', 'm-wordmark'), actions(collapse, settingsButton));
+  const barActions = [collapse];
+  if (options.onLibrary) barActions.push(button('Library', options.onLibrary));
+  barActions.push(settingsButton);
+  bar.append(el('span', 'Marginalia', 'm-wordmark'), actions(...barActions));
+  if (options.initialOpen === false || (options.initialOpen !== true && narrowViewport())) {
+    shell.classList.add('is-collapsed'); openButton.setAttribute('aria-expanded', 'false'); rail.append(map);
+  }
   const writeButton = button('Write here…', () => beginDraft()); writeButton.className = 'm-write'; compose.append(writeButton);
   writeButton.addEventListener('focus', () => { if (hydrationFinished && !draft) beginDraft(); });
   const readingTitle = el('h2'); readingTitle.tabIndex = -1;
@@ -295,7 +313,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   const footerCount = el('span', '', 'm-meta');
   footer.append(footerCount, actions(button('Export JSON', exportWork), button('Think with it', () => pageQuestion('unsure', 'Help me reflect on this page and connect it to my own questions.')), button('Go further', () => pageQuestion('explore', 'Suggest useful further reading related to this page.'))), el('span', 'Hear it · not available yet', 'm-meta'));
-  const skip = button('Go to margin', () => showPanel(true)); skip.className = 'm-skip'; root.prepend(skip);
+  const skip = button('Go to margin', () => showPanel(true, skip)); skip.className = 'm-skip'; root.prepend(skip);
 
   const noteEditor = mountNoteEditor(compose, {
     edit(text) { if (draft && !saving && !draft.mutation) { draft.text = text; persistDraft(); } },
@@ -346,7 +364,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function sectionFor(start: number) { const index = sections.findIndex(s => start >= s.start && start < s.end); return index < 0 ? 0 : index; }
   sections.forEach((section, index) => {
-    const segment = button('', () => { hold(index); showPanel(); sourceAction(anchorAt(capture.text, section.start, section.end)); });
+    const segment = button('', () => {
+      const openingSheet = narrowViewport() && shell.classList.contains('is-collapsed');
+      hold(index); showPanel(openingSheet, segment); sourceAction(anchorAt(capture.text, section.start, section.end), !openingSheet);
+    });
     segment.dataset.section = String(index); segment.className = `m-segment m-colour-${index % 6 + 1}`;
     const relativeLength = Math.max(1, section.end - section.start) / Math.max(1, ...sections.map(item => item.end - item.start));
     segment.style.flexGrow = String(Math.max(1, section.end - section.start));
@@ -938,14 +959,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const HighlightClass = (window as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
     if (highlights && HighlightClass) highlights.set('marginalia-kept', new HighlightClass(...orderedThreads(threadsNow(), capture).map(t => sourceRange(t.anchor)).filter((r): r is Range => !!r)));
   }
-  function sourceAction(anchor: QuoteAnchor) {
+  function sourceAction(anchor: QuoteAnchor, closeNarrow = true) {
     if (!alive()) return;
     const attachment = sourceLocation({ anchor } as Thread, capture);
     if (anchor.kind !== 'whole-page' && !['exact', 'moved'].includes(attachment.state)) { announce('Attachment is uncertain. The original quote is retained; no source navigation was attempted.'); return; }
     options.onSource?.(anchor); const range = sourceRange(anchor);
     const node = range?.startContainer.parentElement;
     node?.scrollIntoView({ block: 'center', behavior: 'instant' }); highlight(anchor);
-    if (source && matchMedia('(max-width: 899px)').matches) closePanel();
+    if (source && closeNarrow && narrowViewport()) closePanel();
   }
   function updateReading() {
     if (held || suspended || !source) return;
@@ -1124,7 +1145,6 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   if (!alive()) return api;
   hydrationFinished = true; renderCompose(); renderThreads(); renderSettings(); renderRetainedRequests();
   if (questionDraft) footer.append(button('Return to retained question', () => { if (questionDraft) showQuestion(questionDraft); }));
-  if (options.initialOpen === false || (options.initialOpen !== true && matchMedia('(max-width: 899px)').matches)) { shell.classList.add('is-collapsed'); rail.append(map); }
   channel?.addEventListener('message', event => {
     if (event.data === 'pairing-changed') {
       if (options.allowHelper === false || !helper) return;

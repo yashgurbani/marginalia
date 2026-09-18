@@ -83,6 +83,41 @@ test('reading-position editor is connected, anchored and single-map across save 
   api.destroy(); await api.drain();
 });
 
+test('narrow margin stays open through hydration and Escape returns focus to its opener', async t => {
+  const e = env(t);
+  replaceGlobals(t, { matchMedia: (query: string) => ({ matches: query === '(max-width: 899px)' }) });
+  const mounting = mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  const shell = e.root.querySelector('.mg')!;
+  assert.equal(shell.classList.contains('is-collapsed'), true);
+  const opener = button(e.root, 'Open margin'); opener.focus(); opener.click();
+  assert.equal(shell.classList.contains('is-collapsed'), false);
+  const api = await mounting;
+  assert.equal(shell.classList.contains('is-collapsed'), false, 'late hydration must not undo the reader action');
+  assert.equal(e.document.activeElement, button(e.root, 'Collapse'));
+  e.root.fire('keydown', { key: 'Escape' });
+  assert.equal(shell.classList.contains('is-collapsed'), true);
+  assert.equal(e.document.activeElement, opener);
+  const railDot = e.root.querySelector('.m-segment')!; railDot.focus(); railDot.click();
+  assert.equal(shell.classList.contains('is-collapsed'), false, 'a rail dot must not close the sheet it just opened');
+  assert.equal(e.document.activeElement, button(e.root, 'Collapse'));
+  e.root.fire('keydown', { key: 'Escape' });
+  assert.equal(e.document.activeElement, railDot);
+  api.destroy(); await api.drain();
+});
+
+test('Library is offered only when its host provides a route', async t => {
+  const e = env(t);
+  let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  assert.equal(e.root.querySelectorAll('button').some(node => node.textContent === 'Library'), false);
+  api.destroy(); await api.drain();
+
+  let opens = 0;
+  api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, onLibrary: () => { opens++; } });
+  button(e.root, 'Library').click();
+  assert.equal(opens, 1);
+  api.destroy(); await api.drain();
+});
+
 test('stored reading anchor restores quietly and an unresolved anchor keeps the current section fallback', async t => {
   const e = env(t), restored = anchor(21, 30), navigated: unknown[] = [], writes: unknown[] = [];
   let api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false,
