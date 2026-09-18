@@ -21,3 +21,7 @@ The reviewer pinned commit `0360a1c` and did not run code. Thirty-nine commits (
 - `docs/evidence/pro-review-triage/TRIAGE-2026-09-18.md`: a 120-row table (row, reviewer status, head verdict, file:line at head or commit, ticket).
 - Every new ticket links back to its ledger row.
 - No code change inside this ticket.
+
+## Provenance context from E21
+
+E21's mechanical provenance record is `docs/evidence/pro-review-triage/INTEGRATION-PROVENANCE-2026-09-18.md`, with raw verification output in `docs/evidence/pro-review-triage/RAW-VERIFICATION-2026-09-18.txt` and the preserved historical script in `docs/evidence/pro-review-triage/integrate_pro_review.py`. It records the supplied transcript source and the committed transcript as logically identical across 1,930 lines, with a retained raw SHA-256 mismatch caused by LF versus CRLF line endings; all four scripted extraction bodies match their 1-based source ranges exactly. This is provenance only: E14 still owns substantive verification of all 120 rows, and E21 claims none of those rows as verified.
