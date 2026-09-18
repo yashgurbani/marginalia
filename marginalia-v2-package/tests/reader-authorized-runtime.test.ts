@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
 import { ReaderStore } from '../daemon/store.ts';
 import { ConsentSessionService } from '../daemon/consent/service.ts';
 import { createConsentProviderAuthorization, type PolicyEvidenceCollector } from '../daemon/consent/provider-authorization.ts';
@@ -35,7 +34,7 @@ function job(prepared: PrepareConsentInput, grant: ConsentGrant, attempt = prepa
 }
 
 const policy = createCodexPolicy({ version: PINNED_CODEX_VERSION, platform: 'win32', adapter: 'app-server',
-  operation: 'generation', model: 'model', workspace: resolve('fixture-workspace'), codexHome: resolve('fixture-home'), auditId: 'test' });
+  operation: 'generation', model: 'model', workspace: 'C:\\fixture-workspace', codexHome: 'C:\\fixture-home', auditId: 'test' });
 const policyKey = policyFingerprint(policy);
 const request: ProviderRequest = { jobId: 'attempt', workspace: policy.workspace, model: 'model', mode: 'workspace-files', policyKey, prompt: 'private-page-text' };
 const audit = { workspace: policy.workspace, codexHome: policy.codexHome } as ProviderAudit;

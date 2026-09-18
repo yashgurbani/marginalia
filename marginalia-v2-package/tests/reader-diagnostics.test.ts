@@ -146,10 +146,10 @@ test('data folder and backup observation distinguish none, present and unreadabl
   const root = mkdtempSync(join(tmpdir(), 'e10-storage-')), database = join(root, 'reader.sqlite');
   writeFileSync(database, 'fixture');
   try {
-    assert.deepEqual(await diagnosticsStorage(database), { dataDirectory: dirname(realpathSync(database)), backup: { state: 'none' } });
+    assert.deepEqual(await diagnosticsStorage(database), { dataDirectory: dirname(realpathSync.native(database)), backup: { state: 'none' } });
     const backups = database + '.backups'; mkdirSync(backups);
     const name = 'routine-123-' + 'a'.repeat(36); mkdirSync(join(backups, name));
-    assert.deepEqual((await diagnosticsStorage(database)).backup, { state: 'present', path: join(realpathSync(root), 'reader.sqlite.backups', name) });
+    assert.deepEqual((await diagnosticsStorage(database)).backup, { state: 'present', path: join(realpathSync.native(root), 'reader.sqlite.backups', name) });
     assert.equal((await diagnosticsStorage(':memory:')).backup.state, 'unknown');
     assert.equal((await diagnosticsStorage(join(root, 'missing.sqlite'))).backup.state, 'unknown');
   } finally { rmSync(root, { recursive: true, force: true }); }
