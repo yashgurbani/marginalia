@@ -1,13 +1,23 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, link, symlink, rename, readdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, writeFile, readFile, rm, link, symlink, rename, readdir, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { archiveWorkspace, assertInside, directoryIdentity, readWorkspaceBytes } from '../daemon/jobs/workspace-integrity.ts';
 
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 't06-files-')), workspace = join(root, 'job'); await mkdir(workspace);
   t.after(() => rm(root, { recursive: true, force: true })); return { root, workspace };
+}
+async function boundedRead(read: Promise<Buffer | undefined>) {
+  let timer: NodeJS.Timeout;
+  const blocked = new Promise<{ kind: 'blocked' }>(resolve => {
+    timer = setTimeout(() => resolve({ kind: 'blocked' }), 2_000); timer.unref();
+  });
+  const settled = read.then(value => ({ kind: 'settled' as const, value }), error => ({ kind: 'rejected' as const, error }));
+  const result = await Promise.race([settled, blocked]); clearTimeout(timer!); return result;
 }
 test('bounded descriptor read rejects links, extra bytes and stale directory identity', async t => {
   const { root, workspace } = await fixture(t), identity = await directoryIdentity(workspace);
@@ -45,4 +55,22 @@ test('a linked history directory is rejected before creating descendants through
   assert.deepEqual(await readdir(outside), []); assert.equal(await readFile(join(workspace, 'packet.json'), 'utf8'), 'unchanged');
   await symlink(join(workspace, 'packet.json'), join(workspace, 'link.json'));
   await assert.rejects(readWorkspaceBytes(await directoryIdentity(workspace), 'link.json', 100), /authoritative/);
+});
+test('a reply path swapped for a FIFO is rejected without blocking', { skip: process.platform === 'win32' && 'POSIX FIFO only' }, async t => {
+  const { workspace } = await fixture(t), path = join(workspace, 'reply.json'), identity = await directoryIdentity(workspace);
+  await writeFile(path, '{}');
+  const read = readWorkspaceBytes(identity, 'reply.json', 100, 100);
+  await delay(20, undefined, { ref: false }); await unlink(path); execFileSync('mkfifo', ['-m', '600', path]);
+  const result = await boundedRead(read);
+  assert.notEqual(result.kind, 'blocked');
+  if (result.kind === 'settled') assert.equal(result.value, undefined);
+});
+test('a directory swapped onto a reply path is rejected after open without blocking', async t => {
+  const { workspace } = await fixture(t), path = join(workspace, 'reply.json'), identity = await directoryIdentity(workspace);
+  await writeFile(path, '{}');
+  const read = readWorkspaceBytes(identity, 'reply.json', 100, 100);
+  await delay(20, undefined, { ref: false }); await unlink(path); await mkdir(path);
+  const result = await boundedRead(read);
+  assert.notEqual(result.kind, 'blocked');
+  if (result.kind === 'settled') assert.equal(result.value, undefined);
 });

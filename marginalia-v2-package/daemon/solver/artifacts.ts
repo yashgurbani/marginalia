@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import {
@@ -8,6 +7,7 @@ import {
   type SolverRejectionCode,
   type SolverValidation,
 } from '../../contracts/solver.ts';
+import { BOUNDED_READ_OPEN_FLAGS, isBoundedRegularDescriptor } from '../jobs/workspace-integrity.ts';
 
 /**
  * Filesystem authority for a recompute. Every path is re-resolved here; nothing
@@ -71,10 +71,13 @@ async function hashRegularFile(path: string, maxBytes: number): Promise<SolverVa
   let actual;
   try { actual = await realpath(path); } catch { return failure('artifact-unknown', 'The saved solver file could not be resolved.'); }
   if (!samePath(actual, path)) return failure('path-unsafe', 'The saved solver path resolves somewhere else.');
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const handle = await open(path, BOUNDED_READ_OPEN_FLAGS);
   try {
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.size > maxBytes) return failure('path-unsafe', 'The opened solver file is not a bounded regular file.');
+    if (!isBoundedRegularDescriptor(opened, maxBytes)) return failure('path-unsafe', 'The opened solver file is not a bounded regular file.');
+    if (opened.size !== first.size || opened.mtimeMs !== first.mtimeMs || opened.ino !== first.ino || opened.dev !== first.dev) {
+      return failure('artifact-modified', 'The saved solver file changed before it was opened.');
+    }
     const bytes = Buffer.alloc(opened.size);
     const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
     const after = await handle.stat();

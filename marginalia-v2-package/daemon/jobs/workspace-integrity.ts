@@ -1,7 +1,14 @@
-import { constants } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
 import { lstat, mkdir, open, realpath, writeFile, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+
+/** O_NONBLOCK prevents an untrusted FIFO swapped in after lstat from pinning a worker thread. */
+export const BOUNDED_READ_OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+export function isBoundedRegularDescriptor(info: Stats, maximum: number): boolean {
+  return info.isFile() && !info.isFIFO() && !info.isSocket() && !info.isCharacterDevice() && !info.isBlockDevice() &&
+    !info.isDirectory() && !info.isSymbolicLink() && info.nlink === 1 && info.size <= maximum;
+}
 
 export type DirectoryIdentity = { readonly path: string; readonly dev: number; readonly ino: number };
 export function samePath(a: string, b: string): boolean {
@@ -34,10 +41,11 @@ export async function readWorkspaceBytes(root: DirectoryIdentity, name: string, 
   if (!first.isFile() || first.isSymbolicLink() || first.nlink !== 1 || first.size > maximum || !samePath(await realpath(path), path)) throw new Error('Workspace file is not a bounded regular authoritative file.');
   if (settleMs) await delay(settleMs);
   await assertDirectoryCurrent(root);
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const handle = await open(path, BOUNDED_READ_OPEN_FLAGS);
   try {
     const before = await handle.stat();
-    if (!before.isFile() || before.nlink !== 1 || before.size !== first.size || before.mtimeMs !== first.mtimeMs || before.dev !== first.dev || before.ino !== first.ino) return;
+    if (!isBoundedRegularDescriptor(before, maximum) || before.size !== first.size || before.mtimeMs !== first.mtimeMs ||
+      before.dev !== first.dev || before.ino !== first.ino) return;
     const bytes = Buffer.alloc(before.size + 1);
     let used = 0;
     while (used < bytes.length) { const result = await handle.read(bytes, used, bytes.length - used, used); if (!result.bytesRead) break; used += result.bytesRead; }
