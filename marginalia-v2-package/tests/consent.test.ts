@@ -366,15 +366,18 @@ function key(root: ElementDouble, value: string, shiftKey = false) {
 }
 const tick = async () => { await Promise.resolve(); await Promise.resolve(); };
 
-test('ui: Tab stays in the sheet; Escape is not-now and returns focus without a decision', t => {
+test('ui: Tab may leave the non-modal sheet; outgoing text is readable; Escape is not-now', t => {
   const d = dom(t); let decisions = 0, dismissed = 0;
   mountConsentSheet(d.element, { preview: preview(), canAuthorize: true, decide: async () => { decisions++; return allowed; }, onNotNow: () => dismissed++ });
   d.flush(); const root = d.host.children[0], buttons = root.querySelectorAll('button');
   assert.equal(root.getAttribute('aria-modal'), 'false', 'the reading page is not globally blocked');
   assert.equal(root.dataset.surface, 'native-panel'); assert.equal(d.doc.activeElement, buttons[0]);
-  assert.equal(root.querySelector('pre')?.textContent, '<img src=x onerror=alert(1)>'); assert.equal(root.querySelector('img'), null);
-  assert.equal(key(root, 'Tab', true).defaultPrevented, true); assert.equal(d.doc.activeElement, buttons.at(-1));
-  key(root, 'Tab'); assert.equal(d.doc.activeElement, buttons[0]);
+  assert.deepEqual(buttons.slice(0, 3).map(button => button.className),
+    ['m-consent__this-time', 'm-consent__always-site', 'm-consent__never-site']);
+  const outgoing = root.querySelector('pre')!;
+  assert.equal(outgoing.textContent, '<img src=x onerror=alert(1)>'); assert.equal(root.querySelector('img'), null);
+  assert.equal(outgoing.tabIndex, 0); assert.match(outgoing.getAttribute('aria-labelledby') ?? '', /^m-consent-part-/);
+  buttons.at(-1)!.focus(); assert.equal(key(root, 'Tab').defaultPrevented, false, 'the page owns focus traversal after the last control');
   assert.equal(key(root, 'Escape').defaultPrevented, true);
   assert.equal(dismissed, 1); assert.equal(decisions, 0); assert.equal(d.host.children.length, 0); assert.equal(d.doc.activeElement, d.opener);
 });
@@ -412,8 +415,11 @@ test('ui: destruction cancels queued focus and background preview updates do not
 test('ui: floating, denied and excluded surfaces offer dismissal but no authorization controls', t => {
   const d = dom(t);
   for (const options of [{ surface: 'floating' as const, state: 'ready' as const }, { surface: 'native-panel' as const, state: 'denied' as const }, { surface: 'localhost' as const, state: 'excluded' as const }]) {
-    const sheet = mountConsentSheet(d.element, { preview: { ...preview(), state: options.state }, surface: options.surface, canAuthorize: true, decide: async () => { throw new Error('must not authorize'); } });
-    d.flush(); const buttons = d.host.children[0].querySelectorAll('button'); assert.equal(buttons.length, 1); assert.equal(buttons[0].textContent, 'Not now');
+    let settings = 0;
+    const sheet = mountConsentSheet(d.element, { preview: { ...preview(), state: options.state }, surface: options.surface, canAuthorize: true, decide: async () => { throw new Error('must not authorize'); }, onOpenSettings: () => settings++ });
+    d.flush(); const buttons = d.host.children[0].querySelectorAll('button');
+    assert.deepEqual(buttons.map(button => button.textContent), options.state === 'denied' ? ['Settings', 'Not now'] : ['Not now']);
+    if (options.state === 'denied') { buttons[0].click(); assert.equal(settings, 1); }
     assert.equal(d.host.children[0].dataset.surface, options.surface); sheet.destroy();
   }
   const css = readFileSync(new URL('../ui/consent.css', import.meta.url), 'utf8');

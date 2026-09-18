@@ -320,7 +320,7 @@ test('the reviewed host plan remains visible through submitting, working and pro
   h.host.start = async input => { h.calls.push({ name: 'start', input }); return gate.promise; };
   await h.flow.ask('define', 'Explain'); const reviewed = hostCopy(h.prepared);
   const pending = h.approve(); await settle();
-  const plan = d.node.all().find(n => n.getAttribute('aria-label') === 'Reviewed plan')!;
+  const plan = d.node.all().find(n => n.textContent.startsWith('Reviewed plan:'))!;
   assert.equal(h.flow.getState().phase, 'submitting'); assert.deepEqual(h.flow.getState().preparation, reviewed);
   assert.equal(plan.hidden, false); assert.equal(plan.textContent, 'Reviewed plan: Explain this passage with OpenAI Codex using host-selected.');
   gate.resolve(job(h.prepared, h.binding, 'running')); await pending;

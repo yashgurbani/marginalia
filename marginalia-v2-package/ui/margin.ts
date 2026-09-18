@@ -8,7 +8,7 @@ import { mountHelperManagement } from './helper-management.ts';
 import { mountNoteEditor } from './note-editor.ts';
 import { createT08Mount, type AskingMountFactory, type AskingSelection } from './asking-host.ts';
 import type { MountedReply } from '../renderer/index.ts';
-import { canonicalReplyData, validateReply, type SourceBinding } from '../contracts/reply.ts';
+import { canonicalReplyData, capabilitiesForIntent, validateReply, type SourceBinding } from '../contracts/reply.ts';
 import { mountSolverRecompute } from './solver-recompute.ts';
 
 export type MarginSection = { title: string; start: number; end: number };
@@ -209,7 +209,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const openButton = button('Open margin', () => showPanel(true)); openButton.className = 'm-open';
   rail.append(openButton);
   const collapse = button('Collapse', closePanel);
-  const settingsButton = button('Settings', () => { setup.hidden = !setup.hidden; updateManagement(); if (!setup.hidden) setup.querySelector<HTMLElement>('input')?.focus(); });
+  const openSettings = () => { setup.hidden = false; updateManagement(); setup.querySelector<HTMLElement>('input,button')?.focus(); };
+  const settingsButton = button('Settings', () => { if (setup.hidden) openSettings(); else setup.hidden = true; });
   bar.append(el('span', 'Marginalia', 'm-wordmark'), actions(collapse, settingsButton));
   const writeButton = button('Write here…', () => beginDraft()); writeButton.className = 'm-write'; compose.append(writeButton);
   writeButton.addEventListener('focus', () => { if (hydrationFinished && !draft) beginDraft(); });
@@ -520,6 +521,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         activityButton.title = text; activityButton.textContent = text;
       },
       onCommitted: threadId => { if (alive()) { changed(); announce('A validated reply is available. Your notes remain above it.'); } },
+      openSettings,
       });
       questionForm.hidden = true; askingMount.setVisible(!suspended && !questionArea.hidden);
       const opening = askingMount;
@@ -684,7 +686,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         const solverRecompute = options.allowHelper !== false && helper?.token && helper.origin === saved.origin ? mountSolverRecompute(wrapper, helper, saved.version.id) : undefined;
         const mounted: MountedReply = mountReply(canvas, saved.version.reply, {
           sourceText: saved.source.text, initialState: saved.local,
-          capabilities: ['samples', 'solver'],
+          capabilities: [...capabilitiesForIntent(saved.version.reply.intent ?? 'define'), ...(solverRecompute ? ['solver' as const] : [])],
           hostReport: saved.reports?.[canonicalReplyData(saved.local.parameters)] ?? saved.report ?? saved.version.validation,
           sampleGenerationRecords: saved.sampleGenerationRecords,
           onStateChange: persistView,

@@ -2,7 +2,7 @@ import type { QuoteAnchor, SourceCapture, SourceVersion, Thread, ReplyVersion, R
 import type { ConsentSheetOptions, ConsentSheet } from './consent.ts';
 import type { MountedReply, ReplyOptions } from '../renderer/index.ts';
 import type { CandidateReply, Intent } from '../contracts/reply.ts';
-import { canonicalReplyData, validateReply } from '../contracts/reply.ts';
+import { canonicalReplyData, capabilitiesForIntent, validateReply } from '../contracts/reply.ts';
 import { replySaveLifecycle, type localPersistence } from './persistence.ts';
 import type { HelperClient } from './helper.ts';
 
@@ -32,6 +32,8 @@ export type AskingContext = {
   highlight(binding: import('../contracts/reply.ts').SourceBinding | null, original: string): void;
   navigate(binding: import('../contracts/reply.ts').SourceBinding, original: string): void;
   onCommitted(threadId: string): void;
+  /** Open the existing host-owned settings surface. */
+  openSettings?(): void;
   prepareReplyView?(threadId: string, replyVersionId: string): Promise<void>;
   onClosed?(): void;
   onState?(state: { phase: string }): void;
@@ -219,12 +221,12 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       card = peer.mountAskingCard(host, {
         flow, presentation: 'inline',
         returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
-        mountConsent: mountConsentSheet,
+        mountConsent: (root, sheetOptions) => mountConsentSheet(root, { ...sheetOptions, onOpenSettings: context.openSettings }),
         replyOptions: result => {
           mountingReply = result.reply.id;
           const session = readers.get(result.reply.id);
           if (!session) throw new Error('The saved reply view is not ready.');
-          return { initialState: session.record.local, capabilities: ['samples'],
+          return { initialState: session.record.local, capabilities: capabilitiesForIntent(result.reply.reply.intent ?? 'define'),
             sampleGenerationRecords: session.record.sampleGenerationRecords,
             onSourceHighlight: binding => context.highlight(binding, result.source.text),
             onSourceNavigate: binding => context.navigate(binding, result.source.text) };

@@ -54,8 +54,15 @@ test('save failure and status updates retain the same connected textarea, focus,
 test('a question mark offers Ask but input does not save or send', t => {
   const { editor, field, button, calls } = fixture(t); field.value = 'Why?'; field.dispatchEvent(new Event('input'));
   assert.deepEqual(calls, ['edit:Why?']); assert.equal(button('Save note and review a question').hidden, false);
+  const hintId = field.getAttribute('aria-describedby'); assert.ok(hintId);
+  const hint = field.doc.body.querySelector('small')!; assert.equal((hint as any).id, hintId);
+  assert.equal(hint.textContent, 'Enter saves; Shift+Enter adds a line. Asking always needs a separate action.');
+  const status = field.doc.body.querySelectorAll('p').at(-1)!;
+  assert.equal(status.textContent, 'Save note and review a question is now available.');
+  field.value = 'Why exactly?'; field.dispatchEvent(new Event('input'));
+  assert.equal(status.textContent, 'Save note and review a question is now available.', 'the same appearance is not announced again per keystroke');
   editor.update({ ...initial, text: field.value }); button('Save note and review a question').click();
-  assert.deepEqual(calls, ['edit:Why?', 'ask']);
+  assert.deepEqual(calls, ['edit:Why?', 'edit:Why exactly?', 'ask']);
 });
 test('Enter saves once, while Shift+Enter and composing Enter do not invoke save', t => {
   const { field, calls } = fixture(t);
