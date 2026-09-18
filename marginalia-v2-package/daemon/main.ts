@@ -17,13 +17,14 @@ import { policyFingerprint } from './providers/policy-gate.ts';
 import { launchProvider } from './providers/runtime.ts';
 import { inspectAppServer } from './providers/preflight.ts';
 import { createLazySolverTransport } from './solver/index.ts';
+import { ensurePrivateDataDirectory, runShutdown, shutdownSignals } from './shutdown.ts';
 
 const userDataRoot = process.platform === 'win32' ? process.env.LOCALAPPDATA
   : process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support')
     : process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
 const dataDir = process.env.MARGINALIA_DATA_DIR ?? (userDataRoot && isAbsolute(userDataRoot) ? join(userDataRoot, 'Marginalia') : join(homedir(), '.marginalia'));
 if (!isAbsolute(dataDir)) throw new Error('MARGINALIA_DATA_DIR must be absolute.');
-mkdirSync(dataDir, { recursive: true });
+ensurePrivateDataDirectory(dataDir);
 const canonicalDataDir = realpathSync(dataDir);
 const solverProbeRoot = join(canonicalDataDir, 'confinement-probes');
 mkdirSync(solverProbeRoot, { recursive: true, mode: 0o700 });
@@ -108,6 +109,12 @@ const terminal = createInterface({ input: process.stdin });
 terminal.on('line', line => {
   if (line.trim() === 'pair') console.log(`Pairing code: ${server.pairing.issue()} (valid for five minutes, one use)`);
 });
-for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, async () => {
-  terminal.close(); await server.close(); solverTransport?.close(); process.exit(0);
+let shutdown: Promise<void> | undefined;
+for (const signal of shutdownSignals(process.platform)) process.once(signal, () => {
+  shutdown ??= runShutdown({
+    closeTerminal: () => terminal.close(),
+    closeServer: () => server.close(),
+    closeSolver: () => solverTransport?.close(),
+    exit: code => process.exit(code),
+  });
 });

@@ -411,3 +411,50 @@ test('retry preparation and dispatch retain original capabilities across changed
     }
   } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('retry dispatch uses the exact outgoing content reviewed during retry preparation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-retry-content-')), reader = fixture();
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: [] },
+    runtimeFactory: factory(async () => ({ grantId: 'grant', policyKey })) });
+  try {
+    const first = await jobs.prepare({ id: 'retry-content-original', idempotencyKey: 'retry-content-original-key',
+      threadId: 'thread-job-test', intent: 'explore', question: 'Keep this exact question.' });
+    await jobs.create({ ...first.job, grantId: 'grant' });
+    for (let i = 0; i < 20 && jobs.get('retry-content-original')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    const original = jobs.get('retry-content-original')!;
+    const legacyContext = structuredClone(original.context);
+    delete (legacyContext.outgoing as Partial<typeof legacyContext.outgoing>).question;
+    reader.db.prepare('UPDATE jobs SET context=? WHERE id=?').run(JSON.stringify(legacyContext), original.id);
+
+    const retryInput = { id: 'retry-content-next', idempotencyKey: 'retry-content-next-key' };
+    const reviewed = await jobs.prepareRetry(original.id, retryInput);
+    const retried = await jobs.retry(original.id, { ...retryInput, grantId: 'grant', preparedPayloadDigest: reviewed.job.preparedPayloadDigest });
+
+    assert.equal(retried.preparedPayloadDigest, reviewed.job.preparedPayloadDigest);
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('retry dispatch rejects a question changed after retry preparation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-retry-question-')), reader = fixture();
+  const jobs = new JobService({ reader, workspaceRoot: root, library,
+    defaults: { provider: 'app-server', mode: 'workspace-files', policyKey, capabilities: [] },
+    runtimeFactory: factory(async () => ({ grantId: 'grant', policyKey })) });
+  try {
+    const first = await jobs.prepare({ id: 'retry-question-original', idempotencyKey: 'retry-question-original-key',
+      threadId: 'thread-job-test', intent: 'explore', question: 'Reviewed question.' });
+    await jobs.create({ ...first.job, grantId: 'grant' });
+    for (let i = 0; i < 20 && jobs.get('retry-question-original')?.state !== 'failed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+
+    const retryInput = { id: 'retry-question-next', idempotencyKey: 'retry-question-next-key' };
+    const reviewed = await jobs.prepareRetry(first.job.id, retryInput);
+    const changed = jobs.get(first.job.id)!;
+    changed.context.question = 'Changed after review.';
+    reader.db.prepare('UPDATE jobs SET context=? WHERE id=?').run(JSON.stringify(changed.context), changed.id);
+
+    await assert.rejects(
+      jobs.retry(first.job.id, { ...retryInput, grantId: 'grant', preparedPayloadDigest: reviewed.job.preparedPayloadDigest }),
+      /The reviewed outgoing content changed/,
+    );
+  } finally { await jobs.close(); reader.close(); await rm(root, { recursive: true, force: true }); }
+});

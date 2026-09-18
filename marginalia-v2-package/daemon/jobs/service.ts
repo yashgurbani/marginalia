@@ -165,10 +165,7 @@ export class JobService {
       question: previous.context.question, provider: this.defaults.provider, mode: mode,
       capabilities: this.store.capabilities(previous.id), model: selection.model,
       policyKey: this.policyFor(raw.id, mode, selection.model), grantId: 'pending', preparedPayloadDigest: '0'.repeat(64), parentReplyId: previous.context.parentReplyId };
-    const context: FrozenJobContext = { ...structuredClone(previous.context), retryOfJobId: previous.id, parentJobId: undefined,
-      parentAttemptId: undefined, preparedPayloadDigest: input.preparedPayloadDigest,
-      modelSettingsRevision: selection.settingsRevision, modelCompatibilityKey: selection.compatibilityKey };
-    context.outgoing = { ...context.outgoing, availableCapabilities: [...input.capabilities!] };
+    const context = this.retryContext(previous, input, selection);
     const prepared = await this.prepared(input, context);
     assertAdmission(admit);
     this.store.savePreparation(input.id, preparationIdentity(input), prepared.digest);
@@ -225,10 +222,7 @@ export class JobService {
       question: previous.context.question, provider: this.defaults.provider, model: selection.model, mode: mode, policyKey: this.policyFor(raw.id, mode, selection.model),
       grantId: raw.grantId, preparedPayloadDigest: raw.preparedPayloadDigest, parentReplyId: previous.context.parentReplyId,
       capabilities: this.store.capabilities(previous.id) };
-    const context: FrozenJobContext = { ...structuredClone(previous.context), retryOfJobId: previous.id, parentJobId: undefined,
-      parentAttemptId: undefined, preparedPayloadDigest: raw.preparedPayloadDigest,
-      modelSettingsRevision: selection.settingsRevision, modelCompatibilityKey: selection.compatibilityKey };
-    context.outgoing = { ...context.outgoing, question: context.question, availableCapabilities: [...input.capabilities!] };
+    const context = this.retryContext(previous, input, selection);
     if ((await this.prepared(input, context)).digest !== input.preparedPayloadDigest) throw new JobConflictError('The reviewed outgoing content changed. Review it again.');
     assertAdmission(admit);
     const requestDigest = packetDigest(input);
@@ -322,6 +316,13 @@ export class JobService {
     const thread = this.reader.get(parent.threadId), accepted = parent.replyVersionId && this.reader.reply(parent.replyVersionId);
     if (!thread || thread.deletedAt || !accepted || accepted.deletedAt || accepted.threadId !== parent.threadId) throw new JobConflictError('The accepted parent reply is unavailable.');
     return frozenFollowup(parent, input, selection, accepted.id, canonicalReplyData(accepted.reply), this.canResume(parent, input.mode, input.model));
+  }
+  private retryContext(previous: JobSnapshot, input: StartJobInput, selection: ReturnType<LibrarySettingsService['modelFor']>): FrozenJobContext {
+    const context: FrozenJobContext = { ...structuredClone(previous.context), retryOfJobId: previous.id, parentJobId: undefined,
+      parentAttemptId: undefined, preparedPayloadDigest: input.preparedPayloadDigest,
+      modelSettingsRevision: selection.settingsRevision, modelCompatibilityKey: selection.compatibilityKey };
+    context.outgoing = { ...context.outgoing, question: context.question, availableCapabilities: [...input.capabilities!] };
+    return context;
   }
   private async dispatch(jobId: string, attemptId: string, predecessor?: ProviderHandle, admit?: () => boolean) {
     if (this.closing) throw new Error('service-closing');
