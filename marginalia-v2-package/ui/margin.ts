@@ -3,7 +3,7 @@ import type { QuoteAnchor, ReaderMutation, SourceCapture, Thread } from '../cont
 import { wholePageAnchor, attachQuote } from '../contracts/reader.ts';
 import { el, button } from './dom.ts';
 import { localPersistence, documentJournal, documentDraft, documentQuestion, unsavedDrafts, unsavedQuestions, sourceBoundJournal, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle, type MarginDraft, type CachedReply } from './persistence.ts';
-import { anchorAt, orderedThreads, outgoingPreview, sourceLocation, pageDefinition, displayPosition, egressRecord } from './margin-model.ts';
+import { anchorAt, readingAnchorAt, orderedThreads, outgoingPreview, sourceLocation, pageDefinition, displayPosition, egressRecord } from './margin-model.ts';
 import type { JobSnapshot } from '../contracts/jobs.ts';
 import { HelperClient, documentHelper, forgetPairingIfCurrent } from './helper.ts';
 import { mountHelperManagement } from './helper-management.ts';
@@ -43,6 +43,10 @@ export type MarginOptions = {
   allowHelper?: boolean;
   /** Trusted host policy recheck immediately before each local outbox send. */
   authorizeHelperSend?: (sourceUrl: string) => Promise<void>;
+  /** Test/host seams; the default uses the authenticated local helper. */
+  readPosition?: (sourceUrl: string) => Promise<QuoteAnchor | undefined>;
+  writePosition?: (anchor: QuoteAnchor) => Promise<void>;
+  positionDebounceMs?: number;
 };
 type Draft = MarginDraft;
 type RetainedRequest = { jobId: string; selection: AskingSelection };
@@ -138,6 +142,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const updateManagement = () => { if (!suspended && !setup.hidden && !shell.classList.contains('is-collapsed')) management?.open(); else management?.close(); };
   let sectionIndex = 0, held = false, draft: Draft | undefined, selected: QuoteAnchor | undefined;
   let helper: HelperClient | undefined, storageReady = false, saving = false;
+  let positionTimer: ReturnType<typeof setTimeout> | undefined, positionDirty = false, lastPositionWrite = 0, restoredPosition = false;
   let denied = false;
   let pendingNoteMutation: ReaderMutation | undefined;
   let pendingNoteCommitted = false;
@@ -216,6 +221,21 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     changed(); renderThreads();
   }
   function safely(operation: () => Promise<void>) { if (!alive()) return Promise.resolve(); return track((async () => { try { await operation(); } catch (error) { fail(error); } })()); }
+  async function flushReadingPosition() {
+    if (positionTimer) { clearTimeout(positionTimer); positionTimer = undefined; }
+    if (!positionDirty) return;
+    const anchor = readingAnchorAt(capture.text, readingPosition);
+    const write = options.writePosition ?? (helper?.token ? async (value: QuoteAnchor) => { await helper!.request('/api/position', { capture, anchor: value }); } : undefined);
+    if (!anchor || !write) return;
+    positionDirty = false;
+    try { await write(anchor); lastPositionWrite = Date.now(); } catch { positionDirty = true; }
+  }
+  function queueReadingPosition() {
+    if (positionTimer) clearTimeout(positionTimer);
+    const wait = options.positionDebounceMs ?? 3000;
+    const delay = Math.max(wait, lastPositionWrite + wait - Date.now());
+    positionTimer = setTimeout(() => { positionTimer = undefined; void track(flushReadingPosition()); }, delay);
+  }
   function currentAnchor() { const section = sections[sectionIndex]; return anchorAt(capture.text, section.start, section.end); }
   function hold(index = sectionIndex) { if (!alive()) return; held = true; if (sectionIndex !== index) readingPosition = sections[index].start; sectionIndex = index; renderPosition(); }
   function showPanel(focus = false) { if (!alive()) return; shell.classList.remove('is-collapsed'); mapSlot.append(map); updateManagement(); if (focus) writeButton.focus(); }
@@ -1040,6 +1060,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function destroy() {
     if (destroyed) return;
+    void track(flushReadingPosition());
     askingMount?.destroy(); management?.destroy(); closeReplies(); highlight(null); destroyed = true; abort.abort(); channel?.close();
     workspace.remove(); skip.remove();
     if (mountedMargins.get(root)?.destroy === destroy) root.classList.remove('m-app', 'm-host-only');
@@ -1052,10 +1073,11 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   const api = {
     sourceUrl: capture.url, connection: trustedHelper, exportWork, drain: lifecycle.drain,
+    get restoredPosition() { return restoredPosition; }, flushReadingPosition,
     getThread: currentThread,
     focusThread(threadId: string) { expanded.add(threadId); renderThreads(); const thread = currentThread(threadId); if (thread) hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); },
     select: showSelection,
-    setReadingPosition(start: number) { if (alive() && !suspended && !held) { readingPosition = Math.max(0, Math.min(capture.text.length, start)); sectionIndex = sectionFor(readingPosition); renderPosition(); } },
+    setReadingPosition(start: number) { if (alive() && !suspended && !held) { const next = Math.max(0, Math.min(capture.text.length, start)); if (restoredPosition && sectionFor(next) === sectionIndex) return; restoredPosition = false; if (next === readingPosition) return; readingPosition = next; sectionIndex = sectionFor(readingPosition); renderPosition(); if (hydrationFinished) { positionDirty = true; queueReadingPosition(); } } },
     suspend() { highlight(null); suspended = true; management?.close(); askingMount?.setVisible(false); },
     resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); renderSettings(); paintHighlights(); },
     async openThread(threadId: string) { await locked(() => journal.load()); const thread = currentThread(threadId); if (!thread || thread.deletedAt || thread.sourceUrl !== capture.url) throw new Error('The current thread is unavailable; local work is unchanged.'); expanded.add(threadId); renderThreads(); hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); threadNodes.get(threadId)?.node.querySelector<HTMLElement>('.m-source-action')?.focus({ preventScroll: true }); },
@@ -1076,6 +1098,13 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (draft) { held = true; readingPosition = composerOffset(draft, 0); sectionIndex = sectionFor(readingPosition); }
     denied = !!block; if (theme && theme !== 'system') document.documentElement.dataset.theme = theme;
     if (helper && connectionEpoch === 0 && helper.connectionVersion === connectionEpoch && pairing?.origin === helper.origin) helper.token = pairing.token;
+    if (!draft) {
+      try {
+        const read = options.readPosition ?? (helper?.token ? async (sourceUrl: string) => (await helper!.request('/api/position', { url: sourceUrl })).anchor as QuoteAnchor | null : undefined);
+        const saved = await read?.(capture.url), at = saved ? displayPosition(saved, capture) : undefined;
+        if (saved && at !== undefined) { readingPosition = at; sectionIndex = sectionFor(at); restoredPosition = true; options.onSource?.(saved); }
+      } catch { /* Position restoration is deliberately quiet. */ }
+    }
     announce(journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() ? 'Unsaved work recovered in this document. Retry saving or export before closing.' : 'Local storage is available. Model readiness has not been checked; asking requires a separate review.');
   } catch { announce('Local storage could not be restored. Current drafts remain in this document only; export before closing.'); }
   if (!alive()) return api;

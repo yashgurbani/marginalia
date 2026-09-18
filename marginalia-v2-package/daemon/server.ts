@@ -182,6 +182,17 @@ export async function startServer(options: { database: string; port?: number; we
           if (handled) return send(response, handled.status, handled.body);
         }
         // --- End T20 saved-solver route mount. ---
+        // --- Persisted per-page reading position (local quote anchor only). ---
+        if (url.pathname === '/api/position' && request.method === 'POST') {
+          const input = await body(request);
+          if (input?.capture !== undefined || input?.anchor !== undefined) {
+            if (!input?.capture || !input?.anchor) throw new Error('A page capture and position anchor are required.');
+            return send(response, 200, { anchor: store.saveReaderPosition(input.capture, input.anchor) });
+          }
+          if (typeof input?.url !== 'string' || input.url.length > 8000) throw new Error('A page address is required.');
+          return send(response, 200, { anchor: store.readerPosition(input.url) ?? null });
+        }
+        // --- End persisted per-page reading position. ---
         // Explicit read transports preserve browser-generated Origin on extension
         // POSTs. They do not reinterpret methods on any mutation endpoint.
         let readOperation: 'threads' | 'replies' | 'reply-view' | undefined;

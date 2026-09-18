@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { attachQuote, validateReaderMutation, validateSourceCapture, type JsonValue, type ReaderMutation, type Thread, type Note, type QuoteAnchor, type SourceCapture, type SourceVersion, type SourceSection, type AttachmentRecord, type NoteVersionRef, type NoteVersion, type ReplyVersion, type ReplyViewState } from '../contracts/reader.ts';
+import { attachQuote, validateQuoteAnchor, validateReaderMutation, validateSourceCapture, type JsonValue, type ReaderMutation, type Thread, type Note, type QuoteAnchor, type SourceCapture, type SourceVersion, type SourceSection, type AttachmentRecord, type NoteVersionRef, type NoteVersion, type ReplyVersion, type ReplyViewState } from '../contracts/reader.ts';
 import { canonicalReplyData, validateReply, type CandidateReply, type ReplyCapability } from '../contracts/reply.ts';
 import { digestReply, runHostChecks } from '../contracts/host-checks.ts';
 
@@ -120,6 +120,9 @@ export class ReaderStore {
           if (this.db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Source migration would leave invalid references.');
       })();
     }
+    if (!this.db.prepare('SELECT 1 FROM migrations WHERE version=7002').get()) {
+      this.db.exec(`ALTER TABLE sources ADD COLUMN position TEXT; INSERT INTO migrations(version) VALUES(7002);`);
+    }
   }
   close() { this.db.close(); }
   private event(kind: string, value: unknown) {
@@ -181,7 +184,7 @@ export class ReaderStore {
     const versionId = existing?.id ?? digest(canonicalReplyData([
       'source-version-metadata-v1', sourceId, hash, extractionVersion, normalizedSections, metadataStatus, title, pageType,
     ]));
-    if (provided) this.db.prepare('INSERT OR IGNORE INTO sources VALUES(?,?,?,?)').run(sourceId, capture.url, capture.title, capture.pageType);
+    if (provided) this.db.prepare('INSERT OR IGNORE INTO sources(id,url,title,pageType) VALUES(?,?,?,?)').run(sourceId, capture.url, capture.title, capture.pageType);
     this.db.prepare('INSERT OR IGNORE INTO source_versions(id,sourceId,hash,text,capturedAt,extractionVersion,title,pageType,metadataStatus,sections) VALUES(?,?,?,?,?,?,?,?,?,?)')
       .run(versionId, sourceId, hash, capture.text, provided ? capture.capturedAt : '', extractionVersion, title, pageType, metadataStatus, sections);
     this.db.prepare('INSERT INTO search(entityId,kind,content) SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM search WHERE entityId=? AND kind=?)').run(versionId, 'source', capture.text, versionId, 'source');
@@ -192,6 +195,19 @@ export class ReaderStore {
     if (!row) return;
     const { sections, ...version } = row;
     return { ...version, capturedAt: version.capturedAt || null, extractionVersion: version.extractionVersion || null, ...(sections ? { sections: JSON.parse(sections) as SourceSection[] } : {}) };
+  }
+  readerPosition(url: string): QuoteAnchor | undefined {
+    const row = this.db.prepare('SELECT position FROM sources WHERE url=?').get(url) as { position: string | null } | undefined;
+    return row?.position ? JSON.parse(row.position) as QuoteAnchor : undefined;
+  }
+  saveReaderPosition(capture: SourceCapture, anchor: QuoteAnchor): QuoteAnchor {
+    validateSourceCapture(capture); validateQuoteAnchor(anchor, capture.text);
+    const sourceId = digest(capture.url);
+    this.db.transaction(() => {
+      this.db.prepare('INSERT OR IGNORE INTO sources(id,url,title,pageType) VALUES(?,?,?,?)').run(sourceId, capture.url, capture.title, capture.pageType);
+      this.db.prepare('UPDATE sources SET position=? WHERE url=?').run(JSON.stringify(anchor), capture.url);
+    })();
+    return anchor;
   }
   noteVersion(ref: NoteVersionRef): NoteVersion | undefined {
     return this.db.prepare('SELECT * FROM note_versions WHERE noteId=? AND revision=?').get(ref.noteId, ref.revision) as NoteVersion | undefined;
@@ -449,7 +465,7 @@ function exportRequest(serialized: string): HistoryRow {
 }
 
 // Membership, not MAX(version): T06/T13 share this database but own their migrations.
-const READER_MIGRATIONS = [1, 2, 4, 7001] as const;
+const READER_MIGRATIONS = [1, 2, 4, 7001, 7002] as const;
 const KNOWN_MIGRATIONS = new Set<number>([...READER_MIGRATIONS, 3, 13]);
 type ReaderSchema = { versions: number[]; hasSchema: boolean };
 type BackupManifest = { schema: 'marginalia.reader-backup.v1'; createdAt: string; versions: number[]; sha256: string };
