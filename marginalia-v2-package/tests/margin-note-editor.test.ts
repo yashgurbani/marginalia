@@ -51,6 +51,18 @@ test('save failure and status updates retain the same connected textarea, focus,
   assert.equal(doc.body.querySelector('textarea'), field); assert.equal(field.isConnected, true); assert.equal(doc.active, field);
   assert.deepEqual([field.selectionStart, field.selectionEnd, field.scrollTop], [3, 7, 24]); assert.equal(field.value, initial.text);
 });
+test('typing into a fresh draft enables Save, and clearing it disables Save without an owner refresh', t => {
+  const { editor, field, button, calls } = fixture(t);
+  editor.update({ ...initial, text: '' });
+  const save = button('Save note'); assert.equal(save.disabled, true);
+  field.value = 'A new thought'; field.dispatchEvent(new Event('input'));
+  assert.equal(save.disabled, false); assert.deepEqual(calls, ['edit:A new thought']);
+  field.value = ' \n '; field.dispatchEvent(new Event('input'));
+  assert.equal(save.disabled, true); save.click();
+  assert.deepEqual(calls, ['edit:A new thought', 'edit: \n ']);
+  field.value = 'Keep this thought'; field.dispatchEvent(new Event('input')); save.click();
+  assert.deepEqual(calls, ['edit:A new thought', 'edit: \n ', 'edit:Keep this thought', 'save']);
+});
 test('a question mark offers Ask but input does not save or send', t => {
   const { editor, field, button, calls } = fixture(t); field.value = 'Why?'; field.dispatchEvent(new Event('input'));
   assert.deepEqual(calls, ['edit:Why?']); assert.equal(button('Save note and review a question').hidden, false);

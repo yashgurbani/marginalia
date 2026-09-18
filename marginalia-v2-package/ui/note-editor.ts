@@ -39,6 +39,7 @@ export function mountNoteEditor(host: HTMLElement, actions: {
   field.addEventListener('input', () => {
     if (field.readOnly) return;
     actions.edit(field.value);
+    save.disabled = !!current?.saving || !field.value.trim();
     const askAvailable = field.value.trimEnd().endsWith('?'); ask.hidden = !askAvailable;
     if (askAvailable && !askAnnounced) { status.textContent = 'Save note and review a question is now available.'; askAnnounced = true; }
     else if (!askAvailable) askAnnounced = false;
