@@ -176,6 +176,43 @@ test('whole-page notes are explicit, unhighlighted and reject malformed empty qu
   } finally { store.close(); }
 });
 
+test('Keep underlines without tint while explicit Highlight persists, reloads and removes without deleting reader work', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'marginalia-highlight-')), file = join(dir, 'reader.sqlite');
+  let store = new ReaderStore(file);
+  try {
+    store.apply(keep);
+    let thread = store.get(keep.threadId)!;
+    assert.equal(thread.highlighted, false);
+    assert.equal(store.db.prepare('SELECT COUNT(*) FROM highlights').pluck().get(), 0);
+    store.apply({ id: 'highlight-on', kind: 'highlight', threadId: keep.threadId, highlighted: true, expectedRevision: thread.revision });
+    store.close(); store = new ReaderStore(file);
+    thread = store.get(keep.threadId)!;
+    assert.equal(thread.highlighted, true);
+    const note = structuredClone(thread.notes[0]), anchor = structuredClone(thread.anchor), sourceVersionId = thread.sourceVersionId;
+    store.apply({ id: 'highlight-off', kind: 'highlight', threadId: keep.threadId, highlighted: false, expectedRevision: thread.revision });
+    thread = store.get(keep.threadId)!;
+    assert.equal(thread.highlighted, false);
+    assert.deepEqual(thread.notes[0], note);
+    assert.deepEqual(thread.anchor, anchor);
+    assert.equal(thread.sourceVersionId, sourceVersionId);
+    assert.equal(thread.deletedAt, null);
+    assert.equal(store.db.prepare('SELECT COUNT(*) FROM highlights WHERE deletedAt IS NULL').pluck().get(), 0);
+    assert.throws(() => store.apply({ id: 'stale-highlight', kind: 'highlight', threadId: keep.threadId, highlighted: true, expectedRevision: 2 }), ConflictError);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('existing highlight rows keep their visible meaning after the Keep versus Highlight migration', () => {
+  const store = new ReaderStore(':memory:');
+  try {
+    store.apply(keep);
+    store.db.prepare('INSERT INTO highlights VALUES(?,?,?,NULL)').run('legacy-mark', keep.threadId, '2026-09-17T00:00:00Z');
+    assert.equal(store.get(keep.threadId)!.highlighted, true);
+    store.apply({ id: 'remove-legacy-highlight', kind: 'highlight', threadId: keep.threadId, highlighted: false, expectedRevision: 1 });
+    assert.equal(store.get(keep.threadId)!.highlighted, false);
+    assert.equal(store.get(keep.threadId)!.notes[0].text, keep.note);
+  } finally { store.close(); }
+});
+
 test('immutable validated reply versions quote the answered note and persist independent current parameters/view with undo', () => {
   const dir = mkdtempSync(join(tmpdir(), 'marginalia-replies-'));
   const filename = join(dir, 'reader.sqlite');

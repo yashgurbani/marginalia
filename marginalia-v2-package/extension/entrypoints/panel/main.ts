@@ -3,7 +3,7 @@ import { mountMargin } from '../../../ui/margin.ts';
 import '../../../ui/tokens.css';
 import '../../../ui/margin.css';
 import './panel.css';
-import { validSnapshot, type Snapshot } from '../../lib/protocol.ts';
+import { validSnapshot, validSavedMarks, type SavedMark, type Snapshot } from '../../lib/protocol.ts';
 import { readReply } from '../../lib/respond.ts';
 import { DEFAULT_HELPER_ORIGIN, helperOrigin } from '../../lib/helper-origin.ts';
 
@@ -17,6 +17,13 @@ const helperStatus = document.querySelector<HTMLElement>('#helper-status')!;
 const root = document.querySelector<HTMLElement>('#margin')!;
 let mounted: Awaited<ReturnType<typeof mountMargin>> | undefined, current: Snapshot | undefined, pending = false, stopped = false;
 const send = async (action: string, extra: Record<string, unknown> = {}) => readReply(await browser.runtime.sendMessage({ type: 'surface', version: 1, action, capability, workspace, ...extra }));
+let savedMarks: SavedMark[] = [], markSends: Promise<unknown> = Promise.resolve();
+function paintSavedMarks(snapshot: Snapshot, marks: SavedMark[]) {
+  const packet = { document: snapshot.document, url: snapshot.capture.url, revision: snapshot.revision, marks: structuredClone(marks) };
+  const valid = validSavedMarks(packet);
+  if (!valid) status.textContent = 'Saved marks exceed the page display limit. Your saved work is retained.';
+  markSends = markSends.catch(() => {}).then(() => send('saved-marks', valid ? packet : { document: snapshot.document, url: snapshot.capture.url, revision: snapshot.revision, marks: [] })).catch(() => {});
+}
 async function refresh() {
   if (pending || stopped) return; pending = true;
   let restoredOnMount = false;
@@ -41,11 +48,13 @@ async function refresh() {
         },
         onSource: anchor => { void send('scroll', { document: next.document, anchor }).catch(error => { status.textContent = String(error); }); },
         onHighlight: anchor => { void send('highlight', { document: next.document, anchor }).catch(() => {}); },
+        onSavedMarks: marks => { savedMarks = marks; paintSavedMarks(current?.document === next.document ? current : next, marks); },
       });
       restoredOnMount = mounted.restoredPosition;
       if (next.anchor) mounted.select(next.anchor);
     } else if (next.revision !== current.revision && next.anchor) mounted?.select(next.anchor);
     current = next; if (!restoredOnMount) mounted?.setReadingPosition(next.position); status.textContent = ''; controls.hidden = false;
+    paintSavedMarks(next, savedMarks);
     const helper = await send('helper-status');
     if (typeof (helper as { status?: unknown })?.status === 'string' && (helper as { status: string }).status.length < 300) helperStatus.textContent = (helper as { status: string }).status;
   } catch (error) {

@@ -28,6 +28,7 @@ export type MarginOptions = {
   sourceRoot?: HTMLElement;
   onSource?: (anchor: QuoteAnchor) => void;
   onHighlight?: (anchor: QuoteAnchor | null) => void;
+  onSavedMarks?: (marks: { anchor: QuoteAnchor; highlighted: boolean }[]) => void;
   /** Read a fresh page snapshot only when the reader asks to look again. */
   captureCurrentPage?: () => Promise<{ capture: SourceCapture; tabCapture: string }>;
   helperOrigin?: string;
@@ -88,7 +89,9 @@ export function sectionMapState(sections: MarginSection[], threads: Thread[], ca
   const ordered = orderedThreads(threads, capture);
   return sections.map((section, index) => {
     const here = ordered.filter(thread => { const at = displayPosition(thread.anchor, capture); return at !== undefined && at >= section.start && at < section.end; });
-    const marked = here.filter(thread => thread.highlighted);
+    // Both weights are reader marks: Keep contributes the underline/map tick,
+    // while Highlight adds tint without changing the passage's map identity.
+    const marked = here;
     return { index, current: index === current, length: Math.max(1, section.end - section.start), threads: here.length,
       notes: here.reduce((sum, thread) => sum + thread.notes.filter(note => !note.deletedAt).length, 0), marks: marked.length,
       markPositions: marked.map(thread => Math.max(0, Math.min(1, ((displayPosition(thread.anchor, capture) ?? section.start) - section.start) / Math.max(1, section.end - section.start)))) };
@@ -518,8 +521,21 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     selected = structuredClone(anchor); lastOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     hold(sectionFor(anchor.start)); showPanel(); selectionCard.hidden = false;
     const definition = pageDefinition(anchor.exact, capture.text);
-    selectionCard.replaceChildren(el('blockquote', displayAnchor(anchor)), el('p', definition ? `${definition} · from this page` : 'No definition found for this selection. Ask about a word or phrase.', 'm-meta'), actions(button('Keep', () => keep(anchor)), button('Ask', () => ask(anchor)), button('Park', () => keep(anchor, true)), button('Write a note', () => beginDraft(anchor)), button('Close selection', closeSelection)), el('p', 'Nothing sent.', 'm-meta'));
+    selectionCard.replaceChildren(el('blockquote', displayAnchor(anchor)), el('p', definition ? `${definition} · from this page` : 'No definition found for this selection. Ask about a word or phrase.', 'm-meta'), actions(button('Keep', () => keep(anchor)), button('Highlight', () => highlightSelection(anchor)), button('Ask', () => ask(anchor)), button('Park', () => keep(anchor, true)), button('Write a note', () => beginDraft(anchor)), button('Close selection', closeSelection)), el('p', 'Nothing sent.', 'm-meta'));
     placeItems(); announce('Selection in the margin. Nothing sent.');
+  }
+  async function highlightSelection(anchor: QuoteAnchor) {
+    await safely(async () => {
+      let thread = orderedThreads(threadsNow(), capture).find(t => t.anchor.start === anchor.start && t.anchor.exact === anchor.exact);
+      if (!thread) {
+        const threadId = id();
+        await change({ id: id(), kind: 'keep', threadId, capture, anchor });
+        thread = currentThread(threadId);
+      }
+      if (!thread) throw new Error('The saved passage is unavailable.');
+      await change({ id: id(), kind: 'highlight', threadId: thread.id, highlighted: true, expectedRevision: thread.revision });
+      announce('Passage highlighted on this device.');
+    });
   }
   function closeSelection() { if (!alive()) return; selectionCard.hidden = true; selectionCard.replaceChildren(); selected = undefined; if (lastOpener?.isConnected) lastOpener.focus(); }
   selectionCard.addEventListener('keydown', event => {
@@ -848,7 +864,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const state = el('select'); state.setAttribute('aria-label', 'Thread state');
     for (const value of ['open', 'parked', 'done', 'archived'] as const) { const option = el('option', value[0].toUpperCase() + value.slice(1)); option.value = value; state.append(option); } state.value = thread.state;
     state.addEventListener('change', () => void safely(async () => { await change({ id: id(), kind: 'thread-state', threadId: thread.id, expectedRevision: thread.revision, state: state.value as Thread['state'] }); announce('Thread ' + state.value + '.'); threadNodes.get(thread.id)?.node.querySelector('select')?.focus(); }));
-    body.append(actions(button('Add note', () => beginDraft(thread.anchor, thread)), button('Ask', () => ask(thread.anchor, thread)), state, button('Remove', () => safely(async () => {
+    const highlightToggle = button(thread.highlighted ? 'Remove highlight' : 'Highlight', () => safely(async () => {
+      const current = currentThread(thread.id);
+      if (!current) throw new Error('The saved passage is unavailable.');
+      await change({ id: id(), kind: 'highlight', threadId: current.id, highlighted: !current.highlighted, expectedRevision: current.revision });
+      announce(current.highlighted ? 'Highlight removed. The kept passage and thread remain.' : 'Passage highlighted on this device.');
+    }));
+    if (thread.anchor.kind === 'whole-page') highlightToggle.disabled = true;
+    body.append(actions(button('Add note', () => beginDraft(thread.anchor, thread)), highlightToggle, button('Ask', () => ask(thread.anchor, thread)), state, button('Remove', () => safely(async () => {
       await change({ id: id(), kind: 'remove', threadId: thread.id, removed: true, expectedRevision: thread.revision });
       toast.hidden = false; const undo = button('Undo', () => safely(async () => { const current = journal.state.threads.find(t => t.id === thread.id)!; await change({ id: id(), kind: 'remove', threadId: thread.id, removed: false, expectedRevision: current.revision }); toast.hidden = true; threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); announce('Thread restored.'); }));
       toast.replaceChildren(el('span', 'Thread removed.'), undo); undo.focus();
@@ -1079,9 +1102,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function paintHighlights() {
     if (!alive() || suspended) return;
+    options.onSavedMarks?.(orderedThreads(threadsNow(), capture).filter(thread => thread.anchor.kind !== 'whole-page').map(thread => ({ anchor: structuredClone(thread.anchor), highlighted: thread.highlighted })));
     const highlights = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
     const HighlightClass = (window as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
-    if (highlights && HighlightClass) highlights.set('marginalia-kept', new HighlightClass(...orderedThreads(threadsNow(), capture).map(t => sourceRange(t.anchor)).filter((r): r is Range => !!r)));
+    if (highlights && HighlightClass) {
+      const threads = orderedThreads(threadsNow(), capture);
+      highlights.set('marginalia-kept', new HighlightClass(...threads.map(t => sourceRange(t.anchor)).filter((r): r is Range => !!r)));
+      highlights.set('marginalia-highlighted', new HighlightClass(...threads.filter(t => t.highlighted).map(t => sourceRange(t.anchor)).filter((r): r is Range => !!r)));
+    }
   }
   function sourceAction(anchor: QuoteAnchor, closeNarrow = true) {
     if (!alive()) return;
@@ -1253,6 +1281,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   function destroy() {
     if (destroyed) return;
     ++attachmentGeneration;
+    options.onSavedMarks?.([]);
     void track(flushReadingPosition());
     askingMount?.destroy(); management?.destroy(); closeReplies(); highlight(null); destroyed = true; abort.abort(); channel?.close();
     workspace.remove(); skip.remove();

@@ -2,7 +2,7 @@ import { defineContentScript } from 'wxt/utils/define-content-script';
 import { browser } from 'wxt/browser';
 import { readReply, respondAsync, type MessageReply } from '../lib/respond.ts';
 import { captureSelection, locate, projectPage, type SectionMarker } from '../lib/capture.ts';
-import { allowedPage, isMessage, pageIdentity, validAnchor, type Snapshot } from '../lib/protocol.ts';
+import { allowedPage, isMessage, pageIdentity, validAnchor, validSavedMarks, type Snapshot } from '../lib/protocol.ts';
 
 const READING_LINE_OFFSET = 24;
 type ProjectedNode = ReturnType<typeof projectPage>['nodes'][number];
@@ -33,7 +33,10 @@ export default defineContentScript({
     const observer = new MutationObserver(changes => { if (changes.some(change => !host?.contains(change.target))) dirty = true; });
     observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
     const highlights = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
-    function clear() { snapshot = null; sectionMarkers = []; positionNodes = []; host?.remove(); host = null; highlights?.delete('marginalia-selection'); }
+    let markExpiry: ReturnType<typeof setTimeout> | undefined, markEpoch = 0;
+    function clearMarks() { clearTimeout(markExpiry); highlights?.delete('marginalia-kept'); highlights?.delete('marginalia-highlighted'); }
+    function clear() { markEpoch++; clearMarks(); snapshot = null; sectionMarkers = []; positionNodes = []; host?.remove(); host = null; highlights?.delete('marginalia-selection'); }
+    for (const type of ['pagehide', 'popstate']) ctx.addEventListener(window, type, clear);
     const rememberSections = (markers: SectionMarker[]) => { sectionMarkers = markers; };
     const sameSections = (left: Snapshot['sections'], right: Snapshot['sections']) => left.length === right.length && left.every((section, index) => {
       const other = right[index];
@@ -79,6 +82,26 @@ export default defineContentScript({
       if (sender.id !== browser.runtime.id || sender.tab) return;
       if (isMessage(message, 'identity')) return Promise.resolve({ document: documentId });
       if (isMessage(message, 'excluded')) { clear(); return Promise.resolve(true); }
+      if (isMessage(message, 'saved-marks') && validSavedMarks(message)) return (async () => {
+        const epoch = markEpoch;
+        if (!await permitted()) { clear(); return false; }
+        if (epoch !== markEpoch) return false;
+        if (!snapshot || message.document !== documentId || message.url !== pageIdentity(location.href) || message.url !== snapshot.capture.url || message.revision !== snapshot.revision) return false;
+        const HighlightClass = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+        if (!HighlightClass || !highlights) return false;
+        const kept: Range[] = [], tinted: Range[] = [];
+        for (const mark of message.marks) {
+          const range = locate(mark.anchor);
+          if (range) { kept.push(range); if (mark.highlighted) tinted.push(range); }
+        }
+        clearMarks();
+        highlights.set('marginalia-kept', new HighlightClass(...kept));
+        highlights.set('marginalia-highlighted', new HighlightClass(...tinted));
+        // Renewed by the live panel; covers abrupt panel destruction where a
+        // final cleanup message cannot be delivered by the browser.
+        markExpiry = setTimeout(clearMarks, 6000);
+        return true;
+      })();
       if (isMessage(message, 'activate')) return (async () => {
         if (!await permitted()) return;
         snapshot = captureSelection(documentId, ++revision, false, rememberSections); dirty = false; lastProjection = Date.now(); rememberPositionNodes(); readingPosition();
@@ -111,7 +134,7 @@ export default defineContentScript({
       }
     }, respond));
     // Styling a named Custom Highlight never wraps or rewrites source nodes.
-    const style = document.createElement('style'); style.textContent = '::highlight(marginalia-selection){background-color:#e8cb75;color:inherit}'; document.documentElement.append(style);
+    const style = document.createElement('style'); style.textContent = '::highlight(marginalia-selection){background-color:rgba(76,105,180,.18);color:inherit}::highlight(marginalia-kept){text-decoration:underline #d1ad45 2px;text-underline-offset:3px}::highlight(marginalia-highlighted){background-color:#f1dfa2;color:inherit}'; document.documentElement.append(style);
     ctx.onInvalidated(() => { clear(); style.remove(); observer.disconnect(); });
   },
 });

@@ -50,6 +50,7 @@ test('T07 F7 shared validation enforces source, section, anchor, identity and mu
     { id: 'edit', threadId: 'thread', kind: 'note', noteId: 'note', expectedRevision: 0, text: 'x'.repeat(20001) },
     ...[-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1].map(expectedRevision => ({ id: 'edit', threadId: 'thread', kind: 'note', noteId: 'note', text: '', expectedRevision })),
     { id: 'state', threadId: 'thread', kind: 'thread-state', expectedRevision: 1, state: 'unknown' },
+    { id: 'highlight', threadId: 'thread', kind: 'highlight', expectedRevision: 1, highlighted: 'yes' },
     { id: 'remove', threadId: 'thread', kind: 'remove', expectedRevision: 1, removed: 'yes' },
   ];
   for (const mutation of invalid) assert.throws(() => validate(mutation), InvalidReaderMutationError);
@@ -58,6 +59,38 @@ test('T07 F7 shared validation enforces source, section, anchor, identity and mu
   assert.doesNotThrow(() => validate({ ...valid, capture: { ...valid.capture, sections: [{ title: 'First', start: 0, end: 4 }, { title: 'Second', start: 5, end: 9 }] } }));
   assert.doesNotThrow(() => validate({ id: 'x'.repeat(100), threadId: 'thread', kind: 'note', noteId: 'n', text: 'x'.repeat(20000), expectedRevision: Number.MAX_SAFE_INTEGER }));
   assert.doesNotThrow(() => validate({ id: 'state', threadId: 'thread', kind: 'thread-state', expectedRevision: 0, state: 'open' }));
+  assert.doesNotThrow(() => validate({ id: 'highlight', threadId: 'thread', kind: 'highlight', expectedRevision: 0, highlighted: true }));
+});
+
+test('Keep and Highlight remain distinct through local persistence, helper round trip, reload and removal', async () => {
+  let saved: JournalState | undefined;
+  const persistence = { load: async () => structuredClone(saved), save: async (value: JournalState) => { saved = structuredClone(value); } };
+  const journal = new ReaderJournal(persistence);
+  const keep = { id: 'keep-mark', threadId: 'mark-thread', kind: 'keep' as const,
+    capture: { url: 'https://example.org/mark', title: 'Marked source', pageType: 'article', text: 'Keep this passage.', capturedAt: '2026-09-18T00:00:00Z', extractionVersion: 'v1' },
+    anchor: { exact: 'Keep this passage.', prefix: '', suffix: '', start: 0, end: 18 }, note: 'Senior note' };
+  await journal.change(keep);
+  assert.equal(journal.state.threads[0].highlighted, false, 'Keep alone is the underline state');
+  await journal.change({ id: 'add-highlight', kind: 'highlight', threadId: keep.threadId, highlighted: true, expectedRevision: 1 });
+  const sent: ReaderMutation[] = [];
+  await journal.sync(async change => { sent.push(change); }, async () => structuredClone(journal.state.threads));
+  assert.deepEqual(sent.map(change => change.kind), ['keep', 'highlight']);
+
+  const reopened = new ReaderJournal(persistence);
+  await reopened.load();
+  assert.equal(reopened.state.threads[0].highlighted, true);
+  await reopened.change({ id: 'remove-highlight', kind: 'highlight', threadId: keep.threadId, highlighted: false, expectedRevision: 2 });
+  assert.equal(reopened.state.threads[0].highlighted, false);
+  assert.equal(reopened.state.threads[0].notes[0].text, 'Senior note');
+  assert.equal(reopened.state.threads[0].anchor.exact, keep.anchor.exact);
+  assert.equal(reopened.state.threads[0].deletedAt, null);
+
+  const legacy = structuredClone(saved!);
+  delete (legacy.threads[0] as Partial<typeof legacy.threads[0]>).highlighted;
+  saved = legacy;
+  const migrated = new ReaderJournal(persistence);
+  await migrated.load();
+  assert.equal(migrated.state.threads[0].highlighted, true, 'a pre-split quote mark keeps its old tinted meaning');
 });
 
 // Bounded T07 continuation contracts. Native SQLite imports stay inside their tests,
@@ -73,6 +106,38 @@ function continuationKeep(id: string): ReaderMutation {
   return { id, threadId: id, kind: 'keep', capture: { url: `https://example.org/${id}`, title: 'Source', pageType: 'article',
     text: 'Source text.', capturedAt: '2026-09-17T00:00:00Z', extractionVersion: 'v1' }, anchor: wholePageAnchor(), note: 'Helper version' };
 }
+for (const missingField of [true, false]) test(`legacy pending Keep retains tint through acknowledgement, interruption and helper restart (missing=${missingField})`, async () => {
+  const { ReaderStore } = await import('../daemon/store.ts');
+  const directory = mkdtempSync(join(tmpdir(), 'legacy-tint-')), filename = join(directory, 'reader.sqlite');
+  let helper = new ReaderStore(filename), saved: JournalState | undefined;
+  const persistence = { load: async () => structuredClone(saved), save: async (state: JournalState) => { saved = structuredClone(state); } };
+  try {
+    const keep = continuationKeep('legacy-tint');
+    if (keep.kind !== 'keep') throw new Error('fixture');
+    keep.anchor = { exact: keep.capture.text, prefix: '', suffix: '', start: 0, end: keep.capture.text.length };
+    const seed = new ReaderJournal(persistence); await seed.change(keep);
+    delete saved!.markFormat;
+    saved!.threads[0].highlighted = true;
+    if (missingField) delete (saved!.threads[0] as Partial<import('../contracts/reader.ts').Thread>).highlighted;
+    let journal = new ReaderJournal(persistence); await journal.load();
+    assert.equal(journal.state.threads[0].highlighted, true);
+    await assert.rejects(journal.sync(async change => {
+      if (change.kind === 'highlight') throw new Error('interrupted after Keep acknowledgement');
+      assert.deepEqual(change, keep); helper.apply(change);
+    }, async () => helper.list()), /interrupted/);
+    assert.equal(saved!.pending.length, 1); assert.equal(saved!.pending[0].kind, 'highlight');
+    assert.equal(helper.get(keep.threadId)!.highlighted, false);
+    const retainedId = saved!.pending[0].id;
+    helper.close(); helper = new ReaderStore(filename);
+    journal = new ReaderJournal(persistence); await journal.load();
+    await journal.sync(async change => { assert.equal(change.id, retainedId); helper.apply(change); }, async () => helper.list());
+    assert.equal(journal.state.threads[0].highlighted, true);
+    helper.close(); helper = new ReaderStore(filename);
+    const reopened = new ReaderJournal(persistence); await reopened.load();
+    await reopened.sync(async () => assert.fail('replayed acknowledged mutation'), async () => helper.list());
+    assert.equal(reopened.state.threads[0].highlighted, true); assert.deepEqual(reopened.state.pending, []);
+  } finally { helper.close(); rmSync(directory, { recursive: true, force: true }); }
+});
 async function deviceFixture() {
   let saved: JournalState | undefined, fail = false;
   const persistence = {

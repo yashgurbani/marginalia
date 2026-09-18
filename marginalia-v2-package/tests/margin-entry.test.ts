@@ -407,6 +407,39 @@ test('selection and question typing never send; explicit local context save pres
   button(e.root, 'Keep this context on this device').click(); await api.drain(); assert.equal((e.data(e.namespace).get('journal') as JournalState).pending.length, 1);
   api.destroy(); await api.drain();
 });
+
+test('Keep and explicit Highlight preserve selection, source-node identity and reader work through removal', async t => {
+  const e = env(t), source = e.document.createElement('article'), sourceText = e.document.createTextNode(capture.text);
+  source.append(sourceText); e.document.body.prepend(source);
+  const projections: { anchor: unknown; highlighted: boolean }[][] = [];
+  const api = await mountMargin(asHost(e.root), { capture, sourceRoot: asHost(source), storageName: e.namespace, allowHelper: false, onSavedMarks: marks => { projections.push(marks); } });
+  const selected = anchor();
+  api.select(selected);
+  button(e.root, 'Keep').click(); await api.drain();
+  let state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads[0].highlighted, false);
+  assert.equal(e.root.querySelector('.m-selection')!.hidden, false);
+  assert.equal(e.root.querySelector('.m-selection')!.querySelector('blockquote')!.textContent.length > 0, true);
+  assert.equal(source.childNodes[0], sourceText);
+
+  const selectionHighlight = e.root.querySelector('.m-selection')!.querySelectorAll('button').find(node => node.textContent === 'Highlight')!;
+  selectionHighlight.click(); await api.drain();
+  state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads[0].highlighted, true);
+  assert.equal(projections.at(-1)![0].highlighted, true);
+  assert.deepEqual(state.pending.map(change => change.kind), ['keep', 'highlight']);
+  assert.equal(source.childNodes[0], sourceText);
+
+  button(e.root, 'Remove highlight').click(); await api.drain();
+  state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads[0].highlighted, false);
+  assert.equal(projections.at(-1)![0].highlighted, false);
+  assert.equal(state.threads[0].deletedAt, null);
+  assert.equal(source.childNodes[0], sourceText);
+  assert.equal(source.textContent, capture.text);
+  api.destroy(); await api.drain();
+  assert.deepEqual(projections.at(-1), []);
+});
 test('explicit helper review invokes injected T08 only for acknowledged context; closing retains its question', async t => {
   const e = env(t), seeded = await threadFixture(e.namespace, true); e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
   let hostContext: any, selected: any, destroyed = 0;

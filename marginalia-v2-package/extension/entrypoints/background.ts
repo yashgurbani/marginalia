@@ -2,7 +2,7 @@ import { defineBackground } from 'wxt/utils/define-background';
 import { browser } from 'wxt/browser';
 import { readReply, respondAsync } from '../lib/respond.ts';
 import { HELPER_RECONNECT_ALARM, helperReconnect } from '../lib/helper-reconnect.ts';
-import { allowedPage, isMessage, pageIdentity, validAnchor, validSnapshot } from '../lib/protocol.ts';
+import { allowedPage, isMessage, pageIdentity, validAnchor, validSnapshot, validSavedMarks } from '../lib/protocol.ts';
 import { liveSourceMatches, requestCaptureIdentity, requireWorkspaceSurface } from '../lib/surface-identity.ts';
 import { attachQuote, type QuoteAnchor } from '../../contracts/reader.ts';
 
@@ -155,6 +155,13 @@ export default defineBackground(() => {
           if (!['exact', 'moved'].includes(attachment.state) || attachment.candidates.length !== 1) throw new Error('This passage could not be located safely on the current page.');
         }
         if (readReply(await browser.tabs.sendMessage(tabId, { type: message.action, version: 1, document: snapshot.document, anchor: message.anchor }, { documentId: snapshot.browserDocument, frameId: 0 })) !== true) throw new Error('The source action failed.');
+        return { ok: true };
+      }
+      if (message.action === 'saved-marks' && validSavedMarks(message)) {
+        const snapshot = await source(tabId, sourceDocument);
+        if (snapshot.document !== message.document || snapshot.capture.url !== message.url || snapshot.revision !== message.revision) throw new Error('Stale source request.');
+        const marks = message.marks.map(({ anchor, highlighted }) => ({ anchor: { kind: anchor.kind, exact: anchor.exact, prefix: anchor.prefix, suffix: anchor.suffix, start: anchor.start, end: anchor.end }, highlighted }));
+        if (readReply(await browser.tabs.sendMessage(tabId, { type: 'saved-marks', version: 1, document: snapshot.document, url: message.url, revision: message.revision, marks }, { documentId: snapshot.browserDocument, frameId: 0 })) !== true) throw new Error('The source action failed.');
         return { ok: true };
       }
       throw new Error('Unsupported margin request.');

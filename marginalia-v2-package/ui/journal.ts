@@ -15,6 +15,7 @@ export type ConflictResolution = {
 };
 export type MutationReceipt = { id: string; fingerprint: string };
 export type JournalState = {
+  markFormat?: 1;
   threads: Thread[];
   pending: ReaderMutation[];
   conflicts: JournalConflict[];
@@ -29,7 +30,7 @@ export type Persistence = {
   save: (value: JournalState) => Promise<void>;
 };
 
-const emptyState = (): JournalState => ({ threads: [], pending: [], conflicts: [], resolutions: [], acknowledged: [] });
+const emptyState = (): JournalState => ({ markFormat: 1, threads: [], pending: [], conflicts: [], resolutions: [], acknowledged: [] });
 
 export class ReaderJournal {
   state: JournalState = emptyState();
@@ -167,6 +168,9 @@ export class ReaderJournal {
       await this.ensureDurableStateInitialized();
       this.requireDurable();
 
+      // Save migration intent before the first acknowledgement can remove its
+      // legacy Keep. A restart must retain the same explicit tint mutation.
+      if (durableFingerprint(this.state) !== this.durableBaseline) await this.persist(this.state);
       while (true) {
         const index = this.nextSendableIndex();
         if (index < 0) break;
@@ -361,6 +365,11 @@ function normalizeState(state: JournalState): JournalState {
   cloned.conflicts ??= [];
   cloned.resolutions ??= [];
   cloned.acknowledged ??= [];
+  // Journals predating the explicit Keep/Highlight split rendered every quote
+  // mark with tint. Preserve that visible meaning; only new Keeps default off.
+  for (const thread of cloned.threads) {
+    if (typeof thread.highlighted !== 'boolean') thread.highlighted = thread.anchor.kind !== 'whole-page';
+  }
 
   const acknowledged = new Map<string, MutationReceipt>();
   for (const receipt of cloned.acknowledged) {
@@ -396,6 +405,18 @@ function normalizeState(state: JournalState): JournalState {
     if (!previous) pending.set(change.id, change);
   }
   cloned.pending = [...pending.values()];
+  for (const keep of cloned.markFormat === 1 ? [] : [...cloned.pending]) {
+    if (keep.kind !== 'keep') continue;
+    const thread = cloned.threads.find(thread => thread.id === keep.threadId);
+    if (!thread?.highlighted || thread.anchor.kind === 'whole-page' || thread.deletedAt) continue;
+    if (cloned.pending.some(change => change.threadId === thread.id && change.kind === 'highlight')) continue;
+    // Pre-split Keeps were visibly tinted, including journals that already had
+    // highlighted:true. Preserve the original Keep bytes/receipt identity.
+    const change: ReaderMutation = { id: crypto.randomUUID(), kind: 'highlight', threadId: thread.id, highlighted: true, expectedRevision: thread.revision };
+    applyMutation(cloned, change);
+    cloned.pending.push(change);
+  }
+  cloned.markFormat = 1;
   return cloned;
 }
 
@@ -502,7 +523,7 @@ function applyMutation(state: JournalState, mutation: ReaderMutation) {
       updatedAt: now,
       deletedAt: null,
       anchor: structuredClone(mutation.anchor),
-      highlighted: !('kind' in mutation.anchor && mutation.anchor.kind === 'whole-page'),
+      highlighted: false,
       notes: mutation.note ? [{ id: mutation.id + '-note', threadId: mutation.threadId, text: mutation.note, revision: 1, createdAt: now, deletedAt: null }] : [],
     });
     return;
@@ -527,6 +548,11 @@ function applyMutation(state: JournalState, mutation: ReaderMutation) {
     if (!note || note.revision !== mutation.expectedRevision) throw new RecoverableMutationConflict('The note changed. Your change was kept for review.');
     note.deletedAt = mutation.removed ? now : null;
     note.revision++;
+  } else if (mutation.kind === 'highlight') {
+    if (thread.deletedAt) throw new RecoverableMutationConflict('The saved passage was removed. Your highlight change was kept for review.');
+    if (thread.anchor.kind === 'whole-page' && mutation.highlighted) throw new RecoverableMutationConflict('A whole-page thread cannot be highlighted. Your change was kept for review.');
+    if (thread.revision !== mutation.expectedRevision) throw new RecoverableMutationConflict('This thread changed. Your change was kept for review.');
+    thread.highlighted = mutation.highlighted;
   } else {
     if (thread.deletedAt && (mutation.kind === 'thread-state' || mutation.removed)) throw new RecoverableMutationConflict('The saved passage was removed. Your change was kept for review.');
     if (thread.revision !== mutation.expectedRevision) throw new RecoverableMutationConflict('This thread changed. Your change was kept for review.');

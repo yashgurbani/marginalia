@@ -56,3 +56,37 @@ test('background alarm only redials and workspace session bindings expire with t
   listeners.committed({ tabId: 99, frameId: 0, url: 'https://example.test/other' }); await settle();
   assert.equal(session.has('workspace:hash'), false);
 });
+
+test('saved-mark relay validates sender, exclusion, capture identity and bounds before targeting the browser document', async t => {
+  (globalThis as any).__p11.capture = (fn: () => void) => { background = fn; };
+  (globalThis as any).__p11.reconnects = () => {};
+  await import(new URL('../extension/entrypoints/background.ts', import.meta.url).href); background!(); await settle();
+  const url = 'https://source.example/page', document = 'capture-id', panel = 'chrome-extension://extension-id/panel.html';
+  const anchor = { exact: 'Text', prefix: '', suffix: '', start: 0, end: 4 };
+  const snapshot = { document, revision: 1, anchor, position: 0, sections: [{ title: 'Text', start: 0, end: 4 }], capture: { url, title: 'Text', pageType: 'article', text: 'Text', extractionVersion: 'dom-safe-text-v1', capturedAt: '2026-09-18T00:00:00Z' } };
+  let excludedHosts: string[] = [], frameDocument = 'browser-document';
+  const sent: any[] = [];
+  t.mock.method(browser.runtime, 'getContexts', async () => [{ documentId: 'panel-document', documentUrl: panel, windowId: 1 }]);
+  t.mock.method(browser.tabs, 'query', async () => [{ id: 7, url }]);
+  t.mock.method(browser.tabs, 'get', async () => ({ id: 7, url }));
+  t.mock.method(browser.storage.local, 'get', async () => ({ excludedHosts }));
+  t.mock.method(browser.webNavigation, 'getFrame', async () => ({ documentId: frameDocument, documentLifecycle: 'active', url }));
+  t.mock.method(browser.tabs, 'sendMessage', async (...args: any[]) => {
+    if (args[1].type === 'snapshot') return { ok: true, value: snapshot };
+    sent.push(args); return { ok: true, value: true };
+  });
+  const sender = { id: 'extension-id', url: panel, documentId: 'panel-document' };
+  const packet = { type: 'surface', version: 1, action: 'saved-marks', document, url, revision: 1, marks: [{ anchor: { ...anchor, privateNote: 'do not forward' }, highlighted: true, note: 'do not forward' }] };
+  const send = (value = packet, from = sender) => new Promise<any>(resolve => listeners.message(value, from, resolve));
+  assert.equal((await send()).ok, true); assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0][2], { documentId: 'browser-document', frameId: 0 });
+  assert.equal(JSON.stringify(sent).includes('do not forward'), false);
+  for (const change of [{ document: 'other' }, { revision: 2 }, { url: 'https://other.example/' }, { marks: Array(501).fill(packet.marks[0]) }]) assert.equal((await send({ ...packet, ...change })).ok, false);
+  assert.equal((await send(packet, { ...sender, id: 'spoof' })).value, undefined);
+  excludedHosts = ['source.example']; assert.equal((await send()).ok, false);
+  excludedHosts = []; frameDocument = 'changed-browser-document';
+  // Captured document is checked separately; routing always targets the newly
+  // verified native document rather than a caller-supplied tab/document target.
+  assert.equal((await send()).ok, true); assert.equal(sent.at(-1)[2].documentId, frameDocument);
+  assert.equal(sent.length, 2);
+});

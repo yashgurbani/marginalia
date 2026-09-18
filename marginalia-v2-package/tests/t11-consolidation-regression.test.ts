@@ -148,6 +148,9 @@ test('removed reader data remains available after SQLite reopen', () => {
     const keep = retentionKeep();
     store.apply(keep);
     const created = store.get(keep.threadId)!;
+    assert.equal(created.highlighted, false, 'Keep is underline-only until the reader explicitly highlights it');
+    store.apply({ id: 'highlight-retained-passage', kind: 'highlight', threadId: keep.threadId, highlighted: true, expectedRevision: created.revision });
+    assert.equal(store.get(keep.threadId)!.highlighted, true, 'explicit Highlight adds the tint state');
     const sourceBeforeRemoval = store.sourceVersion(created.sourceVersionId)!;
     const noteId = created.notes[0].id;
     store.apply({ id: 'edit-retained-note', kind: 'note', threadId: keep.threadId, noteId, expectedRevision: 1, text: 'Revised retained note.' });

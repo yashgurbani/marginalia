@@ -162,7 +162,6 @@ export class ReaderStore {
         const anchorId = randomUUID();
         this.db.prepare('INSERT INTO anchors VALUES(?,?,?)').run(anchorId, versionId, JSON.stringify(anchor));
         this.db.prepare('INSERT INTO threads(id,anchorId,createdAt,updatedAt) VALUES(?,?,?,?)').run(mutation.threadId, anchorId, now, now);
-        if (anchor.kind !== 'whole-page') this.db.prepare('INSERT INTO highlights VALUES(?,?,?,NULL)').run(randomUUID(), mutation.threadId, now);
         if (mutation.note) this.writeNote(mutation.id + '-note', mutation.threadId, mutation.note, 0, now);
       } else {
         const thread = this.get(mutation.threadId);
@@ -176,6 +175,12 @@ export class ReaderStore {
           if (!note || note.revision !== mutation.expectedRevision) throw new ConflictError('This note changed elsewhere. Review the saved version before applying your change.');
           this.db.prepare('UPDATE notes SET deletedAt=?,revision=revision+1 WHERE id=?').run(mutation.removed ? now : null, mutation.noteId);
           this.replaceSearch(mutation.noteId, 'note', mutation.removed ? null : note.text);
+        } else if (mutation.kind === 'highlight') {
+          if (thread.deletedAt) throw new ConflictError('Restore the thread before changing its highlight.');
+          if (thread.anchor.kind === 'whole-page' && mutation.highlighted) throw new ConflictError('A whole-page thread cannot be highlighted.');
+          if (thread.revision !== mutation.expectedRevision) throw new ConflictError('This thread changed elsewhere. Review the saved version before applying your change.');
+          if (mutation.highlighted && !thread.highlighted) this.db.prepare('INSERT INTO highlights VALUES(?,?,?,NULL)').run(randomUUID(), mutation.threadId, now);
+          if (!mutation.highlighted && thread.highlighted) this.db.prepare('UPDATE highlights SET deletedAt=? WHERE threadId=? AND deletedAt IS NULL').run(now, mutation.threadId);
         } else {
           if (thread.revision !== mutation.expectedRevision) throw new ConflictError('This thread changed elsewhere. Review the saved version before applying your change.');
           if (mutation.kind === 'thread-state') this.db.prepare('UPDATE threads SET state=? WHERE id=?').run(mutation.state, mutation.threadId);
