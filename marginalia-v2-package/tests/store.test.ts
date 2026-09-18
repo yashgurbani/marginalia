@@ -37,6 +37,33 @@ test('reader work survives reopening; replay is idempotent; conflicting revision
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('thread removal erases every documented FTS copy but retains version records for restore and export', () => {
+  const store = new ReaderStore(':memory:');
+  try {
+    store.apply({ ...keep, capture: { ...keep.capture, text: growthSourceText }, anchor: wholePageAnchor() });
+    const noteId = keep.id + '-note';
+    store.apply({ id: 'retention-note-edit', kind: 'note', threadId: keep.threadId, noteId, expectedRevision: 1, text: 'A second retained note version.' });
+    store.reattach(keep.threadId, growthSourceText + '\nA later capture.', 'retention-attachment');
+    store.commitReply({ id: 'retention-reply', threadId: keep.threadId, reply: growthReply, answeredNote: { noteId, revision: 1 } });
+    assert.deepEqual(store.db.prepare('SELECT kind,COUNT(*) AS n FROM search GROUP BY kind ORDER BY kind').all(), [
+      { kind: 'note', n: 1 }, { kind: 'reply', n: 1 }, { kind: 'source', n: 2 },
+    ]);
+
+    store.apply({ id: 'retention-remove', kind: 'remove', threadId: keep.threadId, expectedRevision: 2, removed: true });
+    assert.deepEqual(store.db.prepare('SELECT kind,entityId FROM search').all(), [], 'source, note, and reply FTS copies are erased');
+    assert.equal(store.db.prepare('SELECT COUNT(*) FROM source_versions').pluck().get(), 2, 'source versions remain for history and restore');
+    assert.equal(store.db.prepare('SELECT COUNT(*) FROM note_versions').pluck().get(), 2, 'note versions remain for history and export');
+    assert.equal(store.db.prepare('SELECT COUNT(*) FROM reply_versions').pluck().get(), 1, 'reply versions remain for history and export');
+    assert.equal(store.exportThread(keep.threadId).noteVersions.length, 2);
+    assert.equal(store.exportThread(keep.threadId).replies.length, 1);
+
+    store.apply({ id: 'retention-restore', kind: 'remove', threadId: keep.threadId, expectedRevision: 3, removed: false });
+    assert.deepEqual(store.db.prepare('SELECT kind,COUNT(*) AS n FROM search GROUP BY kind ORDER BY kind').all(), [
+      { kind: 'note', n: 1 }, { kind: 'reply', n: 1 }, { kind: 'source', n: 2 },
+    ]);
+  } finally { store.close(); }
+});
+
 test('active thread listing pushes filters into SQL and uses its covering index', () => {
   const store = new ReaderStore(':memory:');
   try {

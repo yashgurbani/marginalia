@@ -101,6 +101,51 @@ test('section results publish independently even when other settings never settl
   assert.equal(h.host.querySelectorAll('button').some(b => b.textContent === 'Revoke'), false);
 });
 
+test('provider availability shows unsupported connections without selection, credential entry or runtime readiness', async t => {
+  let saves = 0;
+  const h = setup(t, { saveModels: async change => { saves++; return models(2, change.fast, change.deep); } });
+  await h.settings();
+  const availability = section(h.host, 'Provider availability');
+  assert.match(availability.textContent, /OpenAI CodexConnection implemented; readiness not established/);
+  assert.match(availability.textContent, /This list does not establish that asking is ready/);
+  for (const label of ['Local models', 'Other providers', 'Your own agent']) {
+    assert.ok(availability.querySelectorAll('li').some(item => item.textContent.startsWith(`${label}Unavailable`)));
+  }
+  for (const tag of ['input', 'select', 'button', 'form']) assert.equal(availability.querySelectorAll(tag).length, 0);
+  assert.match(availability.textContent, /Credentials stay in the local helper and are never entered here/);
+  const modelSection = section(h.host, 'Model choices');
+  assert.match(modelSection.textContent, /changing a name does not add another provider or verify model availability/);
+  const before = availability.textContent;
+  edit(modelSection.querySelector('input')!, 'some-local-model');
+  button(h.host, 'Save model choices').click(); await settle();
+  assert.equal(saves, 1);
+  assert.equal(section(h.host, 'Provider availability').textContent, before);
+});
+
+test('build provider limitations remain visible when model settings are unavailable or still loading', async t => {
+  const h = setup(t, { loadModels: () => new Promise(() => {}) });
+  await h.settings();
+  assert.ok(section(h.host, 'Model choices').querySelector('.ml__skeleton'));
+  assert.match(section(h.host, 'Provider availability').textContent, /Local modelsUnavailable/);
+  h.remount({ loadModels: undefined }); await h.settings();
+  assert.match(section(h.host, 'Model choices').textContent, /unavailable/);
+  assert.match(section(h.host, 'Provider availability').textContent, /Other providersUnavailable/);
+});
+
+test('settings disclose every retained local copy with location, removal, and export behavior', async t => {
+  const h = setup(t);
+  await h.settings();
+  const inventory = section(h.host, 'Copies kept on this computer');
+  const text = inventory.textContent;
+  for (const copy of ['Source versions', 'Note versions', 'Reply versions and views', 'Full-text search copies', 'Pending work and conflicts', 'Saved-reply cache and recovery history', 'Pre-upgrade backups', 'Downloaded exports']) assert.match(text, new RegExp(copy));
+  assert.equal(inventory.querySelectorAll('dt').length, 8);
+  assert.equal(inventory.querySelectorAll('.m-retained-copies__location').length, 8);
+  assert.equal(inventory.querySelectorAll('dd').filter(node => node.textContent.startsWith('Remove:')).length, 8);
+  assert.equal(inventory.querySelectorAll('dd').filter(node => node.textContent.startsWith('Export:')).length, 8);
+  assert.match(text, /not a promise that old bytes were securely overwritten/);
+  assert.doesNotMatch(text, /[A-Z]:\\|pairing token|credential|\.sqlite\.backups/i);
+});
+
 test('model and vocabulary retries/results preserve pending revoke, permission input, and focus', async t => {
   const saving = deferred<ConsentGrant>(), modelRetry = deferred<ModelSettings>(), vocabularyRetry = deferred<VocabularyEntry[]>();
   let modelReads = 0, vocabularyReads = 0, permissionReads = 0, signal: AbortSignal | undefined;

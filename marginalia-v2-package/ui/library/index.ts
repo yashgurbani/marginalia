@@ -1,7 +1,9 @@
 import type { ConsentGrant, SiteExclusion } from '../../contracts/consent.ts';
 import type { ModelSettings, VocabularyEntry } from '../../contracts/library.ts';
+import { providerCapabilities } from '../../contracts/provider-capabilities.ts';
 import type { Thread, ThreadState } from '../../contracts/reader.ts';
 import { mountConsentSettings } from '../consent.ts';
+import { retainedCopiesSection } from '../retained-copies.ts';
 
 export type LibraryPermissions = {
   load(signal: AbortSignal): Promise<{ grants: ConsentGrant[]; exclusions: SiteExclusion[] }>;
@@ -49,7 +51,7 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
   root.setAttribute('aria-labelledby', 'ml-title');
   const live = el('p', undefined, 'ml__live'); live.setAttribute('role', 'status'); live.setAttribute('aria-live', 'polite');
   const permissionsHost = el('div', undefined, 'ml__permissions');
-  const libraryHost = el('div'), settingsHost = el('div'), modelsHost = el('div'), vocabularyHost = el('div');
+  const libraryHost = el('div'), settingsHost = el('div'), providersHost = el('div'), modelsHost = el('div'), vocabularyHost = el('div');
   const lede = el('p', undefined, 'ml__lede');
   const viewControls: Array<[View, HTMLButtonElement]> = [];
   host.replaceChildren(root);
@@ -136,8 +138,20 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
     const h2 = el('h2', 'Settings'); h2.id = 'ml-settings-title'; section.append(h2);
     const permissionSection = settingSection('Permissions and exclusions', 'Review where Codex may receive reading context. Web access is listed separately.');
     permissionSection.append(permissionsHost);
-    section.append(modelsHost, permissionSection, vocabularyHost, exportSection());
+    section.append(providersHost, modelsHost, permissionSection, vocabularyHost, exportSection(), retainedCopiesSection());
     return section;
+  };
+  const renderProviders = () => {
+    const section = settingSection('Provider availability', 'Provider support is separate from the model names below. Credentials stay in the local helper and are never entered here.');
+    const list = el('ul', undefined, 'ml-vocabulary');
+    for (const provider of providerCapabilities) {
+      const state = provider.support === 'implemented' ? 'Connection implemented; readiness not established' : 'Unavailable';
+      const item = el('li');
+      item.append(el('strong', provider.label), el('span', `${state} · ${provider.detail}`, 'ml-vocabulary__meta'));
+      list.append(item);
+    }
+    section.append(list);
+    replaceFocused(providersHost, section);
   };
   const syncModelDraft = () => {
     if (!modelEditor || !modelDraft) return;
@@ -145,7 +159,7 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
     if (modelEditor.deep.value !== modelDraft.deep) modelEditor.deep.value = modelDraft.deep;
   };
   const modelsSection = () => {
-    const section = settingSection('Model choices', 'Quick help keeps definitions light. Deep help handles worked explanations.');
+    const section = settingSection('Model choices', 'Quick help keeps definitions light. Deep help handles worked explanations. Model names are sent through the configured Codex connection; changing a name does not add another provider or verify model availability.');
     const form = el('form', undefined, 'ml-models');
     const fast = field('Quick help', modelDraft!.fast), deep = field('Deep help', modelDraft!.deep);
     fast.input.dataset.mlFocus = 'model-fast'; deep.input.dataset.mlFocus = 'model-deep';
@@ -295,7 +309,7 @@ export function mountLibrary(host: HTMLElement, options: MountLibraryOptions): L
     catch (error) { if (current() && generation === permissionLoad) permissionsError = message(error, 'Permissions are unavailable. Nothing has been changed.'); }
     finally { if (current() && generation === permissionLoad) { permissionsLoading = false; renderPermissions(); } }
   };
-  const loadSettings = () => { void loadModels(); void loadVocabulary(); void loadPermissions(); };
+  const loadSettings = () => { renderProviders(); void loadModels(); void loadVocabulary(); void loadPermissions(); };
   const saveModelChoices = async () => {
     if (!current() || !options.saveModels || !modelDraft || modelSave !== undefined) return;
     const draft = { ...modelDraft }, generation = ++modelLoad, ticket = announce('Saving model choices.');
