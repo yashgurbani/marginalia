@@ -54,7 +54,7 @@ export class JobService {
   private retentionTimers = new Map<string, NodeJS.Timeout>();
   private settling = new Set<string>();
   private markedDispatch = new Set<string>();
-  private sends = new Map<string, ReturnType<typeof prepareSendCheckpoint>>();
+  private sends = new Map<string, { checkpoint: ReturnType<typeof prepareSendCheckpoint>; sentContent: OutgoingPart[] }>();
   private pending = new Set<Promise<void>>();
   private recovery?: Promise<void>;
   private closing = false;
@@ -203,11 +203,12 @@ export class JobService {
       return prior;
     }
     const context = this.freezeContext(input, selection);
-    if ((await this.prepared(input, context)).digest !== input.preparedPayloadDigest) throw new JobConflictError('The reviewed outgoing content changed. Review it again.');
+    const prepared = await this.prepared(input, context);
+    if (prepared.digest !== input.preparedPayloadDigest) throw new JobConflictError('The reviewed outgoing content changed. Review it again.');
     assertAdmission(admit);
     const digest = packetDigest({ input, context });
     const created = this.store.createAndAttempt(input, context, digest, requestDigest, preparationIdentity(input));
-    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id, undefined, admit), created.job.id, created.attempt.id);
+    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id, prepared.outgoing, undefined, admit), created.job.id, created.attempt.id);
     return this.store.get(created.job.id)!;
   }
   async retry(jobId: string, raw: RetryJobInput, admit?: () => boolean): Promise<JobSnapshot> {
@@ -223,7 +224,8 @@ export class JobService {
       grantId: raw.grantId, preparedPayloadDigest: raw.preparedPayloadDigest, parentReplyId: previous.context.parentReplyId,
       capabilities: this.store.capabilities(previous.id) };
     const context = this.retryContext(previous, input, selection);
-    if ((await this.prepared(input, context)).digest !== input.preparedPayloadDigest) throw new JobConflictError('The reviewed outgoing content changed. Review it again.');
+    const prepared = await this.prepared(input, context);
+    if (prepared.digest !== input.preparedPayloadDigest) throw new JobConflictError('The reviewed outgoing content changed. Review it again.');
     assertAdmission(admit);
     const requestDigest = packetDigest(input);
     const prior = this.store.findByIdempotencyKey(input.idempotencyKey);
@@ -232,7 +234,7 @@ export class JobService {
       return prior;
     }
     const created = this.store.createAndAttempt(input, context, packetDigest({ input, context }), requestDigest, preparationIdentity(input));
-    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id, undefined, admit), created.job.id, created.attempt.id);
+    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id, prepared.outgoing, undefined, admit), created.job.id, created.attempt.id);
     return this.store.get(created.job.id)!;
   }
   async followup(parentJobId: string, raw: FollowupJobInput, admit?: () => boolean): Promise<JobSnapshot> {
@@ -256,11 +258,12 @@ export class JobService {
       return prior;
     }
     const context = this.followupContext(parent, input, selection);
-    if ((await this.prepared(input, context)).digest !== input.preparedPayloadDigest) throw new JobConflictError('The reviewed outgoing content changed. Review it again.');
+    const prepared = await this.prepared(input, context);
+    if (prepared.digest !== input.preparedPayloadDigest) throw new JobConflictError('The reviewed outgoing content changed. Review it again.');
     assertAdmission(admit);
     const digest = packetDigest({ input, context });
     const created = this.store.createAndAttempt(input, context, digest, requestDigest, preparationIdentity(input));
-    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id, parentAttempt.providerHandle, admit), created.job.id, created.attempt.id);
+    if (created.attempt) this.launch(this.dispatch(created.job.id, created.attempt.id, prepared.outgoing, parentAttempt.providerHandle, admit), created.job.id, created.attempt.id);
     return this.store.get(created.job.id)!;
   }
   async cancel(jobId: string): Promise<JobSnapshot> {
@@ -324,7 +327,7 @@ export class JobService {
     context.outgoing = { ...context.outgoing, question: context.question, availableCapabilities: [...input.capabilities!] };
     return context;
   }
-  private async dispatch(jobId: string, attemptId: string, predecessor?: ProviderHandle, admit?: () => boolean) {
+  private async dispatch(jobId: string, attemptId: string, sentContent: OutgoingPart[], predecessor?: ProviderHandle, admit?: () => boolean) {
     if (this.closing) throw new Error('service-closing');
     const factory = this.factory;
     if (!factory) throw new JobUnavailableError();
@@ -382,8 +385,8 @@ export class JobService {
     if (job.cancelRequested) { await this.releaseRuntime(attemptId); return; }
     if (predecessor?.provider === 'mcp-server' && !runtime.canResume?.(predecessor)) throw new Error('mcp-session-lost-before-handoff');
     const request = this.providerRequest(expectedHandoff, attemptId, workspace, JSON.parse(schema));
-    this.sends.set(attemptId, prepareSendCheckpoint(this.store, expectedHandoff, request, factory.consent,
-      decision.eligibilityFingerprint!, () => !this.closing && (!admit || admit() === true)));
+    this.sends.set(attemptId, { checkpoint: prepareSendCheckpoint(this.store, expectedHandoff, request, factory.consent,
+      decision.eligibilityFingerprint!, () => !this.closing && (!admit || admit() === true)), sentContent: structuredClone(sentContent) });
     try {
       const observed = await (predecessor ? runtime.runner.resume(predecessor, request) : runtime.runner.start(request));
       if (PROVIDER_TERMINAL.has(observed.state)) await this.settleFromDurable(jobId, attemptId);
@@ -395,7 +398,11 @@ export class JobService {
       finalizeSend: (request: ProviderRequest, handle: ProviderHandle) => {
         const prepared = this.sends.get(request.jobId);
         if (!prepared) throw new JobConflictError('No current prepared provider send exists.');
-        const canonical = prepared.finalize(request, handle);
+        const canonical = this.store.db.transaction(() => {
+          const finalized = prepared.checkpoint.finalize(request, handle);
+          this.store.recordSentContent(request.jobId, prepared.sentContent);
+          return finalized;
+        })();
         this.markedDispatch.add(request.jobId);
         return canonical;
       },
