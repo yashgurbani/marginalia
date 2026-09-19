@@ -7,7 +7,7 @@ let background: (() => void) | undefined, reconnects = 0;
 const event = (name: string) => ({ addListener(fn: Function) { listeners[name] = fn; } });
 const browser = {
   alarms: { onAlarm: event('alarm') }, action: { onClicked: event('clicked') }, sidePanel: {},
-  runtime: { id: 'extension-id', getURL: (path: string) => 'chrome-extension://extension-id' + path, onMessage: event('message'), getContexts: async () => [] },
+  runtime: { id: 'extension-id', getURL: (path: string) => 'chrome-extension://extension-id' + path, onMessage: event('message'), getContexts: async () => [], sendMessage: async () => {} },
   tabs: { onRemoved: event('removed'), get: async () => ({}), query: async () => [], sendMessage: async () => true, create: async () => ({ id: 1 }) },
   webNavigation: { onCommitted: event('committed'), getFrame: async () => undefined, getAllFrames: async () => [] },
   storage: {

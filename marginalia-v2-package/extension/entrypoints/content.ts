@@ -9,6 +9,8 @@ import { captureSelection, locate, projectPage, type SectionMarker } from '../li
 import { allowedPage, isMessage, pageIdentity, validAnchor, validSavedMarks, type Snapshot } from '../lib/protocol.ts';
 import { clearResumeMarker, resumeThreadId } from '../../contracts/resume.ts';
 import { HIGHLIGHT_COLOURS, highlightColour, type HighlightColour } from '../../contracts/reader.ts';
+import { createSelectionBar } from '../lib/selection-bar.ts';
+import { sameSelection, KEEP_RECEIPT_TTL, type SelectionAction } from '../lib/selection-actions.ts';
 
 const READING_LINE_OFFSET = 24;
 type ProjectedNode = ReturnType<typeof projectPage>['nodes'][number];
@@ -53,9 +55,9 @@ export default defineContentScript({
     function scheduleInstantPage() { clearTimeout(pageTimer); pageTimer = setTimeout(() => { void prepareInstantPage(); }, 600); }
     async function prepareInstantPage() {
       if (instantBusy) { reprepare = true; return; }
-      if (!alive || document.visibilityState === 'hidden') return;
+      if (!alive || actionInFlight || document.visibilityState === 'hidden') return;
       instantBusy = true; const epoch = pageEpoch;
-      const currentPage = () => alive && epoch === pageEpoch;
+      const currentPage = () => alive && !actionInFlight && epoch === pageEpoch;
       try {
         autoAssist.clear();
         const instantEnabled = await instantAllowed();
@@ -63,6 +65,8 @@ export default defineContentScript({
         if ((!instantEnabled && !autoPolicy?.enabled) || !currentPage()) return;
         const next = captureSelection(documentId, revision, false, rememberSections);
         if (!next?.capture.text.trim()) return;
+        // Moving focus to an action or the panel is not a new source selection.
+        if (!next.anchor && snapshot?.capture.url === next.capture.url && snapshot.capture.text === next.capture.text) next.anchor = snapshot.anchor;
         if (!snapshot || snapshot.capture.url !== next.capture.url || snapshot.capture.text !== next.capture.text || JSON.stringify(snapshot.anchor) !== JSON.stringify(next.anchor) || !sameSections(snapshot.sections, next.sections)) next.revision = ++revision;
         snapshot = next; dirty = false; lastProjection = Date.now(); rememberPositionNodes(); readingPosition();
         if (autoPolicy.enabled) autoPolicy = await instantMessage('auto-assist-page-policy') as typeof autoPolicy;
@@ -96,16 +100,39 @@ export default defineContentScript({
       clearTimeout(selectionTimer);
       selectionTimer = setTimeout(() => { void (async () => {
         if (!alive || !await instantAllowed() || !alive) return;
-        const next = captureSelection(documentId, ++revision, true, rememberSections);
+        const next = captureSelection(documentId, revision, true, rememberSections);
         if (!next?.anchor) { lastInstantSelection = ''; return; }
         const identity = JSON.stringify([next.capture.url, next.capture.text, next.anchor.start, next.anchor.end]);
         if (identity === lastInstantSelection) return;
+        if (!snapshot || snapshot.capture.url !== next.capture.url || snapshot.capture.text !== next.capture.text || JSON.stringify(snapshot.anchor) !== JSON.stringify(next.anchor)) next.revision = ++revision;
         lastInstantSelection = identity; snapshot = next; dirty = false;
         await instantMessage('instant-selection', { selectionId: crypto.randomUUID() });
       })().catch(() => {}); }, 250);
     }
-    let snapshot: Snapshot | null = null, sectionMarkers: SectionMarker[] = [], positionNodes: ProjectedNode[] = [], revision = 0, busy = false, host: HTMLElement | null = null, dirty = true, lastProjection = 0;
-    const observer = new MutationObserver(changes => { if (changes.some(change => !host?.contains(change.target))) { pageEpoch++; autoAssist.clear(); dirty = true; scheduleInstantPage(); } });
+    let snapshot: Snapshot | null = null, sectionMarkers: SectionMarker[] = [], positionNodes: ProjectedNode[] = [], revision = 0, host: HTMLElement | null = null, dirty = true, lastProjection = 0;
+    let selectedSnapshot: Snapshot | null = null, selectionGeneration = 0, actionInFlight = false, selectionTabEntered = false;
+    let pendingGesture: { id: string; operation: string; action: SelectionAction; snapshot: Snapshot; expires: number } | undefined;
+    let keepAttempt: { operation: string; snapshot: Snapshot; expires: number } | undefined;
+    const selectionBar = createSelectionBar(action => {
+      const selected = selectedSnapshot, liveSelection = getSelection();
+      if (!alive || actionInFlight || !selected?.anchor || !snapshot || !sameSelection(selected, snapshot) ||
+        (!selectionBar.matches(liveSelection) && !(liveSelection?.isCollapsed && selectionBar.focused())) || projectPage().text !== selected.capture.text) return Promise.resolve(false);
+      if (action === 'keep' && keepAttempt && keepAttempt.expires <= Date.now()) { keepAttempt = undefined; selectionBar.hide(); return Promise.resolve(false); }
+      clearTimeout(selectionTimer);
+      actionInFlight = true;
+      if (action === 'keep' && (!keepAttempt || !sameSelection(keepAttempt.snapshot, selected))) keepAttempt = { operation: crypto.randomUUID(), snapshot: structuredClone(selected), expires: Date.now() + KEEP_RECEIPT_TTL };
+      const operation = action === 'keep' ? keepAttempt!.operation : crypto.randomUUID();
+      const gesture = crypto.randomUUID(); pendingGesture = { id: gesture, operation, action, snapshot: structuredClone(selected), expires: Date.now() + 10_000 };
+      // This call must remain before any await: Chrome carries the native gesture
+      // into the worker message task. The worker opens only its neutral shell first.
+      return browser.runtime.sendMessage({ type: 'selection-action', version: 1, action, gesture, operation, document: selected.document, revision: selected.revision }).then(readReply).then(async (value: unknown) => {
+        const result = value as { kept?: boolean; queued?: boolean; panel?: boolean } | undefined;
+        if (result?.kept && keepAttempt?.operation === operation) keepAttempt = undefined;
+        if (result?.queued && !result.panel && alive) await open();
+        return result?.kept === true || result?.queued === true;
+      }).finally(() => { if (pendingGesture?.id === gesture) pendingGesture = undefined; actionInFlight = false; });
+    });
+    const observer = new MutationObserver(changes => { if (changes.some(change => !host?.contains(change.target))) { pageEpoch++; selectionBar.hide(); selectedSnapshot = null; pendingGesture = undefined; autoAssist.clear(); dirty = true; scheduleInstantPage(); } });
     observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
     const highlights = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
     const autoAssist = createAutoAssistController({ scorer: new FrequencyPageScorer(), onDismiss: async observation => {
@@ -122,11 +149,20 @@ export default defineContentScript({
     } });
     let markExpiry: ReturnType<typeof setTimeout> | undefined, markEpoch = 0;
     function clearMarks() { clearTimeout(markExpiry); highlights?.delete('marginalia-kept'); highlights?.delete('marginalia-highlighted'); for (const colour of HIGHLIGHT_COLOURS) highlights?.delete('marginalia-highlighted-' + colour); }
-    function clear() { knownCandidates.clear(); pageEpoch++; autoAssist.clear(); markEpoch++; clearMarks(); snapshot = null; sectionMarkers = []; positionNodes = []; host?.remove(); host = null; highlights?.delete('marginalia-selection'); }
+    function clear() { selectionGeneration++; pendingGesture = undefined; keepAttempt = undefined; selectedSnapshot = null; selectionBar.hide(); knownCandidates.clear(); pageEpoch++; autoAssist.clear(); markEpoch++; clearMarks(); snapshot = null; sectionMarkers = []; positionNodes = []; host?.remove(); host = null; highlights?.delete('marginalia-selection'); }
     for (const type of ['pagehide', 'popstate']) ctx.addEventListener(window, type, () => { clear(); lastInstantSelection = ''; clearTimeout(selectionTimer); void instantMessage('instant-release').catch(() => {}); if (type === 'popstate') scheduleInstantPage(); else alive = false; });
     ctx.addEventListener(window, 'pageshow', () => { alive = true; scheduleInstantPage(); });
     ctx.addEventListener(document, 'visibilitychange', scheduleInstantPage);
-    ctx.addEventListener(document, 'selectionchange', queueInstantSelection);
+    ctx.addEventListener(document, 'selectionchange', () => {
+      if (selectionBar.visible() && !selectionBar.matches(getSelection()) && !selectionBar.focused()) selectionBar.hide();
+      queueInstantSelection();
+    });
+    ctx.addEventListener(window, 'blur', () => { selectionBar.hide(); });
+    ctx.addEventListener(document, 'keydown', event => {
+      if (!event.isTrusted || !selectionBar.visible()) return;
+      if (event.key === 'Escape') { event.preventDefault(); selectionBar.hide(); }
+      else if (event.key === 'Tab' && !event.shiftKey && !selectionTabEntered && !selectionBar.owns(event)) { event.preventDefault(); selectionTabEntered = true; selectionBar.focus(); }
+    });
     const rememberSections = (markers: SectionMarker[]) => { sectionMarkers = markers; };
     const sameSections = (left: Snapshot['sections'], right: Snapshot['sections']) => left.length === right.length && left.every((section, index) => {
       const other = right[index];
@@ -150,30 +186,32 @@ export default defineContentScript({
       shadow.append(frame); document.documentElement.append(host);
     }
     async function select() {
-      if (busy || getSelection()?.isCollapsed) return;
-      busy = true;
+      if (getSelection()?.isCollapsed) { selectionBar.hide(); return; }
+      const generation = ++selectionGeneration, epoch = pageEpoch;
       try {
         if (!await permitted()) { clear(); return; }
+        if (!alive || generation !== selectionGeneration || epoch !== pageEpoch) return;
         if (snapshot && snapshot.capture.url !== pageIdentity(location.href)) clear();
         const next = captureSelection(documentId, ++revision, true, rememberSections);
-        if (!next?.anchor) return;
-        snapshot = next; dirty = false; lastProjection = Date.now(); rememberPositionNodes(); readingPosition(); await open();
+        if (!next?.anchor) { selectionBar.hide(); return; }
+        const range = getSelection()?.getRangeAt(0);
+        if (!range) return;
+        pendingGesture = undefined; keepAttempt = undefined; selectionTabEntered = false; selectedSnapshot = next; snapshot = next; dirty = false; lastProjection = Date.now(); rememberPositionNodes(); readingPosition(); selectionBar.show(range);
       } catch (error) { console.warn('Marginalia capture unavailable:', error instanceof Error ? error.message : 'unknown'); }
-      finally { busy = false; }
     }
     ctx.addEventListener(document, 'pointerup', event => {
-      if (!event.isTrusted) return;
+      if (!event.isTrusted || selectionBar.owns(event)) return;
       if (getSelection()?.isCollapsed !== false && snapshot) {
         const candidate = autoCandidates.find(candidate => { const anchor = autoAssistAnchor(snapshot!.capture.text, candidate), range = anchor && locate(anchor); return range && Array.from(range.getClientRects()).some(rect => event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom); });
         if (candidate) { void open(); void instantMessage('auto-assist-open', { candidateId: candidate.candidateId }).catch(() => {}); return; }
       }
       void select();
     });
-    ctx.addEventListener(document, 'keyup', event => { if (event.isTrusted && (event.key === 'Shift' || event.key.startsWith('Arrow'))) void select(); });
+    ctx.addEventListener(document, 'keyup', event => { if (event.isTrusted && !selectionBar.owns(event) && (event.key === 'Shift' || event.key.startsWith('Arrow'))) void select(); });
     function rememberPositionNodes() { const projection = projectPage(); positionNodes = snapshot && projection.text === snapshot.capture.text ? projection.nodes : []; }
     function readingPosition() { if (snapshot) snapshot.position = readingPositionAt(positionNodes, sectionMarkers, innerHeight); }
-    ctx.addEventListener(window, 'scroll', () => { readingPosition(); scheduleInstantPage(); }, { passive: true });
-    for (const type of ['pageshow', 'resize']) ctx.addEventListener(window, type, () => { dirty = true; });
+    ctx.addEventListener(window, 'scroll', () => { selectionBar.position(); readingPosition(); scheduleInstantPage(); }, { passive: true });
+    for (const type of ['pageshow', 'resize']) ctx.addEventListener(window, type, () => { selectionBar.position(); dirty = true; });
     ctx.addEventListener(document, 'load', () => { dirty = true; }, { capture: true });
     browser.runtime.onMessage.addListener((message: unknown, sender: { id?: string; tab?: unknown }, respond: (value: MessageReply) => void) => respondAsync(() => {
       if (sender.id !== browser.runtime.id || sender.tab) return;
@@ -186,6 +224,24 @@ export default defineContentScript({
       if (isMessage(message, 'instant-navigation')) { clear(); lastInstantSelection = ''; scheduleInstantPage(); return Promise.resolve(true); }
       if (isMessage(message, 'identity')) return Promise.resolve({ document: documentId });
       if (isMessage(message, 'excluded')) { clearTimeout(selectionTimer); clearTimeout(pageTimer); clear(); return Promise.resolve(true); }
+      if (isMessage(message, 'selection-bar-dismiss') && message.document === documentId) { selectionBar.hide(); return Promise.resolve(true); }
+      if (isMessage(message, 'claim-selection-action')) {
+        const claim = pendingGesture;
+        if (!alive || !claim || claim.expires <= Date.now() || claim.id !== message.gesture || claim.operation !== message.operation || claim.action !== message.action || message.document !== documentId ||
+          claim.snapshot.revision !== message.revision || !snapshot || !sameSelection(claim.snapshot, snapshot)) return Promise.resolve(false);
+        pendingGesture = undefined; // One use, before any asynchronous worker work.
+        return Promise.resolve(true);
+      }
+      if (isMessage(message, 'action-capture') && typeof message.selection === 'boolean') return (async () => {
+        const epoch = pageEpoch;
+        if (!await permitted() || epoch !== pageEpoch) return false;
+        const next = captureSelection(documentId, ++revision, message.selection === true, rememberSections);
+        if (!next || (message.selection && !next.anchor)) return false;
+        snapshot = next; dirty = false; lastProjection = Date.now(); rememberPositionNodes(); readingPosition();
+        return true;
+      })();
+      if (isMessage(message, 'action-open')) return (async () => { if (!await permitted()) return false; if (!message.panel) await open(); return true; })();
+      if (isMessage(message, 'action-kept')) return Promise.resolve(true);
       if (isMessage(message, 'saved-marks') && validSavedMarks(message)) return (async () => {
         const epoch = markEpoch;
         if (!await permitted()) { clear(); return false; }

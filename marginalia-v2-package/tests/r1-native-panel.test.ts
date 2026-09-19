@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { deferred, settle, dom, until, replaceGlobals } from './t05-dom.ts';
 import { storage, asHost } from './t05-harness.ts';
+import * as selectionActions from '../extension/lib/selection-actions.ts';
 
 function compile(file: string, dependencies: Record<string, unknown>, globals: Record<string, unknown> = {}) {
   const text = readFileSync(new URL('../' + file, import.meta.url), 'utf8');
@@ -41,6 +42,7 @@ function background(hosts: unknown = [], url = 'https://example.org/a', incognit
     '../lib/instant-lifecycle.ts': { sourceHash: async () => '' }, '../lib/instant-worker.ts': { instantWorker: () => ({ release: async () => {} }) },
     '../lib/respond.ts': respond, '../lib/protocol.ts': protocol, '../lib/helper-reconnect.ts': { helperReconnect: () => ({}) },
     '../lib/surface-identity.ts': {}, '../../contracts/reader.ts': {}, '../../ui/journal.ts': {}, '../../ui/persistence.ts': {}, '../../contracts/resume.ts': {},
+    '../lib/selection-actions.ts': selectionActions,
   }, { navigator: { locks: { request: async (_: string, fn: () => unknown) => fn() } } });
   return { gate, listeners, opens, messages, click: () => listeners.click(tab) };
 }
@@ -95,6 +97,7 @@ function panel() {
       mounts.push(mount); root.textContent = options.capture.text; await hydrate(); return mount;
     } }, '../../lib/protocol.ts': { validSnapshot: (s: any) => !!s?.document, validSavedMarks: () => true },
     '../../lib/respond.ts': { readReply: (v: unknown) => v }, '../../lib/helper-origin.ts': { DEFAULT_HELPER_ORIGIN: 'http://127.0.0.1:43120', helperOrigin: () => origin() },
+    '../../lib/selection-actions.ts': selectionActions,
   }, { document, window, location: { hash: '' }, setInterval: () => 1, clearInterval: () => {} });
   return { nodes, calls, mounts, document, handlers, setRead: (fn: typeof read) => { read = fn; }, setOrigin: (fn: typeof origin) => { origin = fn; },
     setHydrate: (fn: typeof hydrate) => { hydrate = fn; }, invalidate: () => listener({ type: 'panel-source-pending', version: 1 }, { id: 'fixture' }) };

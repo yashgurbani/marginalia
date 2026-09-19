@@ -8,7 +8,7 @@ export default defineConfig({
     name: 'Marginalia', version,
     description: 'A personalized, agentic and dynamic margin in your browser. Your research assistant for the web. Notes stay on your machine.',
     minimum_chrome_version: '116',
-    permissions: ['storage', 'tabs', 'webNavigation', 'sidePanel', 'alarms'],
+    permissions: ['storage', 'tabs', 'webNavigation', 'sidePanel', 'alarms', 'contextMenus'],
     host_permissions: ['http://127.0.0.1/*'],
     icons: { 16: 'icon/16.png', 32: 'icon/32.png', 48: 'icon/48.png', 128: 'icon/128.png' },
     action: {

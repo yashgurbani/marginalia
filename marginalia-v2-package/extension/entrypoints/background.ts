@@ -10,6 +10,7 @@ import { attachQuote, type QuoteAnchor } from '../../contracts/reader.ts';
 import { ReaderJournal } from '../../ui/journal.ts';
 import { localPersistence } from '../../ui/persistence.ts';
 import { resumeAnchor, validResumeThreadId, type ResumeCheckpoint } from '../../contracts/resume.ts';
+import { actionMatches, retainedKeep, sameSelection, selectionAction, validContentAction, validKeepReceipt, KEEP_RECEIPT_LIMIT, KEEP_RECEIPT_BYTES, KEEP_RECEIPT_TTL, type ActionRequest, type SelectionAction, type KeepReceipt } from '../lib/selection-actions.ts';
 
 export default defineBackground(() => {
   const helper = helperReconnect();
@@ -26,10 +27,28 @@ export default defineBackground(() => {
   const readerStorage = 'marginalia-extension-reader';
   let readerPersistence: ReturnType<typeof localPersistence> | undefined;
   const getReaderPersistence = () => readerPersistence ??= localPersistence(readerStorage);
+  async function pruneKeepReceipts() {
+    const values = await browser.storage.session.get(null);
+    const receipts: Record<string, KeepReceipt> = {};
+    for (const [key, value] of Object.entries(values)) {
+      if (!key.startsWith('selection-keep:')) continue;
+      if (!validKeepReceipt(value) || value.expires <= Date.now() || new TextEncoder().encode(JSON.stringify(value)).byteLength > KEEP_RECEIPT_BYTES) await browser.storage.session.remove(key);
+      else receipts[key] = value;
+    }
+    return receipts;
+  }
+  void storageReady.then(() => navigator.locks.request(readerStorage, pruneKeepReceipts)).catch(() => {});
   let excludedCache: string[] | null = null;
+  let exclusionEpoch = 0;
+  function clearPendingActions() {
+    return navigator.locks.request('marginalia-selection-policy', async () => {
+      const values = await browser.storage.session.get(null);
+      await Promise.all(Object.keys(values).filter(key => key.startsWith('selection-action:') || key.startsWith('selection-keep:')).map(key => browser.storage.session.remove(key)));
+    });
+  }
   const cachePolicy = (value: unknown) => { excludedCache = Array.isArray(value) && value.every(h => typeof h === 'string') ? value : null; };
   void storageReady.then(async () => { const value = (await browser.storage.local.get('excludedHosts')).excludedHosts ?? []; cachePolicy(value); }).catch(() => { excludedCache = null; });
-  browser.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.excludedHosts) { invalidatePanel(); cachePolicy(changes.excludedHosts.newValue ?? []); void browser.tabs.query({}).then(tabs => Promise.all(tabs.filter(tab => tab.id !== undefined && tab.url && (excludedCache === null || !allowedPage(tab.url, excludedCache))).map(async tab => { await instant.release(tab.id!); await browser.tabs.sendMessage(tab.id!, { type: 'excluded', version: 1 }, { frameId: 0 }).catch(() => {}); }))).catch(() => {}); } });
+  browser.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.excludedHosts) { exclusionEpoch++; void clearPendingActions().catch(() => {}); invalidatePanel(); cachePolicy(changes.excludedHosts.newValue ?? []); void browser.tabs.query({}).then(tabs => Promise.all(tabs.filter(tab => tab.id !== undefined && tab.url && (excludedCache === null || !allowedPage(tab.url, excludedCache))).map(async tab => { await instant.release(tab.id!); await browser.tabs.sendMessage(tab.id!, { type: 'excluded', version: 1 }, { frameId: 0 }).catch(() => {}); }))).catch(() => {}); } });
   function invalidatePanel() {
     void browser.runtime.sendMessage({ type: 'panel-source-pending', version: 1 }).catch(() => {});
   }
@@ -60,6 +79,86 @@ export default defineBackground(() => {
     if (!validSnapshot(data) || before.documentId !== after?.documentId || after.documentLifecycle !== 'active' || pageIdentity(after.url) !== data.capture.url || !await permitted(after.url, tab.incognito)) throw new Error('The page changed. Select the passage again.');
     return { ...data, browserDocument: before.documentId };
   }
+  async function runSelectionAction(tabId: number, action: SelectionAction | 'read-later', snapshot: Awaited<ReturnType<typeof source>>, operation: string = crypto.randomUUID()) {
+    const epoch = exclusionEpoch;
+    const check = async () => {
+      const live = await source(tabId, snapshot.browserDocument);
+      if (epoch !== exclusionEpoch || !sameSelection(snapshot, live)) throw new Error('The passage changed. Select it again.');
+    };
+    if (action !== 'read-later' && !snapshot.anchor) throw new Error('Select a passage first.');
+    if (action === 'keep') {
+      await navigator.locks.request(readerStorage, async () => {
+        const key = 'selection-keep:' + tabId;
+        const raw = (await browser.storage.session.get(key))[key];
+        const receipts = await pruneKeepReceipts(), retained = receipts[key];
+        if (validKeepReceipt(raw) && raw.operation === operation && raw.expires <= Date.now()) throw new Error('Stale source request.');
+        if (retained?.operation === operation && (retained.snapshot.browserDocument !== snapshot.browserDocument || !sameSelection(retained.snapshot, snapshot))) throw new Error('Stale source request.');
+        const attempt: KeepReceipt = retained?.operation === operation ? retained : { operation, threadId: crypto.randomUUID(), snapshot: structuredClone(snapshot), expires: Date.now() + KEEP_RECEIPT_TTL };
+        if ((!retained && Object.keys(receipts).length >= KEEP_RECEIPT_LIMIT) || new TextEncoder().encode(JSON.stringify(attempt)).byteLength > KEEP_RECEIPT_BYTES) throw new Error('The source action failed.');
+        // Retain the exact mutation payload before trying durable journal storage.
+        // A retry needs a fresh trusted gesture but reuses this operation identity.
+        await browser.storage.session.set({ [key]: attempt });
+        const journal = new ReaderJournal(getReaderPersistence().journal);
+        await journal.load();
+        await check();
+        if (!retainedKeep(journal.state, attempt.snapshot)) await journal.change({ id: operation, kind: 'keep', threadId: attempt.threadId, capture: attempt.snapshot.capture, anchor: attempt.snapshot.anchor! });
+        // Keep the bounded, original-deadline receipt across a lost runtime reply.
+        // Journal sync can remove the pending capture before a fresh-gesture retry;
+        // its acknowledgement still requires this exact thread/capture fingerprint.
+      });
+      // Same journal and lock as the panel. Saving here never starts helper sync.
+      const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(readerStorage) : null;
+      channel?.postMessage('changed'); channel?.close();
+      return { kept: true };
+    }
+    await navigator.locks.request('marginalia-selection-policy', async () => {
+      await check();
+      const request: ActionRequest = { id: crypto.randomUUID(), action, browserDocument: snapshot.browserDocument, snapshot, expires: Date.now() + 30_000 };
+      await browser.storage.session.set({ ['selection-action:' + tabId]: request });
+      if (epoch !== exclusionEpoch) await browser.storage.session.remove('selection-action:' + tabId);
+    });
+    return { queued: true };
+  }
+
+  const menuPrefix = 'marginalia:';
+  async function installMenus() {
+    if (!browser.contextMenus) return;
+    await navigator.locks.request('marginalia-menus', async () => {
+      await browser.contextMenus.removeAll();
+      for (const [action, title] of [['keep', 'Keep'], ['note', 'Note'], ['ask', 'Ask'], ['simulate', 'Simulate it'], ['read-later', 'Read later'], ['open', 'Open Marginalia']]) {
+        await new Promise<void>((resolve, reject) => {
+          browser.contextMenus.create({ id: menuPrefix + action, title, contexts: action === 'read-later' || action === 'open' ? ['page'] : ['selection'], documentUrlPatterns: ['http://*/*', 'https://*/*'] }, () => {
+            const error = browser.runtime.lastError;
+            if (error) reject(new Error(error.message)); else resolve();
+          });
+        });
+      }
+    });
+  }
+  browser.runtime.onInstalled?.addListener(() => { void installMenus().catch(() => {}); });
+  browser.runtime.onStartup?.addListener(() => { void installMenus().catch(() => {}); });
+  browser.contextMenus?.onClicked.addListener((info, tab) => {
+    const action = String(info.menuItemId).slice(menuPrefix.length);
+    if (!String(info.menuItemId).startsWith(menuPrefix) || (!selectionAction(action) && action !== 'read-later' && action !== 'open') ||
+      tab?.id === undefined || tab.incognito || !allowedPage(tab.url) || (info.frameId !== undefined && info.frameId !== 0)) return;
+    const tabId = tab.id;
+    // Keep Chrome's native user gesture: start opening before any awaited work.
+    const opening = action === 'keep' ? Promise.resolve(false) : openNative(tabId, tab.url!, tab.incognito);
+    void (async () => {
+      if (!await permitted(tab.url!, tab.incognito)) return;
+      const frame = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
+      if (!frame?.documentId || frame.documentLifecycle !== 'active' || pageIdentity(frame.url) !== pageIdentity(tab.url!)) return;
+      const captured = readReply(await browser.tabs.sendMessage(tabId, { type: 'action-capture', version: 1, selection: selectionAction(action) }, { documentId: frame.documentId, frameId: 0 }));
+      if (captured !== true) return;
+      if (action !== 'open') {
+        const snapshot = await source(tabId, frame.documentId);
+        if (selectionAction(action) && (!info.selectionText || snapshot.anchor?.exact.replace(/\s+/gu, ' ').trim() !== info.selectionText.replace(/\s+/gu, ' ').trim())) return;
+        await runSelectionAction(tabId, action, snapshot);
+      }
+      const panel = await opening;
+      readReply(await browser.tabs.sendMessage(tabId, { type: action === 'keep' ? 'action-kept' : 'action-open', version: 1, panel }, { documentId: frame.documentId, frameId: 0 }));
+    })().catch(() => {});
+  });
   async function resume(tabId: number, expectedDocument: string, threadId: string) {
     const snapshot = await source(tabId, expectedDocument);
     const anchor = await navigator.locks.request(readerStorage, async () => {
@@ -78,6 +177,23 @@ export default defineBackground(() => {
     if (sender.id !== browser.runtime.id) return;
     if (sender.url === browser.runtime.getURL('/options.html') && !sender.tab?.incognito && isMessage(message, 'instant-exclusion') && typeof message.host === 'string' && typeof message.excluded === 'boolean') return instant.changeExclusion(message.host, message.excluded);
     const fromContent = sender.tab?.id !== undefined && sender.frameId === 0 && typeof sender.documentId === 'string' && !!sender.url && allowedPage(sender.url) && !sender.tab.incognito;
+    if (fromContent && validContentAction(message)) {
+      const tabId = sender.tab!.id!, epoch = exclusionEpoch;
+      const opening = message.action === 'keep' ? Promise.resolve(false) : openNative(tabId, sender.url!, sender.tab?.incognito);
+      return (async () => {
+        if (!await permitted(sender.url!, sender.tab?.incognito) || epoch !== exclusionEpoch) return { accepted: false };
+        const frame = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
+        if (!frame || frame.documentId !== sender.documentId || frame.documentLifecycle !== 'active' || pageIdentity(frame.url) !== pageIdentity(sender.url!)) return { accepted: false };
+        // The isolated content script consumes a token minted only by a trusted
+        // bar activation. Page messages never mint or claim this authority.
+        const claimed = readReply(await browser.tabs.sendMessage(tabId, { ...message, type: 'claim-selection-action' }, { documentId: sender.documentId, frameId: 0 }));
+        if (claimed !== true) return { accepted: false };
+        const snapshot = await source(tabId, sender.documentId);
+        if (epoch !== exclusionEpoch || snapshot.document !== message.document || snapshot.revision !== message.revision || !snapshot.anchor) return { accepted: false };
+        const result = await runSelectionAction(tabId, message.action, snapshot, message.operation);
+        return { ...result, panel: await opening };
+      })();
+    }
     if (fromContent && isMessage(message, 'policy')) return permitted(sender.url!, sender.tab?.incognito).then(allowed => ({ allowed }));
     if (fromContent && isMessage(message, 'resume') && typeof message.threadId === 'string') return (async () => {
       if (!validResumeThreadId(message.threadId)) return { consumed: true, resumed: false };
@@ -204,6 +320,20 @@ export default defineBackground(() => {
         return instant.forget(tabId, state.pageId);
       }
       if (message.action === 'read') return source(tabId, sourceDocument);
+      if (message.action === 'dismiss-selection-bar') {
+        const snapshot = await source(tabId, sourceDocument);
+        return readReply(await browser.tabs.sendMessage(tabId, { type: 'selection-bar-dismiss', version: 1, document: snapshot.document }, { documentId: snapshot.browserDocument, frameId: 0 }));
+      }
+      if (message.action === 'take-selection-action') return navigator.locks.request('marginalia-selection-policy', async () => {
+        const epoch = exclusionEpoch;
+        const key = 'selection-action:' + tabId;
+        const request = (await browser.storage.session.get(key))[key] as ActionRequest | undefined;
+        if (!request) return null;
+        // Consume before dispatch. A gate refusal or interrupted mount is never replayed.
+        await browser.storage.session.remove(key);
+        const snapshot = await source(tabId, sourceDocument);
+        return epoch === exclusionEpoch && actionMatches(request, snapshot.browserDocument, snapshot) ? request : null;
+      });
       if (message.action === 'trusted-open') {
         const frame = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
         if (!frame?.documentId || !await permitted(frame.url)) throw new Error('This source is unavailable.');
@@ -252,6 +382,7 @@ export default defineBackground(() => {
       readReply(await browser.tabs.sendMessage(tabId, { type: 'activate', version: 1, panel }, { frameId: 0 }));
     }).catch(() => {});
   });
+  browser.tabs.onActivated?.addListener(() => { invalidatePanel(); });
   type WorkspaceBinding = { tabId: number; url: string; surfaceTab: number };
   async function removeWorkspaces(tabId: number, url?: string) {
     const session = await browser.storage.session.get(null);
@@ -263,16 +394,24 @@ export default defineBackground(() => {
     })));
   }
   browser.tabs.onRemoved.addListener(tabId => {
+    void browser.storage.session.remove('selection-keep:' + tabId);
+    void browser.storage.session.remove('selection-action:' + tabId);
     void instant.release(tabId);
     void navigator.locks.request('marginalia-frame:' + tabId, () => browser.storage.session.remove('frame:' + tabId));
     void removeWorkspaces(tabId);
   });
   browser.webNavigation.onHistoryStateUpdated?.addListener(details => {
     if (details.frameId !== 0) return;
+    invalidatePanel();
+    void browser.storage.session.remove('selection-keep:' + details.tabId);
+    void browser.storage.session.remove('selection-action:' + details.tabId);
     void instant.release(details.tabId).then(() => browser.tabs.sendMessage(details.tabId, { type: 'instant-navigation', version: 1 }, { frameId: 0 })).catch(() => {});
   });
   browser.webNavigation.onCommitted.addListener(details => {
     if (details.frameId === 0) {
+      invalidatePanel();
+      void browser.storage.session.remove('selection-keep:' + details.tabId);
+      void browser.storage.session.remove('selection-action:' + details.tabId);
       void instant.release(details.tabId);
       void navigator.locks.request('marginalia-frame:' + details.tabId, () => browser.storage.session.remove('frame:' + details.tabId));
       void removeWorkspaces(details.tabId, details.url);

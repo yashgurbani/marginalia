@@ -12,6 +12,7 @@ import './panel.css';
 import { validSnapshot, validSavedMarks, type SavedMark, type Snapshot } from '../../lib/protocol.ts';
 import { readReply } from '../../lib/respond.ts';
 import { DEFAULT_HELPER_ORIGIN, helperOrigin } from '../../lib/helper-origin.ts';
+import { sameSelection, type ActionRequest } from '../../lib/selection-actions.ts';
 
 const capability = new URLSearchParams(location.hash.slice(1)).get('capability');
 const workspace = new URLSearchParams(location.hash.slice(1)).get('workspace');
@@ -131,6 +132,14 @@ async function refresh() {
     } else if (next.revision !== current.revision && next.anchor) mounted?.select(next.anchor);
     current = next; if (!restoredOnMount) mounted?.setReadingPosition(next.position); status.textContent = ''; controls.hidden = false;
     paintSavedMarks(next, savedMarks); void refreshAutoAssist();
+    const action = await boundSend('take-selection-action') as ActionRequest | null;
+    if (action && validSnapshot(action.snapshot) && mounted && sameSelection(action.snapshot, next)) {
+      // A request is consumed once, including a gate refusal. The UI owns draft
+      // attachment, pairing, consent and review; this bridge never sends.
+      if (action.action === 'read-later') await mounted.readLater();
+      else if (action.snapshot.anchor) await mounted.selectionAction(action.action, action.snapshot.anchor);
+      if (!valid()) return;
+    }
     const helper = await boundSend('helper-status');
     connectionControls(controls, embedded, (helper as { enabled?: boolean })?.enabled === true);
     if (typeof (helper as { status?: unknown })?.status === 'string' && (helper as { status: string }).status.length < 300) helperStatus.textContent = (helper as { status: string }).status;
@@ -148,6 +157,9 @@ document.getElementById('trusted-open')!.addEventListener('click', () => { void 
 // Each request wakes a disposable worker and reconstructs its source binding.
 // It never starts inference or automatically replays unknown provider outcomes.
 const timer = setInterval(() => { void refresh(); }, 1500);
+const dismissPageBar = () => { if (!stopped) void send('dismiss-selection-bar').catch(() => {}); };
+window.addEventListener('focus', dismissPageBar);
+document.addEventListener('focusin', dismissPageBar);
 document.addEventListener('visibilitychange', () => { neutralize(document.visibilityState === 'hidden'); if (document.visibilityState !== 'hidden') void refresh(); });
 browser.runtime.onMessage.addListener((message, sender) => {
   if (!embedded && !workspace && sender.id === browser.runtime.id && !sender.tab && message?.type === 'panel-source-pending' && message.version === 1) {
