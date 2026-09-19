@@ -249,7 +249,7 @@ test('margin instant transport emits one quiet budget pause and rejects an older
   let call = 0; const switched = panelInstantTransport(async () => ({ url: source.url, pageId: 'page', selectionId: ++call === 1 ? 'old' : 'new', selectionText: 'passage', state: 'ready' }), async () => {});
   for await (const _event of switched.requestDefinition(selection)) assert.fail('A stale selection must not produce content'); assert.equal(call, 2);
 });
-test('native panel Settings mount preserves five resting controls, or six with a local voice', async t => {
+test('native panel Settings mount preserves five resting controls, with Hear it behind footer More', async t => {
   const { storage, asHost } = await import('./t05-harness.ts');
   const { replaceGlobals } = await import('./t05-dom.ts');
   const { mountMargin } = await import('../ui/margin.ts');
@@ -268,7 +268,8 @@ test('native panel Settings mount preserves five resting controls, or six with a
       for (let at = node; at; at = at.parentElement!) { if (at.hidden || at.tagName === 'DETAILS' && !at.open && node !== at.children[0]) return false; }
       return true;
     });
-    assert.equal(controls.parentElement, settings); assert.equal(visible.length, count, visible.map(node => node.textContent).join(', '));
+    assert.equal(controls.parentElement, settings); assert.equal(visible.length, 5, visible.map(node => node.textContent).join(', '));
+    assert.equal(!!panel.querySelector('.m-footer-more')!.querySelectorAll('button').find(node => node.textContent === 'Hear it'), count === 6);
     panel.querySelectorAll('button').find(node => node.textContent === 'Settings')!.click();
     assert.equal(settings.hidden, false); assert.equal(controls.querySelector('#exclude')?.hidden, false); assert.equal(controls.querySelector('#connect')?.hidden, false);
     connectionControls(controls as unknown as ParentNode, false, true); assert.equal(controls.querySelector('#connect')?.hidden, true); assert.equal(controls.querySelector('#disconnect')?.hidden, false);

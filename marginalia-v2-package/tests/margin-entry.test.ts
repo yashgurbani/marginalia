@@ -293,7 +293,11 @@ test('bottom availability keeps local paths actionable and explains unavailable 
 
   button(e.root, 'Library').click();
   api.select(anchor()); button(e.root, 'Keep').click(); await api.drain();
-  api.select(anchor(15, 30)); button(e.root, 'Read later').click(); await api.drain();
+  // Read later is a page action now. A kept passage is saved for later on its own card.
+  api.select(anchor(15, 30)); button(e.root, 'Keep').click(); await api.drain();
+  const card = e.root.querySelectorAll('[data-thread]').find(node => node.textContent.includes(anchor(15, 30).exact))!;
+  const parked = card.querySelector('[aria-label="Thread state"]')!;
+  parked.value = 'parked'; parked.fire('change'); await api.drain();
 
   const state = e.data(e.namespace).get('journal') as JournalState;
   assert.equal(libraryOpens, 1);
@@ -792,7 +796,10 @@ for (const [label, intent, question] of [
     replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected outbound request'); } });
     const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace,
       asking: () => ({ open() { opened++; }, setVisible() {}, destroy() {} }) });
-    api.select(anchor()); button(e.root, 'Ask').click(); await api.drain(); button(e.root, label).click(); await api.drain();
+    // The selection card now carries its own Simulate it control, so the suggestion
+    // with the same label is chosen inside the question surface.
+    api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
+    button(e.root.querySelector('.m-question')!, label).click(); await api.drain();
     const draft = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
     assert.equal(draft.intent, intent); assert.deepEqual(draft.anchor, anchor());
     assert.equal(draft.question, e.root.querySelector('[aria-label="Your question"]')!.value);
@@ -831,7 +838,7 @@ test('whole-page Save and Read later persist once and restore the local reading 
   button(footer, 'Save page').click(); button(footer, 'Save page').click(); await api.drain();
   let state = e.data(e.namespace).get('journal') as JournalState;
   assert.equal(state.threads.length, 1); assert.equal(state.threads[0].anchor.kind, 'whole-page'); assert.equal(state.threads[0].anchor.exact, ''); assert.equal(state.threads[0].state, 'open');
-  button(footer, 'Read page later').click(); button(footer, 'Read page later').click(); await api.drain();
+  button(footer, 'Read later').click(); button(footer, 'Read later').click(); await api.drain();
   state = e.data(e.namespace).get('journal') as JournalState;
   assert.equal(state.threads.length, 1); assert.equal(state.threads[0].state, 'parked');
   assert.ok(button(footer, 'Export')); assert.deepEqual(requests, []);
@@ -848,7 +855,7 @@ test('whole-page Save and Read later persist once and restore the local reading 
 
 test('removed whole-page threads do not resurrect a parked checkpoint; explicit Save creates a new entry', async t => {
   const e = env(t); let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
-  api.setReadingPosition(21); button(e.root, 'Read page later').click(); await api.drain(); api.destroy(); await api.drain();
+  api.setReadingPosition(21); button(e.root, 'Read later').click(); await api.drain(); api.destroy(); await api.drain();
   const persistence = localPersistence(e.namespace), journal = documentJournal(e.namespace, persistence.journal);
   const thread = journal.state.threads[0]; await journal.change({ id: 'remove-parked', kind: 'remove', removed: true, threadId: thread.id, expectedRevision: thread.revision });
   api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
@@ -860,9 +867,9 @@ test('removed whole-page threads do not resurrect a parked checkpoint; explicit 
   api.destroy(); await api.drain();
 });
 
-test('Read page later at the top retains its explicit return cue; a changed capture saves a new immutable page', async t => {
+test('Read later at the top retains its explicit return cue; a changed capture saves a new immutable page', async t => {
   const e = env(t); let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
-  button(e.root, 'Read page later').click(); await api.drain(); api.destroy(); await api.drain();
+  button(e.root, 'Read later').click(); await api.drain(); api.destroy(); await api.drain();
   api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
   assert.ok(button(e.root, 'You were here')); api.destroy(); await api.drain();
   const changed = { ...capture, text: 'A replacement page.', sections: undefined };
@@ -882,13 +889,13 @@ test('page save and checkpoint storage failures stay visible and retry without d
   assert.match(e.root.textContent, /Page record storage failed/);
   e.onWrite(async () => {}); button(e.root, 'Save page').click(); await api.drain();
   e.onWrite(async key => { if (String(key).startsWith('parked-page-position:')) throw new Error('Checkpoint storage failed.'); });
-  button(e.root, 'Read page later').click(); await api.drain(); assert.match(e.root.textContent, /Checkpoint storage failed/);
-  e.onWrite(async () => {}); button(e.root, 'Read page later').click(); await api.drain();
+  button(e.root, 'Read later').click(); await api.drain(); assert.match(e.root.textContent, /Checkpoint storage failed/);
+  e.onWrite(async () => {}); button(e.root, 'Read later').click(); await api.drain();
   const state = e.data(e.namespace).get('journal') as JournalState; assert.equal(state.threads.length, 1); assert.equal(state.threads[0].state, 'parked');
   api.destroy(); await api.drain();
 });
 
-test('explicit helper synchronization places Read page later in the actual library adapter without provider work', async t => {
+test('explicit helper synchronization places Read later in the actual library adapter without provider work', async t => {
   const nativeFetch = nativeHttpFetch, e = env(t), requests: string[] = []; let diagnosticsChecks = 0;
   const helper = await startServer({ database: ':memory:', port: 0, diagnostics: () => { diagnosticsChecks++; return {}; } });
   t.after(() => helper.close());
@@ -898,7 +905,7 @@ test('explicit helper synchronization places Read page later in the actual libra
     requests.push(new URL(url).pathname); return nativeFetch(url, { ...init, headers: { ...init.headers, Origin: origin } });
   } });
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperOrigin: helper.origin, readPosition: async () => undefined });
-  button(e.root, 'Read page later').click(); await api.drain(); assert.equal(requests.length, 0);
+  button(e.root, 'Read later').click(); await api.drain(); assert.equal(requests.length, 0);
   button(e.root, 'Settings').click(); button(e.root, 'Save queued changes').click(); await api.drain();
   const client = api.connection(); api.destroy(); await api.drain();
   const { libraryAdapters } = await import('../ui/helper.ts'); const { mountLibrary } = await import('../ui/library/index.ts');
@@ -935,7 +942,7 @@ test('R4 rerender keeps focus on a named action when its label changes', async t
   const preview = button(e.root, 'Block question previews here'); preview.focus(); preview.click(); await api.drain();
   assert.equal(e.document.activeElement, button(e.root, 'Allow question previews here'));
   assert.deepEqual(e.root.querySelector('.m-footer')!.children.map(node => node.className),
-    ['m-notice', 'm-footer-related', 'm-footer-actions', 'm-footer-voice']);
+    ['m-notice', 'm-actions m-footer-row']);
   api.destroy(); await api.drain();
 });
 
@@ -995,7 +1002,7 @@ test('R4b empty resting margin has five controls, count disclosure and end offer
   const e = env(t);
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, onLibrary() {} });
   await api.drain();
-  assert.deepEqual(Object.keys(api).sort(), ['replaceQuestionExposure', 'sourceUrl', 'connection', 'exportWork', 'drain', 'restoredPosition', 'flushReadingPosition', 'getThread', 'focusThread', 'select', 'setReadingPosition', 'suspend', 'resume', 'openThread', 'destroy'].sort());
+  assert.deepEqual(Object.keys(api).sort(), ['replaceQuestionExposure', 'sourceUrl', 'connection', 'exportWork', 'drain', 'restoredPosition', 'flushReadingPosition', 'getThread', 'focusThread', 'select', 'setReadingPosition', 'suspend', 'resume', 'openThread', 'selectionAction', 'readLater', 'destroy'].sort());
   const panel = e.root.querySelector('.m-panel')!;
   const visible = panel.querySelectorAll('button,input,textarea,select,summary').filter(node => {
     for (let at = node; at; at = at.parentElement!) {
@@ -1004,7 +1011,7 @@ test('R4b empty resting margin has five controls, count disclosure and end offer
     }
     return true;
   });
-  assert.deepEqual(visible.map(node => node.textContent), ['Library', 'Settings', 'Collapse', 'Write here\u2026', 'Save page']);
+  assert.deepEqual(visible.map(node => node.textContent), ['Collapse', 'Write here\u2026', 'Read later', 'Library', 'More']);
   assert.equal(panel.querySelector('.m-empty')!.textContent, 'Keep a passage or write a note.');
   assert.equal(panel.querySelector('.m-section-marker'), null);
   assert.equal(panel.querySelector('.m-map'), null);
@@ -1019,7 +1026,7 @@ test('R4b empty resting margin has five controls, count disclosure and end offer
   const disclosure = e.root.querySelector('.m-page-actions')!;
   assert.equal(disclosure.hidden, false); assert.equal(disclosure.open, false);
   assert.equal(disclosure.querySelector('summary')!.textContent, '1 thread on this page');
-  assert.deepEqual(disclosure.querySelectorAll('button').map(node => node.textContent), ['Related', 'Read page later', 'Export']);
+  assert.deepEqual(disclosure.querySelectorAll('button').map(node => node.textContent), ['Related', 'Export']);
   assert.equal(e.root.querySelector('.m-footer-history')!.closest('.m-local-library')!.hidden, true);
   api.destroy(); await api.drain();
 });

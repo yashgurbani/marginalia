@@ -22,7 +22,8 @@ for (const [name, metadata, expected] of [
   assert.equal(detail.hidden, false);
   api.setReadingPosition(5);
   assert.equal(detail.hidden, false); assert.equal(title.hidden, false);
-  assert.equal(heading.querySelectorAll('button').length, 0);
+  // One header zone with exactly one control: collapse.
+  assert.deepEqual(heading.querySelectorAll('button').map(node => node.textContent), ['Collapse']);
   assert.equal(heading.getAttribute('aria-labelledby'), title.id);
   api.destroy(); await api.drain();
 });
@@ -31,7 +32,12 @@ test('R4 top row preserves page identity and merges Hide into Collapse', async t
   const e = { ...dom(t), ...storage(t) };
   const api = await mountMargin(asHost(e.root), { capture, allowHelper: false, storageName: crypto.randomUUID(), onLibrary() {} });
   const heading = e.root.querySelector('.m-head')!, title = heading.querySelector('h1')!;
-  assert.deepEqual(e.root.querySelector('.m-bar')!.querySelectorAll('button').map(node => node.textContent), ['Library', 'Settings', 'Collapse']);
+  // The separate top bar is gone: collapse sits in the header, Library and Settings in the footer.
+  assert.equal(e.root.querySelector('.m-bar'), null);
+  assert.deepEqual(heading.querySelectorAll('button').map(node => node.textContent), ['Collapse']);
+  const footerRow = e.root.querySelector('.m-footer-row')!;
+  assert.deepEqual(footerRow.children.slice(0, 2).map(node => node.textContent), ['Read later', 'Library']);
+  assert.equal(footerRow.children[2].querySelector('summary')!.textContent, 'More');
   assert.equal(button(e.root, 'Follow reading').hidden, true);
   const settings = button(e.root, 'Settings'); settings.focus(); api.setReadingPosition(4);
   assert.equal(e.document.activeElement, settings); assert.equal(heading.querySelector('h1'), title);

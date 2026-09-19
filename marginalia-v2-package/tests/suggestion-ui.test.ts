@@ -22,7 +22,11 @@ function records(data: Map<string, unknown>) {
 }
 
 function choose(root: ReturnType<typeof dom>['root'], label: string) {
-  const control = button(root, label), more = control.closest('details');
+  // The selection card now carries a resting Simulate it control, so a suggestion
+  // with the same label is chosen inside the question surface.
+  const question = root.querySelector('.m-question');
+  const control = question?.querySelectorAll('button').find(node => node.textContent === label) ?? button(root, label);
+  const more = control.closest('details');
   if (more) { more.open = true; more.fire('toggle'); }
   control.click();
 }
@@ -33,7 +37,7 @@ test('real asking surface ranks all eight candidates, numbers three, and records
   assert.deepEqual(records(e.data(e.namespace)), []);
   const opener = e.document.createElement('button'); e.document.body.append(opener); opener.focus();
   api.select(anchor()); assert.equal(e.document.activeElement, opener);
-  assert.deepEqual(e.root.querySelector('.m-selection-actions')!.querySelectorAll('button').map(node => node.textContent), ['Keep', 'Ask', 'Read later']);
+  assert.deepEqual(e.root.querySelector('.m-selection-actions')!.querySelectorAll('button').map(node => node.textContent), ['Keep', 'Note', 'Ask', 'Simulate it']);
   button(e.root, 'Ask').click(); await api.drain();
   const expected = rankEligibleSuggestions({ block: suggestionBlock(anchor().exact), page: suggestionPage(capture.pageType), posture: 'balanced', usefulNearby: [], dismissed: [] }, SUGGESTION_ORDER);
   assert.deepEqual(offers(e.root), expected.slice(0, 3).map(item => item.intent));

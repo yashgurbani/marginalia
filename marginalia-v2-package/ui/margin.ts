@@ -126,6 +126,15 @@ export function sectionMapState(sections: MarginSection[], threads: Thread[], ca
 }
 const id = () => crypto.randomUUID();
 const excerpt = (text: string, length = 82) => text.length > length ? text.slice(0, length) + '…' : text;
+/** Bounded accessible name cut at a word boundary. Visible text is clamped in CSS instead. */
+const shortName = (text: string, length = 82) => {
+  if (text.length <= length) return text;
+  const cut = text.slice(0, length);
+  const space = cut.lastIndexOf(' ');
+  return (space > length / 2 ? cut.slice(0, space) : cut).trimEnd() + '…';
+};
+// Grouping is scoped to one source version: the same words in another capture stay apart.
+const anchorKey = (thread: Thread) => JSON.stringify([thread.sourceVersionId, thread.anchor.kind, thread.anchor.start, thread.anchor.end, thread.anchor.exact, thread.anchor.prefix, thread.anchor.suffix]);
 const readerDate = (value: string) => { const date = new Date(value); return Number.isNaN(date.getTime()) ? 'Date unavailable' : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date); };
 const label = (text: string, input: HTMLElement) => { const node = el('label', text); node.append(input); return node; };
 const actionButton = (key: string, text: string, run: () => unknown) => { const control = button(text, run); control.dataset.focusKey = key; return control; };
@@ -171,10 +180,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const heading = el('header', undefined, 'm-head');
   const sourceTitle = el('h1', capture.title); sourceTitle.id = instance + '-source-title';
   heading.setAttribute('role', 'region'); heading.setAttribute('aria-labelledby', sourceTitle.id);
-  const sourceMetadata = el('p', [capture.pageType, capture.author, capture.publicationDate, capture.venue].filter(Boolean).join(' · '), 'm-meta');
+  // Keep the byline honest: drop empty fields and the literal placeholder "unknown".
+  const knownField = (value?: string) => Boolean(value && value.trim() && value.trim().toLowerCase() !== 'unknown');
+  const sourceMetadata = el('p', [capture.pageType, capture.author, capture.publicationDate, capture.venue].filter(knownField).join(' · '), 'm-meta');
   sourceMetadata.id = instance + '-source-metadata';
   function beginReading() {}
-  heading.append(sourceTitle, sourceMetadata);
+  // One header zone: the page title, one meta line, one control.
+  const headline = el('div', undefined, 'm-headline'); headline.append(sourceTitle);
+  heading.append(headline, sourceMetadata);
   const compose = el('div', undefined, 'm-compose');
   const map = el('nav', undefined, 'm-map'); map.setAttribute('aria-label', 'Page map: sections, notes and reading position');
   const reading = el('div', undefined, 'm-reading');
@@ -193,7 +206,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const threadList = el('div', undefined, 'm-threads');
   const footer = el('footer', undefined, 'm-footer');
   const footerSlots = { related: el('div', undefined, 'm-footer-related'), actions: el('div', undefined, 'm-footer-actions'), voice: el('div', undefined, 'm-footer-voice'), history: el('div', undefined, 'm-footer-history'), requests: el('div', undefined, 'm-footer-requests'), retained: el('div', undefined, 'm-footer-retained') };
-  footer.append(footerSlots.related, footerSlots.actions, footerSlots.voice);
+  // The footer is assembled as one row further down, once its controls exist.
   const localLibrary = el('section', undefined, 'm-local-library'); localLibrary.hidden = true;
   localLibrary.setAttribute('aria-label', 'Library work on this page');
   localLibrary.append(el('h2', 'Work on this page'), footerSlots.history, footerSlots.requests, footerSlots.retained);
@@ -208,7 +221,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   setup.append(settingsBody, managementHost, ...(options.settingsContent ? [options.settingsContent] : []));
   rail.append(map);
   const scroll = el('div', undefined, 'm-scroll'); scroll.append(egressSheet, selectionCard, threadList, footer);
-  panel.append(bar, ...(options.instantHelp ? [instantOnboardingHost] : []), heading, autoAssistAssumesHost, setup, localLibrary, scroll, status, toast); shell.append(rail, panel); workspace.append(shell); root.append(workspace);
+  panel.append(...(options.instantHelp ? [instantOnboardingHost] : []), heading, autoAssistAssumesHost, setup, localLibrary, scroll, status, toast); shell.append(rail, panel); workspace.append(shell); root.append(workspace);
   const management = options.helperManagement && options.allowHelper !== false ? mountHelperManagement(managementHost) : undefined;
   const instantDefinition = options.instantHelp ? mountInstantDefinition(instantDefinitionHost, options.instantHelp, { quietErrors: true }) : undefined;
   const selectionRelated = options.related ? mountRelated(selectionRelatedHost, options.related) : undefined;
@@ -257,6 +270,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const attachmentObservationKey = (threadId: string, textHash: string) => 'attachment-observation:' + JSON.stringify([threadId, capture.url, textHash]);
   const hasAttachmentObservation = (threadId: string) => attachmentObservedThisMount.has(threadId) || attachmentObservations.has(attachmentObservationKey(threadId, captureTextHash));
   const threadNodes = new Map<string, { signature: string; node: HTMLElement }>();
+  /** Thread ID to the ID of the card it displays inside. Display only; records are untouched. */
+  const groupLead = new Map<string, string>();
   const threadRelated = new Map<string, RelatedMount>();
   const railThreadNodes = new Map<string, HTMLButtonElement>();
   const replyMounts = new Map<string, { threadId: string; node: HTMLElement; mounted: MountedReply; flush(): Promise<void>; close(): void }>();
@@ -306,7 +321,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     else items.push({ node: questionArea, position: questionDraft ? displayPosition(questionDraft.anchor, capture) ?? readingPosition : readingPosition, rank: 1.5 });
     for (const thread of orderedThreads(threadsNow(), capture)) {
       const node = threadNodes.get(thread.id)?.node;
-      if (node) items.push({ node, position: displayPosition(thread.anchor, capture) ?? Infinity, rank: 2 });
+      // Repeats of one passage stay inside their lead card, so they are not placed here.
+      if (node && !groupLead.has(thread.id)) items.push({ node, position: displayPosition(thread.anchor, capture) ?? Infinity, rank: 2 });
     }
     items.sort((a, b) => a.position - b.position || a.rank - b.rank);
     items.forEach(({ node }, index) => { if (threadList.children[index] !== node) threadList.insertBefore(node, threadList.children[index] ?? null); });
@@ -403,9 +419,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (options.onLibrary && earlierDrafts.hidden && !footerSlots.requests.children.length && !footerSlots.retained.children.length) options.onLibrary();
     else { localLibrary.hidden = !localLibrary.hidden; if (!localLibrary.hidden) localLibrary.querySelector<HTMLElement>('button')?.focus(); }
   });
-  barActions.push(libraryButton);
-  barActions.push(settingsButton, collapse);
-  bar.append(el('span', 'Marginalia', 'm-wordmark'), actions(...barActions));
+  barActions.push(libraryButton, settingsButton);
+  collapse.className = 'm-head-toggle'; headline.append(collapse);
+  rail.prepend(el('span', 'Marginalia', 'm-wordmark'));
+  bar.remove();
   if (options.initialOpen === false || (options.initialOpen !== true && narrowViewport())) {
     shell.classList.add('is-collapsed'); openButton.setAttribute('aria-expanded', 'false'); rail.append(map);
   }
@@ -562,7 +579,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const parkedPositionKey = 'parked-page-position:' + capture.url;
   const savedPageKey = 'saved-page:' + capture.url;
   let pageSaving = false;
-  const savePageButton = button('Save page', () => savePage(false)), parkPageButton = button('Read page later', () => savePage(true));
+  const savePageButton = button('Save page', () => savePage(false)), parkPageButton = button('Read later', () => savePage(true));
   savePageButton.disabled = true; parkPageButton.disabled = true;
   function savePage(parked: boolean) {
     if (!hydrationFinished || pageSaving) return;
@@ -588,7 +605,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       } finally { pageSaving = false; if (alive()) { savePageButton.disabled = false; parkPageButton.disabled = false; } }
     });
   }
-  pageActions.append(actions(relatedToggle, parkPageButton, button('Export', exportWork)), related);
+  pageActions.append(actions(relatedToggle, button('Export', exportWork)), related);
   footerSlots.related.append(pageActions);
   footerSlots.actions.append(savePageButton);
   const endOffers = el('div', undefined, 'm-end-offers');
@@ -599,6 +616,12 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const at = selected && displayPosition(selected, capture);
     return selected && at !== undefined ? capture.text.slice(at, at + selected.exact.length) : capture.text.slice(readingPosition);
   }, available => { voiceUnavailable.hidden = available; });
+  // One footer row. Everything quieter sits behind More, with its handler unchanged.
+  const footerMore = el('details', undefined, 'm-footer-more');
+  footerMore.append(el('summary', 'More'), actions(...barActions.filter(control => control !== libraryButton)), footerSlots.actions, footerSlots.related, footerSlots.voice);
+  const footerRow = actions(parkPageButton, libraryButton, footerMore);
+  footerRow.classList.add('m-footer-row');
+  footer.append(footerRow);
   const skip = button('Go to margin', () => showPanel(true, skip)); skip.className = 'm-skip'; root.prepend(skip);
 
   const noteEditor = mountNoteEditor(compose, {
@@ -736,6 +759,12 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     });
     return saved;
   }
+  /** Why Ask cannot run right now, in the owner's words. Empty string means Ask is available. */
+  function askBlockedReason() {
+    if (denied) return 'Asking is off on this site. Keep and Note work here.';
+    if (options.allowHelper === false || !helper?.token) return 'Pair this browser in Settings to ask. Keep and Note work now.';
+    return '';
+  }
   function renderSelectionActions(anchor: QuoteAnchor) {
     const instantGeneration = ++instantSelectionGeneration;
     instantDefinition?.clear();
@@ -754,12 +783,34 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         if (result.deleted) rememberObservation = { ...observation, operationId: id(), observedAt: new Date().toISOString() };
       } finally { rememberPending = false; if (alive() && !selectionCard.hidden) remember.disabled = false; }
     }); });
-    const row = actions(button('Keep', async () => { if (await keep(anchor)) closeSelection(); }), button('Ask', () => ask(anchor)), button('Read later', async () => { if (await keep(anchor, true)) closeSelection(); }));
+    const blocked = askBlockedReason();
+    const askButton = button('Ask', () => { if (blocked) announce(blocked); ask(anchor); });
+    // D49: the fourth resting control starts the same simulate request that choosing
+    // Simulate it after Ask starts today. It adds no authority of its own.
+    const simulateButton = button('Simulate it', () => { if (blocked) announce(blocked); askSimulate(anchor, !blocked); });
+    const row = actions(button('Keep', async () => { if (await keep(anchor)) closeSelection(); }), button('Note', () => beginDraft(anchor)), askButton, simulateButton);
     row.classList.add('m-selection-actions');
-    row.querySelectorAll<HTMLButtonElement>('button').forEach((control, index) => { control.id = 'm-selection-' + ['keep', 'ask', 'park'][index]; });
-    const more = el('details'); more.className = 'm-selection-more'; more.append(el('summary', 'More'), remember);
-    selectionCard.replaceChildren(...(definition ? [el('p', `${definition} · from this page`, 'm-meta'), remember] : []),
-      ...(instantDefinition ? [instantDefinitionHost] : []), el('blockquote', displayAnchor(anchor)), row, ...(definition ? [] : [more]),
+    row.querySelectorAll<HTMLButtonElement>('button').forEach((control, index) => { control.id = 'm-selection-' + ['keep', 'note', 'ask', 'simulate'][index]; });
+    // The reason sits at the control, not at the bottom of the panel. No pairing
+    // or send check is bypassed here; Ask still runs the same gates when allowed.
+    const blockedBlock = el('div', undefined, 'm-blocked');
+    if (blocked) {
+      const sentence = el('p', blocked); sentence.id = instance + '-ask-blocked';
+      blockedBlock.append(sentence);
+      // Pairing in this surface cannot grant send authority, so it offers no route there.
+      if (!denied && options.allowHelper !== false) blockedBlock.append(button('Open Settings', () => openSettings()));
+      // No aria-disabled: Ask still opens the local question draft, and marking a
+      // working control disabled would mislead a screen reader.
+      askButton.setAttribute('aria-describedby', sentence.id);
+      simulateButton.setAttribute('aria-describedby', sentence.id);
+    }
+    // D54: Read later is a page action. It lives once, in the footer, so the
+    // selection row carries only Keep, Note, Ask and Simulate it. With nothing
+    // left behind More but the term control, the disclosure goes and that control
+    // sits in the card, where a page definition already placed it.
+    selectionCard.replaceChildren(...(definition ? [el('p', `${definition} · from this page`, 'm-meta')] : []),
+      ...(instantDefinition ? [instantDefinitionHost] : []), el('blockquote', displayAnchor(anchor)), row,
+      ...(blocked ? [blockedBlock] : []), remember,
       ...(selectionRelated ? [selectionRelatedHost] : []));
     if (selectionRelated) void track(selectionRelated.show({ passage: structuredClone(anchor), limit: 3 }));
     placeItems();
@@ -938,6 +989,27 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       ...(thread ? { threadId: thread.id, sourceVersionId: thread.sourceVersionId } : {}), ...(note ? { answeredNote: note } : {}), ...(resumeReplyId ? { resumeReplyId } : {}) };
     void saveQuestion(saved).catch(fail); showQuestion(saved);
   }
+  /** D49: start the existing simulate request for this passage without a separate Ask step.
+   * Same draft, same saved question and the same review step the suggestion takes today;
+   * every pairing, allowHelper, denied-site and send-review gate still runs unchanged. */
+  function askSimulate(anchor: QuoteAnchor, review: boolean) {
+    // A retained question is the reader's own text. It is never overwritten, and
+    // the reason nothing changed is said once, plainly.
+    const retained = questionDraft !== undefined;
+    if (retained) { announce('A question is already retained on this page. Retain it in history before starting a simulation.'); return false; }
+    ask(anchor);
+    if (!questionDraft) return false;
+    // The draft is durable before any review step, so a blocked start still keeps
+    // what was asked for. After pairing the reader resumes a simulation, not a
+    // blank question, and nothing is sent until the reader presses review.
+    const started: QuestionDraft = { ...questionDraft, intent: 'simulate', question: suggestionOffer('simulate').question };
+    void safely(async () => {
+      await saveQuestion(started);
+      const controls = showQuestion(started);
+      if (review) await openQuestionWithHelper(controls.message, controls.reviewButton);
+    });
+    return true;
+  }
   function pageQuestion(intent: 'unsure' | 'explore', question: string) {
     const existing = questionDraft; ask(wholePageAnchor());
     if (!existing && questionDraft) { questionDraft.intent = intent; questionDraft.question = question; void saveQuestion(questionDraft).catch(fail); }
@@ -981,7 +1053,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       beginSuggestionExposure(current, offers.slice(0, 3), offers);
       draftMount = mountAskingDraft(questionForm, { id: 'm-ask-' + draftKey.replace(/[^a-z0-9]/gi, '-'),
         question: current.question, context: current.context, suggestions: offers,
-        moreAction: selected && canonicalReplyData(selected) === canonicalReplyData(current.anchor) ? selectionCard.querySelector<HTMLButtonElement>('.m-selection-more button') ?? undefined : undefined,
+        // A restored request keeps the action it was saved with when the reader
+        // submits it unchanged. Edited words, or a deliberate offer, decide for themselves.
+        ...(current.intent ? { retained: { intent: current.intent, question: current.question } } : {}),
         onEdit: (question, context) => { if (questionDraft) { questionDraft.question = question; questionDraft.context = context; void saveQuestion(questionDraft).catch(fail); } },
         readerSkills: () => trustedHelper().readerSkills(),
         onChoose: (intent, question, context, readerSkill?: ReaderSkillSelection) => track((async () => {
@@ -1161,6 +1235,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       if (expanded.has(thread.id)) showThreadRelated(thread);
       // placeItems maintains source order without rebuilding reply/editor subtrees.
     });
+    groupThreads(threads);
     for (const [threadId, dot] of railThreadNodes) if (!threads.some(thread => thread.id === threadId)) { dot.remove(); railThreadNodes.delete(threadId); }
     threads.forEach(thread => {
       const label = thread.notes.find(note => !note.deletedAt)?.text ?? thread.anchor.exact;
@@ -1182,25 +1257,65 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       (replacement ?? writeButton).focus();
     }
   }
+  /**
+   * One card per passage, for display only. The first thread at an anchor leads;
+   * later threads at the same anchor move inside its expander. Nothing is merged,
+   * rewritten or removed: every thread keeps its ID, notes, replies and controls,
+   * and stays stored, exportable and reachable.
+   */
+  function groupThreads(threads: Thread[]) {
+    groupLead.clear();
+    const leadByKey = new Map<string, string>();
+    for (const thread of threads) {
+      // An unsynced record has no recorded source identity. Absence is not proof of
+      // sameness, so such a thread neither leads a group nor joins one.
+      if (!thread.sourceVersionId) continue;
+      const key = anchorKey(thread);
+      const lead = leadByKey.get(key);
+      if (lead === undefined) leadByKey.set(key, thread.id); else groupLead.set(thread.id, lead);
+    }
+    for (const thread of threads) {
+      const node = threadNodes.get(thread.id)?.node;
+      const repeats = node && [...node.children].find((child): child is HTMLDetailsElement => child.classList.contains('m-thread-repeats'));
+      if (!node || !repeats) continue;
+      const summary = repeats.querySelector('summary')!;
+      const followers = threads.filter(other => groupLead.get(other.id) === thread.id);
+      if (!followers.length) { repeats.hidden = true; repeats.open = false; repeats.replaceChildren(summary); continue; }
+      const notes = followers.reduce((sum, other) => sum + other.notes.filter(note => !note.deletedAt).length, 0);
+      summary.textContent = notes ? `${notes} more ${notes === 1 ? 'note' : 'notes'}` : `${followers.length} more ${followers.length === 1 ? 'item' : 'items'}`;
+      repeats.hidden = false;
+      repeats.replaceChildren(summary, ...followers.map(other => threadNodes.get(other.id)!.node));
+    }
+  }
+  /**
+   * A grouped thread sits inside its lead's expander. Every explicit open, focus,
+   * rail or resume path calls this first, so the target card is shown and focusable.
+   */
+  function revealGroup(threadId: string) {
+    let enclosing = threadNodes.get(threadId)?.node.parentElement?.closest<HTMLDetailsElement>('.m-thread-repeats');
+    while (enclosing) { enclosing.hidden = false; enclosing.open = true; enclosing = enclosing.parentElement?.closest<HTMLDetailsElement>('.m-thread-repeats') ?? null; }
+  }
   async function openSavedThread(threadId: string, opener?: HTMLElement) {
     await locked(() => journal.load());
     const thread = currentThread(threadId);
     if (!thread || thread.deletedAt || thread.sourceUrl !== capture.url) throw new Error('The current thread is unavailable; local work is unchanged.');
     expandAdditionally(threadId); renderThreads(); hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0));
     showPanel(true, opener);
+    revealGroup(threadId);
     threadNodes.get(threadId)?.node.querySelector<HTMLElement>('.m-source-action')?.focus({ preventScroll: true });
   }
   function renderThread(thread: Thread) {
     const node = el('section', undefined, 'm-thread'); node.id = instance + '-' + thread.id; node.dataset.thread = thread.id;
     const location = sourceLocation(thread, capture);
     const currentSection = () => { const current = currentThread(thread.id); return current ? sectionFor(displayPosition(current.anchor, capture) ?? readingPosition) : sectionIndex; };
-    const preview = button(excerpt(thread.notes.find(n => !n.deletedAt)?.text ?? thread.anchor.exact), () => { expandOnly(thread.id); showThreadRelated(thread); hold(currentSection()); renderPosition(); requestAnimationFrame(() => { if (alive()) threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); }); }); preview.setAttribute('aria-label', 'Open thread: ' + (thread.notes.find(note => !note.deletedAt)?.text ?? thread.anchor.exact)); preview.className = 'm-excerpt'; preview.dataset.focusKey = thread.id + ':excerpt';
+    const preview = button(thread.notes.find(n => !n.deletedAt)?.text ?? thread.anchor.exact, () => { expandOnly(thread.id); showThreadRelated(thread); hold(currentSection()); renderPosition(); requestAnimationFrame(() => { if (alive()) threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); }); }); preview.setAttribute('aria-label', 'Open thread: ' + (thread.notes.find(note => !note.deletedAt)?.text ?? thread.anchor.exact)); preview.className = 'm-excerpt'; preview.dataset.focusKey = thread.id + ':excerpt';
     const body = el('div', undefined, 'm-thread-content');
-    const sourceText = thread.anchor.kind === 'whole-page' ? 'Whole page' : `“${excerpt(displayAnchor(thread.anchor))}”`;
-    const sourceButton = button(sourceText, () => sourceAction(thread.anchor)); sourceButton.className = 'm-source-action'; sourceButton.setAttribute('aria-label', 'Source passage: ' + sourceText); sourceButton.dataset.focusKey = thread.id + ':source';
+    // Full passage text, clamped in CSS. Slicing strings cut words in half.
+    const sourceText = thread.anchor.kind === 'whole-page' ? 'Whole page' : `“${displayAnchor(thread.anchor)}”`;
+    const sourceButton = button(sourceText, () => sourceAction(thread.anchor)); sourceButton.className = 'm-source-action'; sourceButton.setAttribute('aria-label', 'Source passage: ' + shortName(sourceText)); sourceButton.dataset.focusKey = thread.id + ':source';
     sourceButton.addEventListener('mouseenter', () => highlight(thread.anchor)); sourceButton.addEventListener('mouseleave', () => highlight(null));
     sourceButton.addEventListener('focus', () => highlight(thread.anchor)); sourceButton.addEventListener('blur', () => highlight(null));
-    body.append(sourceButton);
+    const sourceBlock = el('div', undefined, 'm-thread-source'); sourceBlock.append(sourceButton);
     if (location.state === 'moved' || location.state === 'lost' || location.state === 'unsure') {
       const marker = el('div', undefined, 'm-reader-note');
       marker.append(el('p', 'You were here', 'm-meta'));
@@ -1258,8 +1373,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         })());
       });
       look.className = 'm-reattach-action'; look.disabled = attachmentPending.has(thread.id);
-      marker.append(message); if (!observed) marker.append(look); body.append(marker);
+      marker.append(message); if (!observed) marker.append(look); sourceBlock.append(marker);
     }
+    const noteBlocks: HTMLElement[] = [];
     for (const note of thread.notes.filter(note => !note.deletedAt)) {
       const edit = actionButton(thread.id + ':' + 'edit-note', 'Edit note', () => beginDraft(thread.anchor, thread, note.id)); edit.dataset.focusKey = thread.id + ':note:' + note.id;
       const remove = actionButton(thread.id + ':remove-note:' + note.id, 'Remove this note', () => safely(async () => {
@@ -1271,8 +1387,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         }));
         toast.replaceChildren(el('span', 'Note removed.'), undo); undo.focus();
       }));
-      const noteBlock = el('div', undefined, 'm-reader-note'); noteBlock.append(el('p', note.text, 'm-note'), edit, actionButton(thread.id + ':ask-note:' + note.id, 'Ask about this note', () => ask(thread.anchor, currentThread(thread.id), { noteId: note.id, revision: note.revision, text: note.text })), remove); body.append(noteBlock);
+      // The note reads at rest; its own controls join the quiet row on hover or focus.
+      const noteTools = actions(edit, actionButton(thread.id + ':ask-note:' + note.id, 'Ask about this note', () => ask(thread.anchor, currentThread(thread.id), { noteId: note.id, revision: note.revision, text: note.text })), remove);
+      noteTools.classList.add('m-thread-tools');
+      const noteBlock = el('div', undefined, 'm-reader-note'); noteBlock.append(el('p', note.text, 'm-note'), noteTools); noteBlocks.push(noteBlock);
     }
+    // The note outranks the quote. With no note, the quote reads in its place.
+    sourceButton.classList.add(noteBlocks.length ? 'm-source-meta' : 'm-source-lead', 'm-clamp-2');
+    if (noteBlocks.length) body.append(...noteBlocks, sourceBlock); else body.append(sourceBlock);
     const state = el('select'); state.dataset.focusKey = thread.id + ':state'; state.setAttribute('aria-label', 'Thread state');
     for (const value of ['open', 'parked', 'done', 'archived'] as const) { const option = el('option', value === 'parked' ? 'Read later' : value[0].toUpperCase() + value.slice(1)); option.value = value; state.append(option); } state.value = thread.state;
     state.addEventListener('change', () => void safely(async () => { await change({ id: id(), kind: 'thread-state', threadId: thread.id, expectedRevision: thread.revision, state: state.value as Thread['state'] }); announce('Thread ' + (state.value === 'parked' ? 'saved for later' : state.value) + '.'); threadNodes.get(thread.id)?.node.querySelector('select')?.focus(); }));
@@ -1296,11 +1418,26 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       swatch.setAttribute('aria-pressed', String(highlightColour(thread.highlightColour) === colour));
       colourPicker.append(swatch);
     }
-    body.append(actions(actionButton(thread.id + ':' + 'add-note', 'Add note', () => beginDraft(thread.anchor, thread)), highlightToggle, ...(thread.highlighted ? [colourPicker] : []), actionButton(thread.id + ':' + 'ask', 'Ask', () => ask(thread.anchor, thread)), state, actionButton(thread.id + ':' + 'remove', 'Remove', () => safely(async () => {
+    const removeThread = actionButton(thread.id + ':' + 'remove', 'Remove', () => safely(async () => {
       await change({ id: id(), kind: 'remove', threadId: thread.id, removed: true, expectedRevision: thread.revision });
       toast.hidden = false; const undo = actionButton(thread.id + ':' + 'undo', 'Undo', () => safely(async () => { const current = journal.state.threads.find(t => t.id === thread.id)!; await change({ id: id(), kind: 'remove', threadId: thread.id, removed: false, expectedRevision: current.revision }); toast.hidden = true; threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); announce('Thread restored.'); }));
       toast.replaceChildren(el('span', 'Thread removed.'), undo); undo.focus();
-    }))));
+    }));
+    const park = actionButton(thread.id + ':park', thread.state === 'parked' ? 'Unpark' : 'Park', () => safely(async () => {
+      const current = currentThread(thread.id);
+      if (!current) throw new Error('The saved passage is unavailable.');
+      const next = current.state === 'parked' ? 'open' : 'parked';
+      await change({ id: id(), kind: 'thread-state', threadId: current.id, state: next, expectedRevision: current.revision });
+      announce(next === 'parked' ? 'Thread saved for later.' : 'Thread open again.');
+    }));
+    const more = el('details', undefined, 'm-thread-more');
+    more.append(el('summary', 'More'), actions(
+      actionButton(thread.id + ':open', 'Open', () => { void safely(() => openSavedThread(thread.id)); }),
+      actionButton(thread.id + ':' + 'add-note', 'Add note', () => beginDraft(thread.anchor, thread)),
+      highlightToggle, ...(thread.highlighted ? [colourPicker] : []), state, removeThread));
+    const tools = actions(actionButton(thread.id + ':' + 'ask', 'Ask', () => ask(thread.anchor, thread)), park, more);
+    tools.classList.add('m-thread-tools');
+    body.append(tools);
     if (!journal.state.threads.some(item => item.id === thread.id)) {
       for (const control of Array.from(body.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('button:not(.m-source-action):not(.m-reattach-action),select'))) control.disabled = true;
       body.append(el('p', 'Saved helper snapshot. Local work is not replaced; explicitly synchronize before editing or asking.', 'm-meta'));
@@ -1321,7 +1458,11 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const relatedHost = el('div', undefined, 'm-related-slot');
     if (options.related && !threadRelated.has(thread.id)) threadRelated.set(thread.id, mountRelated(relatedHost, options.related));
     replyArea.append(replyStatus, replyList, replyActions, ...(options.related ? [relatedHost] : []));
-    const bodyGroup = el('div', undefined, 'm-thread-body'); bodyGroup.append(body, replyArea); node.append(preview, bodyGroup);
+    const bodyGroup = el('div', undefined, 'm-thread-body'); bodyGroup.append(body, replyArea);
+    // Display-only grouping. Every repeat of this passage keeps its own record,
+    // its own node and its own controls; it only moves inside this card.
+    const repeats = el('details', undefined, 'm-thread-repeats'); repeats.hidden = true; repeats.append(el('summary', ''));
+    node.append(preview, bodyGroup, repeats);
     node.addEventListener('focusin', () => hold(currentSection()));
     return node;
   }
@@ -1584,7 +1725,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         }
         area()?.append(history);
       }
-      message(persistence.replies.unsaved(thread.id).length ? 'Some view inputs are still only in memory after a failed save. Export them before closing this page.' : unavailable ? `${unavailable} saved ${unavailable === 1 ? 'reply could' : 'replies could'} not be safely displayed. Original records remain available in the export.` : removed.some(record => record.removal?.status === 'conflict') ? 'This reply changed elsewhere. Your choice is kept here.' : visible.some(record => record.conflict) ? 'The helper has a different view. Local controls are preserved; use the helper view explicitly to replace them.' : visible.some(record => record.recovered?.length) ? 'Saved replies are available. Earlier view inputs are preserved in the recovery export.' : visible.length ? `${visible.length} saved ${visible.length === 1 ? 'reply' : 'replies'}. Notes stay above replies.${removed.length ? ` ${removed.length} removed ${removed.length === 1 ? 'reply is' : 'replies are'} retained in history.` : ''}` : removed.length ? `${removed.length} removed ${removed.length === 1 ? 'reply is' : 'replies are'} retained in history.` : 'No saved replies on this device.');
+      message(persistence.replies.unsaved(thread.id).length ? 'Some view inputs are still only in memory after a failed save. Export them before closing this page.' : unavailable ? `${unavailable} saved ${unavailable === 1 ? 'reply could' : 'replies could'} not be safely displayed. Original records remain available in the export.` : removed.some(record => record.removal?.status === 'conflict') ? 'This reply changed elsewhere. Your choice is kept here.' : visible.some(record => record.conflict) ? 'The helper has a different view. Local controls are preserved; use the helper view explicitly to replace them.' : visible.some(record => record.recovered?.length) ? 'Saved replies are available. Earlier view inputs are preserved in the recovery export.' : visible.length ? `${visible.length} saved ${visible.length === 1 ? 'reply' : 'replies'}. Notes stay above replies.${removed.length ? ` ${removed.length} removed ${removed.length === 1 ? 'reply is' : 'replies are'} retained in history.` : ''}` : removed.length ? `${removed.length} removed ${removed.length === 1 ? 'reply is' : 'replies are'} retained in history.` : '');
     } catch (error) { message(error instanceof Error ? error.message : 'Saved replies could not be loaded.'); }
   }
   function exportReplies(threadId: string) {
@@ -1832,7 +1973,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     sourceUrl: capture.url, connection: trustedHelper, exportWork, drain: lifecycle.drain,
     get restoredPosition() { return restoredPosition; }, flushReadingPosition,
     getThread: currentThread,
-    focusThread(threadId: string) { expandAdditionally(threadId); renderThreads(); const thread = currentThread(threadId); if (thread) hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); },
+    focusThread(threadId: string) { expandAdditionally(threadId); renderThreads(); revealGroup(threadId); const thread = currentThread(threadId); if (thread) hold(sectionFor(displayPosition(thread.anchor, capture) ?? 0)); showPanel(); },
     select: showSelection,
     ...(autoAssist ? {
       showAutoAssist(next: AutoAssistReadyHelpState) { if (!alive()) return; readingPosture = next.posture; autoAssist.update(next); placeItems(); },
@@ -1840,8 +1981,37 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     } : {}),
     setReadingPosition(start: number) { if (alive() && !suspended && !held && Number.isFinite(start)) { const next = Math.max(0, Math.min(capture.text.length, start)); if (resumePosition !== undefined && next > resumePosition) dismissResumeLine(); if (restoredPosition && sectionFor(next) === sectionIndex) return; restoredPosition = false; if (next === readingPosition) return; beginReading(); readingPosition = next; sectionIndex = sectionFor(readingPosition); renderPosition(); if (hydrationFinished) { positionDirty = true; queueReadingPosition(); } } },
     suspend() { hearIt.stop(); highlight(null); suspended = true; diagnosticsAbort?.abort(); management?.close(); askingMount?.setVisible(false); },
-    resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); renderSettings(); paintHighlights(); },
+    resume() { if (!alive()) return; suspended = false; updateManagement(); askingMount?.setVisible(!questionArea.hidden && questionForm.hidden); renderPosition(); for (const threadId of expanded) revealGroup(threadId); renderSettings(); paintHighlights(); },
     async openThread(threadId: string) { await openSavedThread(threadId); },
+    /** D54: run one selection-card action for a passage without a pointer selection.
+     * It places the passage through the same select path, then presses the same
+     * control a reader presses, so every gate and review stage runs unchanged.
+     * Nothing is sent here and no authority is added. */
+    async selectionAction(action: 'note' | 'ask' | 'simulate', anchor: QuoteAnchor) {
+      if (!alive() || !anchor.exact.trim() || displayPosition(anchor, capture) === undefined) return false;
+      showSelection(anchor);
+      showPanel();
+      const control = selectionCard.hidden ? null : selectionCard.querySelector<HTMLButtonElement>('#m-selection-' + action);
+      if (!control) return false;
+      control.click();
+      await lifecycle.drain();
+      if (!alive()) return false;
+      // True only when this passage actually reached the stage the control opens.
+      // A retained draft holds the surface, so the answer is false and that draft
+      // is left exactly as the reader left it.
+      const here = (value: { anchor: QuoteAnchor } | undefined) => !!value && canonicalReplyData(value.anchor) === canonicalReplyData(anchor);
+      if (action === 'note') return here(draft) && !compose.hidden;
+      if (askBlockedReason() || questionArea.hidden || !here(questionDraft)) return false;
+      return action === 'ask' || questionDraft!.intent === 'simulate';
+    },
+    /** D54: run the footer Read later control. Same hash and retry identity. */
+    async readLater() {
+      if (!alive()) return false;
+      await savePage(true);
+      if (!alive()) return false;
+      const saved = await persistence.read<{ hash: string; threadId: string }>(savedPageKey);
+      return !!saved && threadsNow().some(thread => thread.id === saved.threadId && thread.state === 'parked' && !thread.deletedAt);
+    },
     destroy,
   };
   const startupGeneration = editorGeneration;

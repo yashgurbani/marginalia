@@ -44,7 +44,8 @@ test('E33 actual webapp library opening preserves complete, partial and absent s
     assert.equal(header.querySelector('h1')!.textContent, `Saved ${id}`);
     assert.equal(workspace.querySelector('.m-captured-text')!.textContent, bundles.get(id)!.source.text);
     assert.equal(header.textContent.includes('invented-venue'), false);
-    assert.equal(header.querySelectorAll('button').length, 0);
+    // The header's one control is the collapse toggle; it carries no other actions.
+    assert.equal(header.querySelectorAll('button').filter(control => !control.classList.contains('m-head-toggle')).length, 0);
     assert.equal(header.querySelector('.m-meta')!.textContent, expected);
   }
   const resumed: string[] = [];

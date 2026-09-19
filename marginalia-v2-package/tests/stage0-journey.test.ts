@@ -36,7 +36,10 @@ test('Stage 0 selection, Simulate it, reviewed explicit send, saved grid, local 
   let mounted: ReturnType<typeof mountReply> | undefined;
   try {
     const daemon = await trip.start('stage0');
-    api.select(mutation.anchor); button(e.root, 'Ask').click(); await api.drain(); button(e.root, 'Simulate it').click(); await api.drain();
+    // The suggestion is chosen in the question surface; the selection card has a
+    // resting control with the same label.
+    api.select(mutation.anchor); button(e.root, 'Ask').click(); await api.drain();
+    button(e.root.querySelector('.m-question')!, 'Simulate it').click(); await api.drain();
     const draft = [...e.data(namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as AskingSelection;
     assert.equal(draft.intent, 'simulate'); assert.deepEqual(draft.anchor, mutation.anchor);
     assert.equal((await trip.calls()).length, 0);

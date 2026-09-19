@@ -106,13 +106,15 @@ test('R1 selection has one action row at 360 px and Ask stays inside its card', 
       opener.focus(); api.select({ start: 0, end: text.length, exact: text, prefix: '', suffix: '' }); await api.drain();
       globalThis.r1cSelection = { api, root, source, text, opener, requests: () => requests, cleanup: () => { api.destroy(); globalThis.fetch = originalFetch; } };
     })()`);
+    // The panel opens through a 160 ms width transition. Geometry is read once it settles.
+    await page.evaluate('new Promise(resolve=>setTimeout(resolve,250))');
     const receipt = await page.evaluate<{ labels: string[]; tops: number[]; heights: number[]; border: string; background: string; quoteHeight: number; lineHeight: number; quotePadding: number; focused: boolean; unchanged: boolean; requests: number }>(`(() => {
       const h = r1cSelection, card = h.root.querySelector('.m-selection'), buttons = [...card.querySelector('.m-selection-actions').children], quote = card.querySelector('blockquote'), css = getComputedStyle(card), q = getComputedStyle(quote);
       return { labels: buttons.map(b => b.textContent), tops: buttons.map(b => b.getBoundingClientRect().top), heights: buttons.map(b => b.getBoundingClientRect().height), border: css.borderInlineStartWidth, background: css.backgroundColor,
         quoteHeight: quote.getBoundingClientRect().height, lineHeight: parseFloat(q.lineHeight), quotePadding: parseFloat(q.paddingBottom), focused: document.activeElement === h.opener, unchanged: h.source.textContent === h.text, requests: h.requests() };
     })()`);
-    assert.deepEqual(receipt.labels, ['Keep', 'Ask', 'Read later']); assert.equal(new Set(receipt.tops).size, 1); assert.ok(receipt.heights.every(height => height >= 28));
-    assert.equal(receipt.border, '2px'); assert.equal(receipt.background, 'rgba(0, 0, 0, 0)'); assert.ok(receipt.quoteHeight <= 3 * receipt.lineHeight + receipt.quotePadding + 1);
+    assert.deepEqual(receipt.labels, ['Keep', 'Note', 'Ask', 'Simulate it']); assert.equal(new Set(receipt.tops).size, 1); assert.ok(receipt.heights.every(height => height >= 28));
+    assert.equal(receipt.border, '0px'); assert.equal(receipt.background, 'rgba(0, 0, 0, 0)'); assert.ok(receipt.quoteHeight <= 3 * receipt.lineHeight + receipt.quotePadding + 1);
     assert.equal(receipt.focused, true); assert.equal(receipt.unchanged, true); assert.equal(receipt.requests, 0);
     await page.evaluate("r1cSelection.root.querySelector('#m-selection-ask').click(); r1cSelection.api.drain()");
     assert.equal(await page.evaluate<boolean>("!!r1cSelection.root.querySelector('.m-selection .m-asking-draft')"), true);

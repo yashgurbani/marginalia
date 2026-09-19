@@ -204,6 +204,9 @@ export function mountAskingDraft(host: HTMLElement, options: {
   /** A function defers the local catalog read until the reader opens More. */
   readerSkills?: Promise<ReaderSkillsCatalog> | (() => Promise<ReaderSkillsCatalog>);
   moreAction?: HTMLElement;
+  /** A restored request and the words it was restored with. Submitting those exact
+   * words again resumes that action. Edited words are a plain question again. */
+  retained?: { intent: Intent; question: string };
   onEdit(question: string, context: string): void;
   onChoose(intent: Intent, question: string, context: string, readerSkill?: ReaderSkillSelection): Promise<void>;
   onMore(): void; onIdeas(): Promise<readonly AskingSuggestion[]>;
@@ -276,7 +279,12 @@ export function mountAskingDraft(host: HTMLElement, options: {
   useSkill.addEventListener('click', () => { skillList.hidden = !skillList.hidden; }, { signal: abort.signal });
   more.addEventListener('toggle', () => { if (more.open) options.onMore(); }, { signal: abort.signal });
   ideas.addEventListener('click', () => { if (ideas.disabled) return; ideas.disabled = true; void options.onIdeas().then(next => { if (disposed) return; offers = [...next]; draw(); ideas.hidden = true; if (more.open) options.onMore(); }).catch(() => { if (!disposed) message.textContent = 'New ideas could not be loaded. Your current offers remain here.'; }).finally(() => { ideas.disabled = false; }); }, { signal: abort.signal });
-  form.addEventListener('submit', event => { event.preventDefault(); if (input.value.trim()) void choose('unsure', input.value); }, { signal: abort.signal });
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    if (!input.value.trim()) return;
+    const resumed = options.retained && input.value === options.retained.question;
+    void choose(resumed ? options.retained!.intent : 'unsure', input.value);
+  }, { signal: abort.signal });
   form.addEventListener('keydown', event => {
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
     const index = ['1', '2', '3'].indexOf(event.key);

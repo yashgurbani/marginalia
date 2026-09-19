@@ -25,7 +25,7 @@ button { cursor: pointer; } button:disabled { cursor: default; }
 .mg h1,.mg h2,.mg h3,.mg p { margin: 0; }
 .mg h1 { font-size: var(--m-t1); font-weight: 600; line-height: 1.3; }
 .mg h2 { font-size: var(--m-t0); font-weight: 600; }
-.mg button { border: 0; background: transparent; border-radius: var(--m-radius-s); min-height: 28px; padding: 3px 6px; text-align: start; }
+.mg button { border: 0; background: transparent; border-radius: var(--m-radius-s); min-height: var(--m-target); padding: var(--m-s1) var(--m-s2); text-align: start; }
 .mg button:hover { background: var(--m-sunken); }
 .mg button:active { background: var(--m-accent-soft); }
 .mg button:disabled { color: var(--m-ink-3); text-decoration: none; opacity: 1; }
@@ -36,16 +36,14 @@ button { cursor: pointer; } button:disabled { cursor: default; }
 .mg summary { cursor: pointer; min-height: 28px; padding-block: 4px; }
 .mg details { margin: var(--m-s2) 0; }
 .m-panel { display: flex; flex-direction: column; width: 360px; min-width: 0; flex: 1; overflow: hidden; }
-.m-bar { padding: var(--m-s2) 10px 6px var(--m-s4); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--m-s2); }
 .m-wordmark { font-weight: 600; letter-spacing: -.02em; }
-.m-bar .m-actions { gap: 0; font-size: var(--m-t-1); margin: 0; }
 .m-head { padding: 10px var(--m-s4) var(--m-s2); max-height: 25%; overflow: auto; flex-shrink: 0; }
 .m-head h1 { overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .m-headline { display: flex; align-items: baseline; gap: var(--m-s2); min-width: 0; }
 .m-headline h1 { flex: 1; min-width: 0; }
 .m-head-toggle { flex-shrink: 0; font-size: var(--m-t-1); }
 .m-head-compact h1 { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.m-meta { color: var(--m-ink-3); font-size: var(--m-t-1); line-height: 1.5; }
+.m-meta { color: var(--m-ink-2); font-size: var(--m-t-1); line-height: 1.5; }
 .m-head .m-meta { margin-top: 4px; }
 .m-compose { padding: var(--m-s2) 0 var(--m-s3); border-bottom: 1px solid var(--m-rule); scroll-margin-block: var(--m-s3); }
 .m-write { width: 100%; color: var(--m-ink-2); }
@@ -67,13 +65,14 @@ button { cursor: pointer; } button:disabled { cursor: default; }
 .m-reading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--m-s2); min-height: 36px; margin-bottom: var(--m-s2); }
 .m-reading button { font-size: var(--m-t-1); border: 0; flex-shrink: 0; }
 .m-head .m-resume { display: block; width: 100%; min-height: 24px; padding: 2px 0; border: 0; }
-.m-selection,.m-question-slot { border: 0; border-inline-start: 2px solid var(--m-accent); border-radius: 0; padding: var(--m-s2) 0 var(--m-s2) var(--m-s3); background: none; margin-bottom: var(--m-s4); min-width: 0; }
+.m-selection,.m-question-slot { border: 0; border-radius: 0; padding: var(--m-s2) 0; background: none; margin-bottom: var(--m-s4); min-width: 0; }
 .m-selection blockquote,.m-question-slot blockquote { background: none; margin: 0; padding: 0 0 var(--m-s2); color: var(--m-ink); font-size: var(--m-t0); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .m-selection pre,.m-question-slot pre,.m-settings pre { font: var(--m-s3)/1.55 var(--m-mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto; }
 .m-selection textarea,.m-question-slot textarea { margin-top: var(--m-s2); }
-.m-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--m-s2); margin-top: var(--m-s2); }
-.m-actions button { text-decoration: underline; text-decoration-color: var(--m-rule-strong); text-underline-offset: 3px; }
-.m-thread { border-inline-start: 3px solid var(--section-colour); padding: var(--m-s4) 0 var(--m-s4) var(--m-s2); border-top: 1px solid var(--m-rule); min-width: 0; }
+.m-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--m-s1) var(--m-s2); margin-top: var(--m-s2); }
+.m-actions button { text-decoration: none; text-decoration-color: var(--m-rule-strong); text-underline-offset: 3px; min-height: var(--m-target); }
+.m-actions button:hover,.m-actions button:focus-visible { text-decoration: underline; }
+.m-thread { padding: var(--m-s3) 0; border-top: 1px solid var(--m-rule); min-width: 0; }
 .m-section-marker { font-size: var(--m-t-1); font-weight: var(--m-w-regular); color: var(--m-ink-2); padding-block: 10px 4px; border-top: 1px solid var(--m-rule); }
 .m-source-action { color: var(--m-ink-2); font-size: var(--m-t-1); width: 100%; overflow-wrap: anywhere; }
 .m-reader-note { margin: var(--m-s2) 0 var(--m-s3); }
@@ -94,10 +93,11 @@ button { cursor: pointer; } button:disabled { cursor: default; }
 .m-highlight-swatch[data-highlight-colour="blue"] { --highlight-swatch: var(--m-highlight-blue); }
 .m-highlight-swatch[data-highlight-colour="rose"] { --highlight-swatch: var(--m-highlight-rose); }
 .m-excerpt { display: none; color: var(--m-ink); width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.is-compact .m-excerpt { display: block; }.is-compact .m-thread-body { display: none; }
+/* Compact state belongs to one card. Cards nest, so these reach its own children only. */
+.m-thread.is-compact > .m-excerpt { display: block; }.m-thread.is-compact > .m-thread-body { display: none; }
 .m-thread.is-compact { padding-block: 2px; }
-.m-thread.is-tick .m-excerpt { font-size: 0; width: 28px; min-width: 28px; min-height: 28px; }
-.m-thread.is-tick .m-excerpt::before { content: ''; display: block; height: 1px; width: 14px; background: var(--m-ink); }
+.m-thread.is-tick > .m-excerpt { font-size: 0; width: 28px; min-width: 28px; min-height: 28px; }
+.m-thread.is-tick > .m-excerpt::before { content: ''; display: block; height: 1px; width: 14px; background: var(--m-ink); }
 .m-threads { min-width: 0; }.m-empty { color: var(--m-ink-2); padding: 24px 0 40px; }
 .m-footer { border-top: 1px solid var(--m-rule); padding: var(--m-s4) 0; display: flex; flex-wrap: wrap; gap: 6px var(--m-s4); align-items: center; }
 .m-footer .m-actions { margin: 0; }
@@ -146,10 +146,14 @@ button { cursor: pointer; } button:disabled { cursor: default; }
  .mg { position: fixed; inset: 0 0 0 auto; width: min(440px, 100%); z-index: var(--m-z-float); box-shadow: calc(-1 * var(--m-s3)) 0 32px rgb(20 24 28 / 18%); transition: width 160ms ease, box-shadow 160ms ease; }
  .mg.is-collapsed { width: 40px; box-shadow: -1px 0 0 var(--m-rule); }.m-panel { width: auto; }.m-captured-source { padding-inline-end: 56px; }
 }
-@media(max-width: 420px) { .m-bar { padding-left: var(--m-s3); }.m-head { padding-inline: var(--m-s3); }.m-scroll,.m-settings { padding-inline: var(--m-s3); }.m-wordmark { font-size: 13px; } }
+@media(max-width: 420px) { .m-head { padding-inline: var(--m-s3); }.m-scroll,.m-settings { padding-inline: var(--m-s3); }.m-wordmark { font-size: 13px; } }
 @media(prefers-reduced-motion: reduce) { *,*::before,*::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
 
-.m-selection-actions { flex-wrap: nowrap; gap: var(--m-s4); }
+/* Four controls sit on one row while the row has space. When it runs out, at a
+   narrow width or a large zoom, the row breaks instead of running off the side,
+   and each label stays on its own single line. */
+.m-selection-actions { flex-wrap: wrap; gap: var(--m-s2) var(--m-s4); }
+.m-selection-actions button { white-space: nowrap; }
 .m-selection-actions button,.m-suggestion button { min-height: var(--m-target); text-decoration: none; }
 .m-selection-actions button:hover,.m-selection-actions button:focus-visible,.m-suggestion button:hover,.m-suggestion button:focus-visible { text-decoration: underline; }
 .m-suggestion { display: flex; align-items: center; gap: var(--m-s3); min-height: var(--m-target); font-size: var(--m-t0); }
@@ -166,3 +170,28 @@ button { cursor: pointer; } button:disabled { cursor: default; }
 .m-related ul { display: grid; gap: var(--m-s2); list-style: none; margin: 0; padding: 0; }
 .m-related li { margin: 0; }
 .m-related p { font-size: var(--m-t-1); margin: var(--m-s1) 0 0; }
+
+/* Quiet thread cards: no controls at rest, one row on hover or focus. */
+.m-thread-tools { margin-top: var(--m-s3); opacity: 0; pointer-events: none; transition: opacity var(--m-fast) var(--m-ease); }
+.m-thread:hover .m-thread-tools,.m-thread:focus-within .m-thread-tools { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .m-thread-tools { opacity: 1; pointer-events: auto; } }
+@media (any-pointer: coarse) { .m-thread-tools { opacity: 1; pointer-events: auto; } }
+@media (prefers-reduced-motion: reduce) { .m-thread-tools { transition: none; } }
+.m-thread-more { margin: 0; }
+.m-thread-more > summary { font-size: var(--m-t-1); color: var(--m-ink-2); min-height: var(--m-target); display: inline-flex; align-items: center; }
+.m-thread-more .m-actions { flex-direction: column; align-items: flex-start; gap: var(--m-s1); margin-top: var(--m-s1); }
+/* Display-only grouping: repeats of one passage sit inside the lead card. */
+.m-thread-repeats { margin: var(--m-s3) 0 0; }
+.m-thread-repeats > summary { font-size: var(--m-t-1); color: var(--m-ink-3); min-height: var(--m-target); display: inline-flex; align-items: center; }
+.m-thread-repeats .m-thread { border-top: 1px solid var(--m-rule); padding-block: var(--m-s3) 0; }
+.m-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: normal; }
+.m-thread-line { margin-top: var(--m-s2); }
+.m-reply-title { margin-inline-start: var(--m-indent); color: var(--m-ink-2); font-size: var(--m-t0); }
+.m-source-lead { font-size: var(--m-t0); color: var(--m-ink); }
+.m-source-meta { font-size: var(--m-t-1); color: var(--m-ink-2); margin-top: var(--m-s2); }
+.m-rail .m-wordmark { font-size: 10px; writing-mode: vertical-rl; letter-spacing: 0; margin-bottom: var(--m-s2); color: var(--m-ink-2); }
+.m-blocked { margin-top: var(--m-s2); color: var(--m-ink-2); font-size: var(--m-t-1); }
+.m-blocked p { margin: 0 0 var(--m-s1); }
+.m-footer-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--m-s2) var(--m-s4); }
+.m-footer-more > summary { min-height: var(--m-target); display: inline-flex; align-items: center; }
+.m-footer-more .m-actions { flex-direction: column; align-items: flex-start; gap: var(--m-s1); }
