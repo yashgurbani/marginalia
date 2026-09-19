@@ -5,7 +5,7 @@ import type { SolverExecutionService } from './service.ts';
  * The composition boundary for T06 and the explicit controls in T05. It is a
  * plain function so it can be mounted by `daemon/server.ts` and tested without
  * a socket. Mounting it is a one-line change in that frozen file; the exact
- * patch is in `docs/evidence/T20/integration.patch`.
+ * patch is in the historical receipt (omitted from this public tree).
  *
  * A margin talks to two endpoints. `POST prepare` asks the host to plan a
  * recompute and returns an opaque plan; `POST recompute` runs one prepared plan

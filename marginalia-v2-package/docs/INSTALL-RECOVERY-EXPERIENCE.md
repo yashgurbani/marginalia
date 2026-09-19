@@ -2,7 +2,7 @@
 
 Status: design and copy specification, written 2026-09-17 from a source reading of `codex/marginalia-v2` (head `2c35157` plus uncommitted work). Nothing in this document was run. It does not complete the T19 installer, the diagnostics page or the fresh-machine test. Those remain T19 implementation work.
 
-Evidence and line references: `docs/evidence/T19-fable-review.md`.
+Evidence and line references: the historical receipt (omitted from this public tree).
 
 ## 1. The promise this flow must keep
 

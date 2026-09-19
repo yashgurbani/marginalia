@@ -23,8 +23,7 @@ The founding documents sit at the repository root: the research whitepaper, `PRO
 |---|---|
 | [BUILD-STATUS.md](../BUILD-STATUS.md) | What runs today |
 | [CONSOLIDATION-HANDOFF-2026-09-18.md](CONSOLIDATION-HANDOFF-2026-09-18.md) | Latest verified checkpoint and the remaining merge queue |
-| [Source promises and release gates](evidence/consolidation-2026-09-18/final/source-gates.md) | Every promise, its evidence, and what is still unproven |
-| [evidence/](evidence/) | Test logs, review reports and QA receipts, kept with their original scope |
+| [Build scope](SCOPE-COVERAGE.md) | Implemented scope and remaining gaps; raw historical receipts are omitted from this public tree |
 
 Library search and “Related saved passages” are available in the local library page. Code and automated tests support this claim; native browser acceptance has not been recorded.
 
@@ -44,4 +43,4 @@ These gates are open. Tests and CI do not close them.
 
 ## Process history
 
-[archive/](archive/) holds the handoffs, plans, reviews and ledgers written during the build. They are kept for provenance. You do not need them to use or evaluate Marginalia.
+Historical handoffs, plans and review records are omitted from this public tree. Their earlier conclusions remain scoped to the revisions and checks they describe.

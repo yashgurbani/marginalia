@@ -14,6 +14,6 @@ Anchor validation follows the shared reader contract: prefix and suffix context 
 
 From the v2 package root, the existing scripts are `npm run extension:build` and `npm run extension:typecheck`. WXT writes the unpacked Chrome build to `extension/.output/chrome-mv3`. The generated output is ignored.
 
-**Testing is deferred by user instruction.** The generated build currently predates the final security/reconnect changes. Rebuild and complete the deferred browser checks before loading it for acceptance or making release claims. See `wayfinder/build-receipts/T04.md` and `docs/evidence/T04-review.md`.
+**Testing is deferred by user instruction.** The generated build currently predates the final security/reconnect changes. Rebuild and complete the deferred browser checks before loading it for acceptance or making release claims. See `wayfinder/build-receipts/T04.md`; the historical review receipt is omitted from this public tree.
 
 Chrome 116 or later is required for the document/context APIs used by the native surface and authenticated frame binding. Other browser compatibility has not been established. Page-owned DOM can obstruct or remove a floating frame; it is not an authorization surface for helper transfer or future provider consent.

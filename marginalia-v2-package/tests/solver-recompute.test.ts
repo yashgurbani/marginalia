@@ -154,9 +154,9 @@ test('a refusal never echoes the helper reason text', async () => {
     'plan-unknown', 'plan-expired', 'request-identity-mismatch', 'generation-drift'] as const satisfies readonly SolverRejectionCode[];
   for (const code of codes) {
     const fake = fakeTransport();
-    fake.prepareWith(async () => ({ status: 'rejected', code, reason: 'C:\\Users\\reader\\workspace\\attempt-9 leaked' }));
+    fake.prepareWith(async () => ({ status: 'rejected', code, reason: '<home>\\workspace\\attempt-9 leaked' }));
     const view = await adapter(fake.transport).run(request()), copy = view.headline + view.detail;
-    assert.equal(view.state, 'denied'); assert.doesNotMatch(copy, /C:\\Users|attempt-9/);
+    assert.equal(view.state, 'denied'); assert.doesNotMatch(copy, /<home>\\workspace|attempt-9/);
   }
 });
 

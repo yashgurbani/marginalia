@@ -32,11 +32,11 @@ The worktree inventory observed 143 registered paths, all present, with zero sta
 | E06 | Existing decomposition packet | Apply after shared margin behavior settles |
 | E15 / Wayfinder closures | Existing documentation owner and closure artifacts | Reconcile derived source documents and ticket resolutions against accepted integrated evidence |
 
-Exact owner IDs, source paths, review reports and patch hashes are preserved in the linked reports. E19's earlier main delta also survives in stash **7be304e798f3b1a5769c002a5e0b801cea471cdb**, plus the binary patch/hash under `D:/Projects/Marginalia/marginalia-v2-package/.local/chief-handoff/`. Do not pop it wholesale over later reader changes. Fable receives this queue; this chief has not merged the unreviewed corrections.
+Exact owner IDs, source paths, review reports and patch hashes are preserved in the linked reports. E19's earlier main delta also survives in stash **7be304e798f3b1a5769c002a5e0b801cea471cdb**, plus the binary patch/hash under `<repo>/marginalia-v2-package/.local/chief-handoff/`. Do not pop it wholesale over later reader changes. Fable receives this queue; this chief has not merged the unreviewed corrections.
 
 ## Authority and open gates
 
-The incoming chief acknowledged the previous chief's transfer and was the sole main writer for this checkpoint. Main integration now stops for Fable's continuation. The canonical machine-local handoff is `C:/Users/reader/.Codex/handoffs/887709816af024ef2a6a6a20372994d92f4607c5818ced60a24cab10258f9d2b/ACTIVE.md`; its ownership record states whether a successor has acknowledged takeover. Preparing a handoff does not assert Fable has read it.
+The incoming chief acknowledged the previous chief's transfer and was the sole main writer for this checkpoint. Main integration now stops for Fable's continuation. The canonical machine-local handoff is `<home>/.Codex/handoffs/887709816af024ef2a6a6a20372994d92f4607c5818ced60a24cab10258f9d2b/ACTIVE.md`; its ownership record states whether a successor has acknowledged takeover. Preparing a handoff does not assert Fable has read it.
 
 User-owned root README.md and CONTEXT.md remain modified; founding whitepaper, PRODUCT.md, BUILD-PLAN and unrelated untracked artifacts remain preserved. There was no reset, force push, worktree deletion or founding-document rewrite.
 

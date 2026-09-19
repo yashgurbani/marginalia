@@ -26,7 +26,7 @@ T14/T15's owner published86d6581; merge is held for review corrections. T20 cont
 
 ## Independent verification and integration
 
-Use registered Codex MCP dynamically routed complementary accounts, explicit gpt-5.6-luna with model_reasoning_effort=max. Skill: C:\Users\reader\.codex\skills\codex-mcp-router\SKILL.md. Launcher: C:\Users\reader\yasb-personal\scripts\Start-Active-Codex-Mcp.ps1; router: Codex-Mcp-Router.mjs. This developer route is not product authentication or confinement evidence. No account pinning, credential copying, native fallback or recursive worker delegation.
+Use registered Codex MCP dynamically routed complementary accounts, explicit gpt-5.6-luna with model_reasoning_effort=max. Skill: `<home>/.codex/skills/codex-mcp-router/SKILL.md`. Launcher: `<home>/yasb-personal/scripts/Start-Active-Codex-Mcp.ps1`; router: Codex-Mcp-Router.mjs. This developer route is not product authentication or confinement evidence. No account pinning, credential copying, native fallback or recursive worker delegation.
 
 Verify a published fixed SHA in an isolated worktree: actual diff/ownership, source behavior, focused tests/typecheck and relevant entry path. Requested model/effort is not runtime verification unless observed. Preserve report/threadId. A timed-out outer call may leave a live worker; inspect before retry. If the session is lost, recover existing evidence and use a bounded report/correction continuation rather than rerunning everything.
 
