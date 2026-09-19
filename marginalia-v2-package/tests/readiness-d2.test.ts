@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { startServer } from '../daemon/server.ts';
@@ -72,25 +73,33 @@ class FakeTransport implements RpcTransport {
 
 for (const scenario of ['stock', 'no-env', 'old-variables', 'invalid-executable', 'invalid-home', 'excluded', 'denied'] as const) {
   test(`D2 configured stock factory with fake transport: ${scenario}`, async t => {
-    const keys = [...oldVariables, 'MARGINALIA_CODEX_EXECUTABLE', 'MARGINALIA_CODEX_HOME'];
-    const saved = keys.map(key => process.env[key]);
-    t.after(() => keys.forEach((key, index) => { if (saved[index] === undefined) delete process.env[key]; else process.env[key] = saved[index]; }));
-    const root = await mkdtemp(join(tmpdir(), 'readiness-d2-'));
+    // Production main canonicalizes its data directory before planning job policies.
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'readiness-d2-')));
     t.after(() => rm(root, { recursive: true, force: true }));
-    const executable = join(root, process.platform === 'win32' ? 'codex.exe' : 'codex'), home = join(root, scenario === 'no-env' ? '.codex' : 'home');
-    await writeFile(executable, 'Fixture bytes. This file is never executed.'); await mkdir(home);
-    for (const key of oldVariables) delete process.env[key];
+    const userHome = join(root, 'reader'), ordinaryHome = join(userHome, '.codex');
+    const executable = join(root, process.platform === 'win32' ? 'codex.exe' : 'codex');
+    const home = scenario === 'no-env' ? ordinaryHome : join(root, 'dedicated');
+    await writeFile(executable, 'Fixture bytes. This file is never executed.');
+    await mkdir(ordinaryHome, { recursive: true });
+    if (home !== ordinaryHome) await mkdir(home);
+    // Match the runtime identity convention even when the temp path is an alias.
+    const expectedExecutable = realpathSync(executable), expectedHome = realpathSync(home);
+    const env: NodeJS.ProcessEnv = { PATH: root, CODEX_HOME: join(root, 'ignored-agent-home') };
     if (scenario === 'old-variables') {
-      process.env.MARGINALIA_AUTHORIZED_RUNTIME_MODULE = join(root, 'must-not-load.mjs');
-      process.env.MARGINALIA_READER_AUTHORIZED_UNCONFINED = 'not-an-acknowledgement';
+      env.MARGINALIA_AUTHORIZED_RUNTIME_MODULE = join(root, 'must-not-load.mjs');
+      env.MARGINALIA_READER_AUTHORIZED_UNCONFINED = 'not-an-acknowledgement';
     }
-    process.env.MARGINALIA_CODEX_EXECUTABLE = scenario === 'invalid-executable' ? join(root, 'missing.exe') : executable;
-    process.env.MARGINALIA_CODEX_HOME = scenario === 'invalid-home' ? executable : home;
+    if (scenario !== 'no-env') {
+      env.MARGINALIA_CODEX_EXECUTABLE = scenario === 'invalid-executable' ? join(root, 'missing.exe') : executable;
+      env.MARGINALIA_CODEX_HOME = scenario === 'invalid-home' ? executable : home;
+    }
     const transports: FakeTransport[] = [];
     const server = await startServer({ database: ':memory:', port: 0, jobWorkspaceRoot: join(root, 'jobs'),
       runtimeFactoryBuilder: async input => createAuthorizedRuntime({ ...input, dataDir: root }, {
-        ...(scenario === 'no-env' ? { discovery: { env: { PATH: root, CODEX_HOME: join(root, 'ignored-agent-home') }, userHome: root } } : {}),
+        discovery: { env, userHome },
         launch: async (provider, options) => {
+          assert.equal(options.executable, expectedExecutable);
+          assert.equal(options.codexHome, expectedHome);
           assert.equal(options.homeMode, scenario === 'no-env' ? 'ordinary' : undefined);
           if (scenario === 'no-env') {
             assert.deepEqual(options.configOverrides, {});
@@ -100,12 +109,12 @@ for (const scenario of ['stock', 'no-env', 'old-variables', 'invalid-executable'
             assert.equal(inherited.READER_TOOL_KEY, source.READER_TOOL_KEY);
             assert.equal(inherited.OPENAI_API_KEY, source.OPENAI_API_KEY);
             assert.equal(inherited.HTTPS_PROXY, source.HTTPS_PROXY);
-            assert.equal(inherited.CODEX_HOME, home);
+            assert.equal(inherited.CODEX_HOME, expectedHome);
           }
-          const rpc = new FakeTransport(home, scenario === 'no-env'); transports.push(rpc);
-          const file = fileIdentity(executable);
+          const rpc = new FakeTransport(expectedHome, scenario === 'no-env'); transports.push(rpc);
+          const file = fileIdentity(expectedExecutable);
           recordLaunch(rpc, { provider, executable: file, executableSha256: await executableDigest(file),
-            version: 'codex-cli 0.153.4', workspace: options.workspace, codexHome: home,
+            version: 'codex-cli 0.153.4', workspace: options.workspace, codexHome: expectedHome,
             inheritedEnvironmentKeys: [], environmentValueDigests: {}, windowsKeyCasingReviewed: true, observedAt: new Date().toISOString() });
           return rpc;
         },
