@@ -3,6 +3,46 @@ import type { JournalState } from '../../ui/journal.ts';
 import { validSnapshot, type Snapshot } from './protocol.ts';
 
 export type SelectionAction = 'keep' | 'note' | 'ask' | 'simulate';
+/** Local UI contract only. These values are not additions to the wire protocol.
+ * The host must check this frozen target against its captured source before acting.
+ */
+export type SelectionBarTarget = Readonly<{ document: string; revision: number; anchor: Readonly<QuoteAnchor> }>;
+export type SelectionBarOffer = Readonly<{ id: string; label: string; kind: 'define' | 'suggestion' }>;
+export type SelectionBarModel = Readonly<{
+  target: SelectionBarTarget;
+  scope: 'word' | 'passage';
+  offers: readonly SelectionBarOffer[];
+  more: readonly SelectionBarOffer[];
+  articleBounds?: Readonly<{ left: number; right: number }>;
+}>;
+export type SelectionBarCallbacks = {
+  highlight(target: SelectionBarTarget): Promise<boolean>;
+  note(target: SelectionBarTarget): Promise<boolean>;
+  offer(target: SelectionBarTarget, offer: SelectionBarOffer): Promise<boolean>;
+  question(target: SelectionBarTarget, text: string): Promise<boolean>;
+};
+
+/** Snapshot host input once, so re-ranking or changing the host's target cannot
+ * silently retarget a displayed control. Word includes host-classified terms.
+ */
+export function selectionBarModel(model: SelectionBarModel): SelectionBarModel {
+  const ids = new Set<string>();
+  const copy = (offers: readonly SelectionBarOffer[], limit: number, wordOnly: boolean) => {
+    const result: SelectionBarOffer[] = [];
+    for (const offer of offers) {
+      if (result.length >= limit) break;
+      if (!offer.id || !offer.label.trim() || ids.has(offer.id) || (wordOnly && offer.kind !== 'define')) continue;
+      ids.add(offer.id); result.push(Object.freeze({ id: offer.id, label: offer.label, kind: offer.kind }));
+    }
+    return Object.freeze(result);
+  };
+  const offers = copy(model.offers, model.scope === 'word' ? 1 : 3, model.scope === 'word');
+  return Object.freeze({
+    target: Object.freeze({ document: model.target.document, revision: model.target.revision, anchor: Object.freeze({ ...model.target.anchor }) }),
+    scope: model.scope, offers, more: copy(model.more, Infinity, false),
+    ...(model.articleBounds ? { articleBounds: Object.freeze({ ...model.articleBounds }) } : {}),
+  });
+}
 export type PanelAction = Exclude<SelectionAction, 'keep'> | 'read-later';
 export type ActionRequest = {
   id: string; action: PanelAction; browserDocument: string; snapshot: Snapshot; expires: number;
