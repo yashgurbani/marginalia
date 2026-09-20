@@ -3,7 +3,7 @@ import { rankEligibleSuggestions, suggestionBlock, suggestionPage, suggestionOff
 import type { Intent } from '../contracts/reply.ts';
 import { followupQuestion } from './asking/surfaces.ts';
 import type { HighlightColour, QuoteAnchor, ReaderMutation, SourceCapture, Thread } from '../contracts/reader.ts';
-import { HIGHLIGHT_COLOURS, wholePageAnchor, attachQuote, highlightColour } from '../contracts/reader.ts';
+import { HIGHLIGHT_COLOURS, wholePageAnchor, attachQuote, highlightColour, validateReaderMutation } from '../contracts/reader.ts';
 import { el, button } from './dom.ts';
 import { localPersistence, documentJournal, documentDraft, documentQuestion, unsavedDrafts, unsavedQuestions, sourceBoundJournal, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle, replyIsRemoved, SUGGESTION_POLICY_VERSION, type SuggestionExposureResolution, type MarginDraft, type CachedReply } from './persistence.ts';
 import { anchorAt, readingAnchorAt, orderedThreads, outgoingPreview, sourceLocation, pageDefinition, displayPosition, egressRecord } from './margin-model.ts';
@@ -748,13 +748,47 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     finally { saving = false; if (draft) draftSaveFailed = true; if (alive()) { renderCompose(); renderSettings(); } }
   }
 
+  // Capture time alone is not a source version. Empty sourceVersionIds do not
+  // establish equality: require the original capture retained by the journal.
+  function captureIdentity(value: SourceCapture) {
+    return JSON.stringify([value.url, value.text, value.extractionVersion, value.title, value.pageType,
+      value.author ?? null, value.publicationDate ?? null, value.venue ?? null,
+      (value.sections ?? []).map(({ title, start, end }) => [title, start, end])]);
+  }
+  function sameAnchor(left: QuoteAnchor, right: QuoteAnchor) {
+    return (left.kind ?? 'quote') === (right.kind ?? 'quote') && left.start === right.start && left.end === right.end &&
+      left.exact === right.exact && left.prefix === right.prefix && left.suffix === right.suffix;
+  }
+  function keptPassage(anchor: QuoteAnchor) {
+    const identity = captureIdentity(capture);
+    const retained: ReaderMutation[] = [...journal.state.pending];
+    // Acknowledgement fingerprints retain the complete original mutation.
+    // Legacy/unknown receipts cannot prove source identity and stay separate.
+    for (const receipt of journal.state.acknowledged ?? []) {
+      try { const mutation: unknown = JSON.parse(receipt.fingerprint); validateReaderMutation(mutation); retained.push(mutation); }
+      catch { /* No verified capture available in this receipt. */ }
+    }
+    return journal.state.threads.find(thread => !thread.deletedAt && thread.sourceUrl === capture.url && sameAnchor(thread.anchor, anchor) &&
+      retained.some(mutation => mutation.kind === 'keep' && mutation.threadId === thread.id &&
+        sameAnchor(mutation.anchor, anchor) && captureIdentity(mutation.capture) === identity));
+  }
   async function keep(anchor: QuoteAnchor, parked = false) {
     let saved = false;
     await safely(async () => {
-      const existing = orderedThreads(threadsNow(), capture).find(t => t.anchor.start === anchor.start && t.anchor.exact === anchor.exact);
-      const threadId = existing?.id ?? id();
-      if (!existing) await change({ id: id(), kind: 'keep', threadId, capture, anchor });
-      if (parked) { const thread = journal.state.threads.find(t => t.id === threadId)!; await change({ id: id(), kind: 'thread-state', threadId, state: 'parked', expectedRevision: thread.revision }); }
+      try {
+        await locked(async () => {
+          if (!alive()) throw new Error('This margin has closed.');
+          if (!storageReady) throw new Error('Local saving is unavailable. Keep your draft open.');
+          if (journal.unsaved) throw new Error('Retry saving in Settings before making another change.');
+          await journal.load();
+          const existing = keptPassage(anchor);
+          const threadId = existing?.id ?? id();
+          if (!existing) await journal.change({ id: id(), kind: 'keep', threadId, capture, anchor });
+          const thread = journal.state.threads.find(t => t.id === threadId)!;
+          if (parked && thread.state !== 'parked') await journal.change({ id: id(), kind: 'thread-state', threadId, state: 'parked', expectedRevision: thread.revision });
+        });
+      } catch (error) { if (!journal.unsaved) renderThreads(); throw error; }
+      changed(); renderThreads();
       announce(parked ? 'Passage saved for later on this device.' : 'Passage kept on this device.'); saved = true;
     });
     return saved;
@@ -788,7 +822,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     // D49: the fourth resting control starts the same simulate request that choosing
     // Simulate it after Ask starts today. It adds no authority of its own.
     const simulateButton = button('Simulate it', () => { if (blocked) announce(blocked); askSimulate(anchor, !blocked); });
-    const row = actions(button('Keep', async () => { if (await keep(anchor)) closeSelection(); }), button('Note', () => beginDraft(anchor)), askButton, simulateButton);
+    let keepPending = false;
+    const keepButton = button('Keep', async () => {
+      if (keepPending) return;
+      keepPending = true; keepButton.disabled = true;
+      try { if (await keep(anchor)) closeSelection(); }
+      finally { keepPending = false; keepButton.disabled = false; }
+    });
+    const row = actions(keepButton, button('Note', () => beginDraft(anchor)), askButton, simulateButton);
     row.classList.add('m-selection-actions');
     row.querySelectorAll<HTMLButtonElement>('button').forEach((control, index) => { control.id = 'm-selection-' + ['keep', 'note', 'ask', 'simulate'][index]; });
     // The reason sits at the control, not at the bottom of the panel. No pairing

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { storage, asHost } from './t05-harness.ts';
 import { dom, button, replaceGlobals } from './t05-dom.ts';
-import type { JournalState } from '../ui/journal.ts';
+import { ReaderJournal, type JournalState } from '../ui/journal.ts';
 import type { QuoteAnchor, SourceCapture } from '../contracts/reader.ts';
 import type { AskingSelection } from '../ui/asking-host.ts';
 const { mountMargin } = await import('../ui/margin.ts');
@@ -181,4 +181,144 @@ test('read later saves the page once however many times it runs', async t => {
   assert.equal(state.threads[0].anchor.kind, 'whole-page');
   assert.equal(state.threads[0].state, 'parked');
   api.destroy(); await api.drain();
+});
+
+test('rapid Keep clicks reserve one thread before the next click can run', async t => {
+  const e = env(t), api = await mount(e.root, e.namespace); await api.drain();
+  t.after(async () => { api.destroy(); await api.drain(); });
+  api.select(anchor()); await api.drain();
+  const keep = button(e.root.querySelector('.m-selection')!, 'Keep');
+  keep.click(); const pending = keep.disabled; keep.click(); await api.drain();
+  const state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads.length, 1);
+  assert.equal(state.pending.filter(change => change.kind === 'keep').length, 1);
+  assert.equal(pending, true, 'disabled synchronously, before storage completes');
+});
+
+test('two mounted margins share the Keep reservation; sequential Keep and mutation replay retain it', async t => {
+  const e = env(t), root2 = e.document.createElement('div'); e.document.body.append(root2);
+  const first = await mount(e.root, e.namespace), second = await mount(root2, e.namespace);
+  t.after(async () => { first.destroy(); second.destroy(); await Promise.all([first.drain(), second.drain()]); });
+  await Promise.all([first.drain(), second.drain()]);
+  first.select(anchor()); second.select(anchor());
+  button(e.root.querySelector('.m-selection')!, 'Keep').click();
+  button(root2.querySelector('.m-selection')!, 'Keep').click();
+  await Promise.all([first.drain(), second.drain()]);
+  const state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads.length, 1);
+  first.select(anchor()); button(e.root.querySelector('.m-selection')!, 'Keep').click(); await first.drain();
+  const journal = documentJournal(e.namespace, localPersistence(e.namespace).journal);
+  await navigator.locks.request(e.namespace, async () => { await journal.load(); await journal.change(state.pending[0]); });
+  assert.equal(journal.state.threads.length, 1);
+  assert.equal(journal.state.pending.length, 1);
+});
+
+async function clickKeep(api: Awaited<ReturnType<typeof mount>>, root: ReturnType<typeof dom>['root'], value = anchor()) {
+  api.select(value); button(root.querySelector('.m-selection')!, 'Keep').click(); await api.drain();
+}
+
+test('Keep reloads a separate tab journal before lookup and ID reservation', async t => {
+  const e = env(t), api = await mount(e.root, e.namespace); await api.drain();
+  t.after(async () => { api.destroy(); await api.drain(); });
+  const other = new ReaderJournal(localPersistence(e.namespace).journal);
+  const mutation = { id: crypto.randomUUID(), kind: 'keep' as const, threadId: crypto.randomUUID(), capture, anchor: anchor() };
+  // Queue the other tab first while this mounted margin still has an empty journal.
+  // This journal is independent of documentJournal and emits no broadcast refresh.
+  const remote = navigator.locks.request(e.namespace, async () => { await other.load(); await other.change(mutation); });
+  await clickKeep(api, e.root); await remote;
+  const state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads.length, 1);
+  assert.equal(state.threads[0].id, mutation.threadId);
+  assert.deepEqual(state.pending, [mutation]);
+});
+
+test('acknowledged Keep retains its capture identity across a remount', async t => {
+  const e = env(t), first = await mount(e.root, e.namespace); await first.drain();
+  await clickKeep(first, e.root);
+  const journal = documentJournal(e.namespace, localPersistence(e.namespace).journal);
+  const remote = journal.state.threads.map(thread => ({ ...thread, sourceVersionId: 'verified-source' }));
+  await navigator.locks.request(e.namespace, () => journal.sync(async () => {}, async () => remote));
+  first.destroy(); await first.drain();
+  const before = structuredClone(e.data(e.namespace).get('journal'));
+  const second = await mount(e.root, e.namespace); await second.drain();
+  t.after(async () => { second.destroy(); await second.drain(); });
+  await clickKeep(second, e.root);
+  assert.deepEqual(e.data(e.namespace).get('journal'), before);
+});
+
+test('Keep preserves distinct offsets and every part of the saved anchor', async t => {
+  const e = env(t), text = 'Same. Same.', current = { ...capture, text };
+  const api = await mountMargin(asHost(e.root), { capture: current, storageName: e.namespace, allowHelper: false }); await api.drain();
+  t.after(async () => { api.destroy(); await api.drain(); });
+  const first: QuoteAnchor = { kind: 'quote', start: 0, end: 5, exact: 'Same.', prefix: '', suffix: '' };
+  const values = [first, { ...first, start: 6, end: 11 }, { ...first, suffix: ' Same.' }, { ...first, kind: 'section' as const }];
+  for (const value of values) await clickKeep(api, e.root, value);
+  const state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads.length, values.length);
+  assert.deepEqual(state.threads.map(thread => thread.anchor), values);
+});
+
+test('Keep separates source text, extraction, metadata, sections and URL versions with the same quote', async t => {
+  const e = env(t);
+  const versions: SourceCapture[] = [capture, { ...capture, text: capture.text + ' Added.' },
+    { ...capture, extractionVersion: 'test-v2' }, { ...capture, title: 'Changed title' },
+    { ...capture, author: 'Another author' }, { ...capture, sections: [{ title: 'Opening', start: 0, end: capture.text.length }] },
+    { ...capture, url: 'https://example.org/another-source' }];
+  for (const current of versions) {
+    const api = await mountMargin(asHost(e.root), { capture: current, storageName: e.namespace, allowHelper: false }); await api.drain();
+    await clickKeep(api, e.root); api.destroy(); await api.drain();
+  }
+  assert.equal((e.data(e.namespace).get('journal') as JournalState).threads.length, versions.length);
+  const api = await mountMargin(asHost(e.root), { capture: { ...capture, capturedAt: '2026-09-20T00:00:00Z' }, storageName: e.namespace, allowHelper: false }); await api.drain();
+  await clickKeep(api, e.root); api.destroy(); await api.drain();
+  assert.equal((e.data(e.namespace).get('journal') as JournalState).threads.length, versions.length, 'capture time alone is not a new version');
+});
+
+test('intentional standalone notes remain separate and Keep never rewrites stored lookalikes', async t => {
+  const e = env(t), api = await mount(e.root, e.namespace); await api.drain();
+  t.after(async () => { api.destroy(); await api.drain(); });
+  for (let i = 0; i < 2; i++) {
+    api.select(anchor()); button(e.root.querySelector('.m-selection')!, 'Note').click(); await api.drain();
+    const input = e.root.querySelector('.m-compose')!.querySelector('textarea')!;
+    input.value = 'Deliberately repeated note'; input.fire('input');
+    button(e.root.querySelector('.m-compose')!, 'Save note').click(); await api.drain();
+  }
+  const before = structuredClone(e.data(e.namespace).get('journal') as JournalState);
+  assert.equal(before.threads.length, 2);
+  assert.notEqual(before.threads[0].id, before.threads[1].id);
+  await clickKeep(api, e.root);
+  assert.deepEqual(e.data(e.namespace).get('journal'), before);
+});
+
+test('an unknown original capture stays separate even with identical quote and empty version', async t => {
+  const e = env(t), seed = new ReaderJournal(localPersistence(e.namespace).journal);
+  await seed.load(); await seed.change({ id: crypto.randomUUID(), kind: 'keep', threadId: crypto.randomUUID(), capture, anchor: anchor() });
+  const legacy = structuredClone(seed.state); legacy.pending = []; legacy.acknowledged = [];
+  e.data(e.namespace).set('journal', legacy);
+  const api = await mount(e.root, e.namespace); await api.drain();
+  t.after(async () => { api.destroy(); await api.drain(); });
+  await clickKeep(api, e.root);
+  const state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads.length, 2);
+  assert.deepEqual(state.threads[0], legacy.threads[0]);
+});
+
+test('failed persistence releases the button and retry preserves the original Keep mutation', async t => {
+  const e = env(t), api = await mount(e.root, e.namespace); await api.drain();
+  t.after(async () => { api.destroy(); await api.drain(); });
+  e.onWrite(async key => { if (key === 'journal') throw new Error('disk full'); });
+  api.select(anchor()); const control = button(e.root.querySelector('.m-selection')!, 'Keep');
+  control.click(); await api.drain();
+  assert.equal(control.disabled, false);
+  const journal = documentJournal(e.namespace, localPersistence(e.namespace).journal);
+  assert.equal(journal.unsaved, true);
+  const mutation = structuredClone(journal.state.pending[0]);
+  control.click(); await api.drain();
+  assert.deepEqual(journal.state.pending, [mutation], 'another click cannot allocate while saving is unresolved');
+  e.onWrite(async () => {});
+  await navigator.locks.request(e.namespace, () => journal.retryPersistence());
+  await clickKeep(api, e.root);
+  const state = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(state.threads.length, 1);
+  assert.deepEqual(state.pending, [mutation]);
 });
