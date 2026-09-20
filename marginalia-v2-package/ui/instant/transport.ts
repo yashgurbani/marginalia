@@ -6,6 +6,9 @@ export type InstantTodayUsage = {
   timezone: string;
   usedTokens: number;
   pendingTokens: number;
+  reservedTokens: number;
+  measuredRequests: number;
+  unreportedRequests: number;
   limitTokens: number;
 };
 
@@ -45,7 +48,7 @@ export class FakeInstantTransport implements InstantTransport {
   constructor(settings: InstantHelpSettings, usage?: Partial<InstantTodayUsage>) {
     this.settings = structuredClone(settings);
     this.usage = { periodStart: '2026-09-18', timezone: settings.tokenBudget.timezone,
-      usedTokens: 0, pendingTokens: 0, limitTokens: settings.tokenBudget.limit, ...usage };
+      usedTokens: 0, pendingTokens: 0, reservedTokens: 0, measuredRequests: 0, unreportedRequests: 0, limitTokens: settings.tokenBudget.limit, ...usage };
   }
 
   async getSettings(): Promise<InstantHelpSettings> { return structuredClone(this.settings); }

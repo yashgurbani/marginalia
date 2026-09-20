@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import { ReaderStore, ConflictError } from '../daemon/store.ts';
 import { LibrarySettingsService } from '../daemon/library.ts';
 import { InstantStore, instantDay } from '../daemon/instant-store.ts';
+import { createInstantService } from '../daemon/instant/index.ts';
 import { ConsentSessionService } from '../daemon/consent/service.ts';
 import { defaultInstantHelpSettings, instantTextToReply } from '../contracts/instant.ts';
 import { validateReply } from '../contracts/reply.ts';
@@ -96,6 +97,27 @@ test('unknown usage stays null and reserved across restart, then provider totals
     assert.equal(store.reserve(request('full', 1), false, now).state, 'admitted');
     assert.throws(() => store.settle('pending', { totalTokens: 1 }), ConflictError);
   } finally { reader.close(); }
+});
+
+test('usage snapshot separates measured, reserved, and unreported work across restart', t => {
+  const file = disk(t), today = new Date('2026-09-20T12:00:00Z'), old = new Date('2026-09-19T12:00:00Z');
+  let reader = new ReaderStore(file), settings = new LibrarySettingsService(reader);
+  settings.saveInstantHelp({ ...settings.instantHelp(), expectedRevision: 0, tokenBudget: { period: 'day', timezone: 'Europe/Berlin', limit: 100_000 } });
+  const store = new InstantStore(reader);
+  store.reserve({ requestId: 'measured', pageKeyHash: 'a'.repeat(64), kind: 'selection', reservedTokens: 100 }, false, today);
+  store.settle('measured', { inputTokens: 90, cachedInputTokens: 80, outputTokens: 10, totalTokens: 100 }, today);
+  store.reserve({ requestId: 'unreported', pageKeyHash: 'b'.repeat(64), kind: 'selection', reservedTokens: 480 }, false, today);
+  store.settle('unreported', { inputTokens: 600, cachedInputTokens: 500, outputTokens: 100 }, today);
+  store.reserve({ requestId: 'old', pageKeyHash: 'c'.repeat(64), kind: 'selection', reservedTokens: 700 }, false, old);
+  let service = createInstantService({ store: reader, now: () => today.getTime() });
+  assert.deepEqual(service.usage(), { periodStart: '2026-09-20', timezone: 'Europe/Berlin', usedTokens: 100, pendingTokens: 700, reservedTokens: 480, measuredRequests: 1, unreportedRequests: 1, limitTokens: 100_000 });
+  service.close(); reader.close();
+
+  reader = new ReaderStore(file); service = createInstantService({ store: reader, now: () => today.getTime() });
+  const restartedStore = new InstantStore(reader);
+  restartedStore.settle('measured', { totalTokens: 100 }, today);
+  assert.deepEqual(service.usage(), { periodStart: '2026-09-20', timezone: 'Europe/Berlin', usedTokens: 100, pendingTokens: 700, reservedTokens: 480, measuredRequests: 1, unreportedRequests: 1, limitTokens: 100_000 });
+  service.close(); reader.close();
 });
 
 test('automatic definitions retain reservations without a daily or sublimit admission gate', t => {

@@ -336,9 +336,16 @@ export function createInstantService(options: InstantServiceOptions) {
     usage() {
       const settings = library.instantHelp(), timezone = settings.tokenBudget.timezone, periodStart = instantDay(new Date(now()), timezone);
       const records = options.store.db.prepare('SELECT createdAt,totalTokens,reservedTokens,inputTokens,outputTokens FROM instant_usage').all() as { createdAt: string; totalTokens: number | null; reservedTokens: number; inputTokens: number | null; outputTokens: number | null }[];
-      let usedTokens = 0, pendingTokens = 0;
-      for (const record of records) if (instantDay(new Date(record.createdAt), timezone) === periodStart) { if (record.totalTokens !== null) usedTokens += record.totalTokens; else pendingTokens += Math.max(record.reservedTokens, (record.inputTokens ?? 0) + (record.outputTokens ?? 0)); }
-      return { periodStart, timezone, usedTokens, pendingTokens, limitTokens: settings.tokenBudget.limit };
+      let usedTokens = 0, pendingTokens = 0, reservedTokens = 0, measuredRequests = 0, unreportedRequests = 0;
+      for (const record of records) if (instantDay(new Date(record.createdAt), timezone) === periodStart) {
+        if (record.totalTokens !== null) { usedTokens = addTokens(usedTokens, record.totalTokens); measuredRequests++; }
+        else {
+          const observed = addTokens(record.inputTokens ?? 0, record.outputTokens ?? 0);
+          pendingTokens = addTokens(pendingTokens, Math.max(record.reservedTokens, observed)); reservedTokens = addTokens(reservedTokens, record.reservedTokens);
+          unreportedRequests++;
+        }
+      }
+      return { periodStart, timezone, usedTokens, pendingTokens, reservedTokens, measuredRequests, unreportedRequests, limitTokens: settings.tokenBudget.limit };
     },
     saveSettings(change: InstantHelpSettingsChange) { const result = library.saveInstantHelp(change); sweep(); return result; },
     async prepare(owner: string, input: InstantPageInput, current: () => boolean): Promise<{ pageId: string; state: InstantState }> {

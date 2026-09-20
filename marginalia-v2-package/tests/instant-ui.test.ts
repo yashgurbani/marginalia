@@ -16,11 +16,15 @@ const inputFor = (root: TestElement, label: string) => {
 
 test('instant settings show owner defaults and save a full revision round trip', async t => {
   const d = dom(t), settings = defaultInstantHelpSettings();
-  const fake = new FakeInstantTransport(settings, { usedTokens: 12_000, pendingTokens: 480 });
+  const fake = new FakeInstantTransport(settings, { periodStart: '2026-09-20', timezone: 'Europe/Berlin', usedTokens: 12_000, pendingTokens: 480, reservedTokens: 480, measuredRequests: 1, unreportedRequests: 2 });
   const mount = mountInstantSettings(d.root as unknown as HTMLElement, fake); t.after(() => mount.destroy());
-  await until(() => d.root.textContent.includes('Instant help has used about 12,000 tokens of your Codex plan today.'));
-  assert.ok(d.root.textContent.includes('Another 480 tokens are pending.'));
-  assert.ok(d.root.textContent.includes('Marginalia does not enforce a daily cap.'));
+  await until(() => d.root.textContent.includes("Today's measured usage"));
+  assert.ok(d.root.textContent.includes('20 September 2026 · Europe/Berlin'));
+  assert.ok(d.root.textContent.includes('Instant help: 12,000 measured tokens'));
+  assert.ok(d.root.textContent.includes('480 tokens reserved for work that has not settled yet. Reserved tokens are not measured use.'));
+  assert.ok(d.root.textContent.includes('2 requests have not reported token totals.'));
+  assert.ok(d.root.textContent.includes('Daily limit: not enforced by Marginalia'));
+  assert.ok(d.root.textContent.includes('Money spent: unknown'));
   assert.ok(d.root.textContent.includes('Instant help uses your Codex subscription.'));
   assert.equal((inputFor(d.root, 'Instant help') as unknown as HTMLInputElement).checked, true);
   assert.equal(d.root.querySelector('input[aria-label="Daily limit in tokens"]'), null);
@@ -34,6 +38,25 @@ test('instant settings show owner defaults and save a full revision round trip',
   assert.equal(fake.saved.length, 1);
   assert.deepEqual({ enabled: fake.settings.enabled, limit: fake.settings.tokenBudget.limit, warm: fake.settings.warmPages, idle: fake.settings.idleMinutes, revision: fake.settings.revision },
     { enabled: false, limit: 100000, warm: 10, idle: 20, revision: 1 });
+});
+
+test('instant settings keep unreported totals unknown instead of showing zero measured tokens', async t => {
+  const d = dom(t), settings = defaultInstantHelpSettings();
+  const fake = new FakeInstantTransport(settings, { periodStart: '2026-09-20', timezone: 'Europe/Berlin', pendingTokens: 900, reservedTokens: 900, unreportedRequests: 2 });
+  const mount = mountInstantSettings(d.root as unknown as HTMLElement, fake); t.after(() => mount.destroy());
+  await until(() => d.root.textContent.includes('Usage unavailable for this period.'));
+  assert.ok(d.root.textContent.includes('900 tokens reserved for work that has not settled yet. Reserved tokens are not measured use.'));
+  assert.ok(d.root.textContent.includes('2 requests have not reported token totals.'));
+  assert.equal(d.root.textContent.includes('Instant help: 0 measured tokens'), false);
+});
+
+test('instant settings show a measured zero separately from unreported work', async t => {
+  const d = dom(t), settings = defaultInstantHelpSettings();
+  const fake = new FakeInstantTransport(settings, { periodStart: '2026-09-20', timezone: 'Europe/Berlin', measuredRequests: 1, unreportedRequests: 1, reservedTokens: 900 });
+  const mount = mountInstantSettings(d.root as unknown as HTMLElement, fake); t.after(() => mount.destroy());
+  await until(() => d.root.textContent.includes('Instant help: 0 measured tokens'));
+  assert.equal(d.root.textContent.includes('Usage unavailable for this period.'), false);
+  assert.ok(d.root.textContent.includes('1 request has not reported token totals.'));
 });
 
 test('definition paints streamed text before completion and then shows the final reply', async t => {
