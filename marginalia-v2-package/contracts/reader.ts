@@ -1,6 +1,7 @@
 import type { CandidateReply } from './reply.ts';
 import type { HostCheckReport } from './host-checks.ts';
 import type { ReaderSkillProvenance } from './reader-skills.ts';
+import type { NoteOperationProvenance } from './note-inclusion.ts';
 
 // Missing kind means a legacy quote. Whole-page anchors deliberately contain no quote.
 export type QuoteAnchor = { kind?: 'quote' | 'section' | 'whole-page'; exact: string; prefix: string; suffix: string; start: number; end: number };
@@ -14,6 +15,8 @@ export type NoteVersion = NoteVersionRef & { text: string; createdAt: string };
 export type ReplyCorrection = { ancestorId: string; ancestorTitle: string; correctionId: string; correctedAt: string };
 // Derived from immutable lineage, including removed versions. Missing on legacy caches.
 export type ReplyVersion = { id: string; threadId: string; parentId: string | null; supersedes: string | null; reply: CandidateReply; hash: string; validation: HostCheckReport; answeredNote: NoteVersion | null; createdAt: string; deletedAt: string | null; revision: number; corrections?: ReplyCorrection[]; readerSkill?: ReaderSkillProvenance };
+/** Disabled S1 record design. Persistence/reopen/export adoption belongs to later stages. */
+export type NoteOperationReplyVersion = ReplyVersion & { operation: NoteOperationProvenance };
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 // The authored reply is immutable; these reader controls are stored independently.
 export type ReplyViewState = { replyVersionId: string; parameters: Record<string, number>; view: { [key: string]: JsonValue }; revision: number; updatedAt: string };

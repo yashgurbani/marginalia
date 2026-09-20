@@ -5,6 +5,7 @@ import type { NoteVersionRef } from './reader.ts';
 import type { ConsentAuthorization } from './consent.ts';
 import type { OutgoingPart } from './consent.ts';
 import type { ReaderSkillProvenance, ReaderSkillSelection, UnformattedSkillOutput } from './reader-skills.ts';
+import type { NoteInclusionManifest, NoteOperation } from './note-inclusion.ts';
 
 export type JobState = 'queued' | 'preparing' | 'sending' | 'running' | 'validating' | 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'outcome_unknown' | 'cancel_requested';
 
@@ -31,6 +32,18 @@ export type StartJobInput = {
 export type PrepareJobInput = Pick<StartJobInput, 'id' | 'idempotencyKey' | 'threadId' | 'intent' | 'question' | 'answeredNote' | 'parentReplyId' | 'readerSkill'>;
 export type PreparedJobPlan = Omit<StartJobInput, 'grantId'>;
 export type PreparedJobResult = { consent: import('./consent.ts').PrepareConsentInput; job: PreparedJobPlan };
+
+/** Disabled S1 design types, deliberately outside active request/packet unions.
+ * S4/S7 must implement admission and source authority before any caller uses these. */
+export type PrepareNoteOperationJobInput = Omit<PrepareJobInput, 'answeredNote' | 'parentReplyId' | 'readerSkill'> & {
+  operation: NoteOperation;
+  answeredNote?: never;
+  parentReplyId?: never;
+  readerSkill?: never;
+};
+export type StartNoteOperationJobInput = Omit<StartJobInput, 'answeredNote' | 'parentReplyId' | 'readerSkill'> & PrepareNoteOperationJobInput;
+/** Host-resolved local context, not a model-visible provider packet. */
+export type FrozenNoteOperationContext = { manifest: NoteInclusionManifest };
 
 export type FollowupJobInput = {
   id: string;
