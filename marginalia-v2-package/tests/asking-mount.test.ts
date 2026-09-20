@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { dom, replaceGlobals, type TestElement } from './t05-dom.ts';
-import { mountAskingCard } from '../ui/asking/mount.ts';
+import { mountAskingCard, mountAskingDraft } from '../ui/asking/mount.ts';
 
 function fixture(t: import('node:test').TestContext, phase: string) {
   const d = dom(t); replaceGlobals(t, { crypto: { randomUUID: () => 'asking-test' } });
@@ -39,4 +39,22 @@ test('drafting Escape dismisses immediately and paragraph status text has no pro
   assert.equal(h.root.querySelectorAll('p').some(node => ['Reviewed plan', 'Elapsed time'].includes(node.getAttribute('aria-label') ?? '')), false);
   h.root.fire('keydown', { key: 'Escape', stopPropagation() {}, target: h.root });
   assert.equal(h.root.isConnected, false); assert.equal(h.cancelled(), 0);
+});
+
+
+test('draft offers reach review directly', async t => {
+  const d = dom(t);
+  const chosen: unknown[][] = [];
+  const intents = ['define', 'derive', 'diagram', 'simulate'] as const;
+  const mounted = mountAskingDraft(d.root as unknown as HTMLElement, {
+    id: 'draft', question: 'Retained question', context: '',
+    suggestions: intents.map(intent => ({ id: intent, label: intent, intent, question: intent + ' question', time: 'quick' })),
+    onEdit() {}, async onChoose(...args) { chosen.push(args); }, onMore() {}, async onIdeas() { return []; },
+    onClose() {}, onKeep() {}, onPark() {},
+  });
+  t.after(() => mounted.destroy());
+  assert.equal(d.root.querySelector('input')!.value, 'Retained question');
+  mounted.chooseIndex(2);
+  await Promise.resolve();
+  assert.deepEqual(chosen[0]?.slice(0, 3), ['diagram', 'diagram question', '']);
 });

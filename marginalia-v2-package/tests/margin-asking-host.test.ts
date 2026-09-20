@@ -8,20 +8,17 @@ import { startServer } from '../daemon/server.ts';
 // Test the T05 adapter, not T08/provider internals. All network/renderer boundaries
 // are injected. The peer subset follows the inspected public T08 interface.
 registerHooks({ resolve(specifier, context, next) {
-  if (specifier === '../contracts/reply.ts') return { url:'t05:canonical',shortCircuit:true };
-  if (context.parentURL?.endsWith('/ui/asking-host.ts') && specifier === './consent.ts') return {url:'t05:consent',shortCircuit:true};
   if (context.parentURL?.endsWith('/ui/asking-host.ts') && specifier === '../renderer/index.ts') return {url:'t05:renderer',shortCircuit:true};
   return next(specifier,context);
 }, load(url,context,next) {
-  if(url==='t05:canonical') return {format:'module',shortCircuit:true,source:`export function canonicalReplyData(v){return Array.isArray(v)?'['+v.map(canonicalReplyData).join(',')+']':v&&typeof v==='object'?'{'+Object.entries(v).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>JSON.stringify(k)+':'+canonicalReplyData(v)).join(',')+'}':JSON.stringify(v)};export const validateReply=()=>({ok:false,errors:['fixture']});export const capabilitiesForIntent=i=>i==='simulate'?['samples','solver']:i==='evidence'?['samples','network.citations']:i==='explore'?['samples','network.shelf']:['samples'];`};
-  if(url==='t05:consent')return{format:'module',shortCircuit:true,source:'export const mountConsentSheet=()=>{throw Error("not exercised")};'};
+  if(url.endsWith('.css'))return{format:'module',shortCircuit:true,source:'export default {}'};
   if(url==='t05:renderer')return{format:'module',shortCircuit:true,source:'export const mountReply=()=>{throw Error("not exercised")};'};
   return next(url,context);
 }});
 const {createT08Mount}=await import('../ui/asking-host.ts');
 const source:SourceVersion={id:'source',sourceId:'s',hash:'a'.repeat(64),text:'alpha beta',capturedAt:'2026-09-17T00:00:00Z',extractionVersion:'fixture',title:'Source',pageType:'article',metadataStatus:'provided'};
 const thread:Thread={id:'thread',anchorId:'anchor',sourceVersionId:source.id,sourceUrl:'https://source.test/',sourceTitle:'Source',anchor:{exact:'alpha',prefix:'',suffix:' beta',start:0,end:5},notes:[],revision:1,state:'open',highlighted:true,createdAt:source.capturedAt!,updatedAt:source.capturedAt!,deletedAt:null};
-const selection:AskingSelection={threadId:thread.id,sourceVersionId:source.id,capture:{url:thread.sourceUrl,title:'Source',text:source.text,capturedAt:source.capturedAt!,extractionVersion:'fixture',pageType:'article'},anchor:thread.anchor,question:'',context:''};
+const selection:AskingSelection={threadId:thread.id,sourceVersionId:source.id,capture:{url:thread.sourceUrl,title:'Source',text:source.text,capturedAt:source.capturedAt!,extractionVersion:'fixture',pageType:'article'},anchor:thread.anchor,question:'',context:'',intent:'unsure'};
 const tick=()=>new Promise<void>(r=>setImmediate(r));
 function deferred(){let resolve!:()=>void;const promise=new Promise<void>(r=>resolve=r);return{promise,resolve};}
 function harness(t:import('node:test').TestContext, access: { surface?: 'localhost'|'native-panel'|'floating'; excluded?: boolean; supported?: boolean; resumeJobId?: string } = {}){
@@ -94,4 +91,90 @@ test('real helper admits a well-formed extension origin on preflight and answers
  assert.equal(preflight.status,204);assert.equal(get.status,401);
  assert.equal(preflight.headers.get('access-control-allow-origin'),origin);assert.equal(get.headers.get('access-control-allow-origin'),origin);
  assert.match((await get.json()).error,/Pair with the local helper/);
+});
+
+
+// Exercise the production host, flow, card and consent together. Only transport,
+// clock and unrelated renderer boundaries are controlled.
+test('final review editing stays open and invalidates old consent while true cancel closes', async t => {
+  const { dom, replaceGlobals } = await import('./t05-dom.ts');
+  const peerModule = await import('../ui/asking/index.ts');
+  const d = dom(t); replaceGlobals(t, { cancelAnimationFrame: clearImmediate });
+  const calls: { path: string; body?: any }[] = [];
+  const sheets: import('../ui/consent.ts').ConsentSheetOptions[] = [];
+  const retained: AskingSelection[] = [];
+  let flow!: ReturnType<typeof peerModule.createAskingFlow>, binding: any, closed = 0;
+  const client = {
+    origin: 'http://localhost:43120', token: 'fixture-token', connectionVersion: 1, permissionVersion: 0,
+    exportThread: async () => ({ thread, source, replies: [], replyViews: [] }),
+    replies: async () => ({ replies: [], source, views: [] }),
+    request: async (path: string, body?: any) => {
+      calls.push({ path, body });
+      if (path === '/api/jobs' && body === undefined) return { configured: true, available: true, unverified: [], disclosureVersion: null };
+      if (path !== '/api/jobs/prepare') throw new Error('Unexpected transport: ' + path);
+      const capabilities = body.intent === 'simulate' ? ['samples', 'solver'] : [];
+      const packet = { schema: 'marginalia.job-packet.v1', intent: body.intent, question: body.question,
+        source: { url: binding.sourceUrl, title: binding.sourceTitle, pageType: binding.sourcePageType,
+          capturedAt: binding.sourceCapturedAt, sourceHash: binding.sourceHash, sourceVersionId: binding.sourceVersionId },
+        selection: { ...binding.anchor, originalEnd: binding.anchor.end, omittedCharacters: 0 },
+        adjacentContext: { before: '', after: '', basis: 'bounded-character-context' }, availableCapabilities: capabilities, omissions: [] };
+      return { unverified: [], disclosureVersion: null,
+        job: { ...body, provider: 'app-server', model: 'host-selected', mode: 'structured-final', policyKey: 'b'.repeat(64), preparedPayloadDigest: 'c'.repeat(64), capabilities },
+        preview: { id: 'preview-' + body.id, revision: 1, requestId: body.id, site: 'https://source.test',
+          scope: 'cloud-inference', scopeLabel: 'Host scope', recipient: 'openai-codex', recipientLabel: 'OpenAI Codex',
+          provider: 'app-server', policyKey: 'b'.repeat(64), outgoing: [
+            { label: 'Bounded reading packet', text: JSON.stringify(packet), sha256: 'a'.repeat(64) },
+            { label: 'Adapter prompt', text: 'Exact host prompt', sha256: 'b'.repeat(64) }],
+          payloadDigest: 'a'.repeat(64), bindingDigest: 'c'.repeat(64), expiresAt: '2026-09-17T00:10:00Z', state: 'ready' } };
+    },
+  };
+  const peer = { ...peerModule,
+    createAskingFlow(options: any) { binding = options.binding; return flow = peerModule.createAskingFlow({ ...options, now: () => Date.parse(source.capturedAt!) }); },
+    mountAskingCard(host: HTMLElement, options: any) {
+      return peerModule.mountAskingCard(host, { ...options, mountConsent(root: HTMLElement, value: import('../ui/consent.ts').ConsentSheetOptions) {
+        sheets.push(value); return options.mountConsent(root, value);
+      } });
+    },
+  };
+  const context = { helper: () => client, signal: new AbortController().signal, surface: 'native-panel',
+    access: () => ({ excluded: false, supported: true }), authorize: async () => {}, currentThread: () => thread,
+    ensureContextSaved: async () => {}, read: async () => undefined, write: async () => {}, persistence: {},
+    track: <T>(work: Promise<T>) => work, highlight() {}, navigate() {}, onCommitted() {},
+    retainedQuestion(value: AskingSelection) { retained.push(structuredClone(value)); },
+    onClosed() { closed++; d.root.hidden = true; } } as unknown as AskingContext;
+  const mounted = createT08Mount(async () => peer as any)(d.root as unknown as HTMLElement, context);
+  t.after(() => mounted.destroy());
+  await mounted.open({ ...selection, question: 'Simulate this passage.', intent: 'simulate' });
+  assert.equal(flow.getState().phase, 'consent');
+  const editor = d.root.querySelectorAll('textarea').find(node => node.id.endsWith('-review-question'))!;
+  const old = sheets[0];
+  // Allow consent's initial focus callback to settle before deliberate editing.
+  await tick(); editor.focus();
+  for (const question of ['Simulate this passage. x', 'Simulate this passage.', 'Explain this passage instead.']) {
+    editor.value = question; editor.fire('input'); await tick();
+    assert.equal(closed, 0, 'editing must not trigger the production cancel/onClosed boundary');
+    assert.equal(d.root.hidden, false);
+    assert.equal(editor.closest('[hidden]'), null);
+    assert.equal(d.document.activeElement, editor);
+    assert.equal(editor.value, question);
+    assert.equal(retained.at(-1)!.question, question);
+    assert.equal(retained.at(-1)!.intent, question === 'Simulate this passage.' ? 'simulate' : 'unsure');
+    assert.equal(d.root.querySelectorAll('.m-consent').length, 0);
+    assert.equal(calls.filter(call => call.path === '/api/jobs/prepare').length, 1);
+  }
+  await assert.rejects(old.decide('this-time', old.preview, new AbortController().signal));
+  editor.parentElement!.parentElement!.fire('submit');
+  for (let i = 0; i < 5; i++) await tick();
+  assert.equal(flow.getState().phase, 'consent');
+  assert.equal(flow.getState().preparation!.job.question, 'Explain this passage instead.');
+  assert.equal(flow.getState().preparation!.job.intent, 'unsure');
+  assert.equal(sheets.length, 2);
+  assert.notEqual(sheets[1].preview.id, old.preview.id);
+  assert.equal(JSON.parse(sheets[1].preview.outgoing[0].text).question, editor.value);
+  await assert.rejects(old.decide('this-time', old.preview, new AbortController().signal));
+  assert.equal(calls.some(call => call.path === '/api/jobs' && call.body !== undefined), false);
+  assert.equal(closed, 0);
+  d.root.querySelectorAll('button').find(node => node.dataset.dismiss === 'true')!.click();
+  assert.equal(closed, 1, 'real consent cancellation still closes the production host');
+  assert.equal(d.root.hidden, true);
 });

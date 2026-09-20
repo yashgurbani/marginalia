@@ -33,7 +33,6 @@ const connectionLabels: Record<CompletionTrace['provider'], string> = {
   'app-server': 'Codex app connection',
   'mcp-server': 'Codex compatibility connection',
 };
-const intentLabels = SUGGESTION_LABELS;
 const planPhases = new Set<AskingState['phase']>(['submitting', 'queued', 'sending', 'working', 'provisional', 'validating', 'cancel_requested']);
 
 /** Append to a T05 child slot at the reading position, below reader notes. Never replace the source or parent editor. */
@@ -59,6 +58,25 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
   const submit = make('button', 'Ask'); submit.type = 'submit'; form.append(suggestions, more, label, contextDetails, submit); form.hidden = true;
   const status = make('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const plan = make('p'); plan.hidden = true;
+  const reviewEdit = make('form'); reviewEdit.hidden = true;
+  const reviewLabel = make('label', 'Your question'), reviewInput = make('textarea');
+  reviewInput.id = root.id + '-review-question'; reviewInput.rows = 2; reviewInput.maxLength = 4000;
+  reviewLabel.htmlFor = reviewInput.id; reviewLabel.append(reviewInput);
+  const reviewButton = make('button', 'Review question'); reviewButton.type = 'submit'; reviewButton.hidden = true;
+  reviewEdit.append(reviewLabel, reviewButton);
+  let editing: ReturnType<AskingFlow['editQuestion']>;
+  reviewInput.addEventListener('input', () => {
+    if (!editing) editing = flow.editQuestion();
+    reviewButton.hidden = !editing;
+    if (editing) { reviewEdit.hidden = false; reviewInput.readOnly = false; }
+  }, { signal: abort.signal });
+  reviewEdit.addEventListener('submit', event => {
+    event.preventDefault();
+    if (!editing || !reviewInput.value.trim()) return;
+    const previous = editing; editing = undefined;
+    void flow.ask(reviewInput.value === previous.question ? previous.intent : 'unsure', reviewInput.value, previous.readerSkill);
+  }, { signal: abort.signal });
+  const trust = make('p', 'Nothing has been asked yet.'); trust.hidden = true;
   const skillReview = make('p'); skillReview.className = 'm-asking__skill-disclosure'; skillReview.hidden = true;
   const skillWait = make('p'); skillWait.className = 'm-asking__skill-wait'; skillWait.hidden = true;
   const localStatus = make('p'); localStatus.setAttribute('role', 'status');
@@ -67,7 +85,7 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
   const unformattedRoot = make('section'); unformattedRoot.className = 'm-asking__unformatted'; unformattedRoot.hidden = true;
   const trace = make('details'), traceBody = make('dl'); trace.append(make('summary', 'How this was made'), traceBody); trace.hidden = true;
   const workActions = make('div'); workActions.className = 'm-asking__actions';
-  root.append(breadcrumb, definition, noDefinition, actions, form, status, plan, skillReview, skillWait, elapsed, localStatus, consentRoot, provisionalRoot, unformattedRoot, replyRoot, trace, workActions);
+  root.append(breadcrumb, definition, noDefinition, actions, form, status, plan, reviewEdit, trust, skillReview, skillWait, elapsed, localStatus, consentRoot, provisionalRoot, unformattedRoot, replyRoot, trace, workActions);
   if (options.reviewOnly) { form.remove(); actions.remove(); breadcrumb.remove(); definition.remove(); noDefinition.remove(); }
   host.append(root);
   const busyButtons = new Set<HTMLButtonElement>();
@@ -143,9 +161,13 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
     definition.hidden = !state.definition; noDefinition.hidden = !!state.definition || state.phase !== 'local';
     const definitionText = state.definition?.text ?? ''; if (quote.textContent !== definitionText) quote.textContent = definitionText;
     if (status.textContent !== state.message) status.textContent = state.message;
+    reviewEdit.hidden = !(editing && state.phase === 'suggestions') && !flow.canEditQuestion?.();
+    reviewInput.readOnly = !editing && !flow.canEditQuestion?.();
+    if (!editing && state.phase === 'consent') reviewInput.value = state.question ?? '';
+    reviewButton.hidden = !editing;
+    trust.hidden = state.phase !== 'consent';
     const reviewed = state.preparation && state.intent && planPhases.has(state.phase)
-      ? `Reviewed plan: ${intentLabels[state.intent]} with ${state.preparation.preview.recipientLabel}.`
-      : '';
+      ? `${SUGGESTION_LABELS[state.intent]} with ${state.preparation.preview.recipientLabel}.` : '';
     plan.hidden = !reviewed; if (plan.textContent !== reviewed) plan.textContent = reviewed;
     const reviewingSkill = state.preparation?.job.readerSkill;
     skillReview.hidden = !reviewingSkill || !['consent', 'deciding', 'submitting'].includes(state.phase);

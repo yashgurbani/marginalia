@@ -60,6 +60,7 @@ type FlowState = { phase: string; intent?: Intent; requestId?: string; submitted
 type Flow = {
   ask(intent: Intent, question: string, readerSkill?: ReaderSkillSelection): Promise<void>; openAsk(): void; reopen(target: { jobId: string } | { replyVersionId: string }): Promise<void>;
   refresh(): Promise<void>; close(): void; invalidate(): void; reconcile(): void;
+  isEditingQuestion?(): boolean;
   getState(): FlowState; subscribe(listener: (state: FlowState) => void): () => void;
 };
 type PeerHost = { readReply(threadId: string, replyVersionId: string, signal: AbortSignal): Promise<{ reply: ReplyVersion; source: SourceVersion; view?: ReplyViewState }> } & Record<string, unknown>;
@@ -131,7 +132,11 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       const question = host.querySelector<HTMLTextAreaElement>('.m-asking form textarea');
       const fields = host.querySelectorAll<HTMLTextAreaElement>('.m-asking form textarea');
       if (!question) return;
-      const value = { ...structuredClone(currentSelection), question: question.value, context: fields[1]?.value ?? '', intent: flow?.getState().intent ?? currentSelection.intent };
+      const state = flow?.getState();
+      // Final-review edits retained on close follow the same intent rule as submit.
+      const intent = question.id?.endsWith('-review-question') && question.value !== state?.question
+        ? 'unsure' : state?.intent ?? currentSelection.intent;
+      const value = { ...structuredClone(currentSelection), question: question.value, context: fields[1]?.value ?? '', intent };
       const identity = canonicalReplyData(value);
       if (identity === lastDraft) return;
       lastDraft = identity; lastQuestionSnapshot = value; context.retainedQuestion?.(value);
@@ -268,7 +273,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       if (inputs[1]) inputs[1].value = selection.context;
       let previousPhase = flow.getState().phase;
       unsubscribe = flow.subscribe(state => {
-        const cancelledReview = previousPhase === 'consent' && state.phase === 'suggestions'; previousPhase = state.phase;
+        const cancelledReview = previousPhase === 'consent' && state.phase === 'suggestions' && !flow?.isEditingQuestion?.(); previousPhase = state.phase;
         if (!active(epoch)) return;
         context.onState?.({ phase: state.phase });
         if (state.phase === 'closed' || cancelledReview) { snapshotQuestion(); context.onClosed?.(); }

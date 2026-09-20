@@ -52,6 +52,7 @@ export function createAskingFlow(options: AskingOptions) {
   const now = options.now ?? Date.now, newId = options.newId ?? (() => crypto.randomUUID());
   const listeners = new Set<(state: AskingState) => void>();
   let operation: Operation | undefined, closed = false, invalidated = false;
+  let editingQuestion = false;
   let state: AskingState = { phase: 'local', message: '', definition: definitionFromPage(binding.anchor.exact, binding.sourceText),
     sending: false, canAsk: true, canCancel: false, canRetry: false, canCheck: false, canFollowup: false, submitted: false };
 
@@ -147,6 +148,7 @@ export function createAskingFlow(options: AskingOptions) {
 
   function begin(intent: Intent, q: string, kind: ExpectedRequest['kind'] = 'initial', parent?: JobSnapshot, readerSkill?: ReaderSkillSelection): Promise<void> {
     const access = entryAccess('send'); if (!access) return Promise.resolve();
+    editingQuestion = false;
     let input: PrepareJobInput;
     try {
       input = { id: newId(), idempotencyKey: newId(), threadId: binding.threadId, intent, question: q,
@@ -197,7 +199,7 @@ export function createAskingFlow(options: AskingOptions) {
         if (current(op) && state.blocker !== 'runtime-unavailable') blocked(stage);
       } finally { op.preparing = undefined; if (current(op)) publish({}); }
     });
-    publish({ phase: 'preparing', blocker: undefined, message: 'Preparing the exact request for review. Nothing has been asked yet.',
+    publish({ phase: 'preparing', blocker: undefined, message: 'Preparing the exact request for review.',
       intent, question: q, preparation: undefined, job: undefined, provisional: undefined, result: undefined, previousResult });
     return op.preparing;
   }
@@ -241,7 +243,7 @@ export function createAskingFlow(options: AskingOptions) {
         // Keep the detached, reviewed host plan visible while this exact operation is active. Submission
         // continues to use `p`/`op.preparation`; the public state copy is display-only and is cleared by
         // begin()/invalidate()/close() before it could describe different work.
-        publish({ phase: 'submitting', preparation: hostCopy(p), message: 'Submitting the approved request. Provider sending has not yet been observed.' });
+        publish({ phase: 'submitting', preparation: hostCopy(p), message: 'Submitting the approved request.' });
         try {
           requireCurrent(op);
           // A synchronous display callback may outlive the preview; check expiry again at the local handoff.
@@ -270,7 +272,7 @@ export function createAskingFlow(options: AskingOptions) {
       } finally { signal?.removeEventListener('abort', stop); }
     });
     op.decision = { choice, preview: hostCopy(offered), task };
-    publish({ phase: 'deciding', message: 'Checking and saving your permission choice. Nothing has been asked yet.' });
+    publish({ phase: 'deciding', message: 'Checking and saving your permission choice.' });
     return task;
   }
 
@@ -427,10 +429,12 @@ export function createAskingFlow(options: AskingOptions) {
     publish({ phase: 'reopening', message: 'Opening saved work. No new question is being asked.', preparation: undefined });
     return op.preparing;
   }
-  function dismissPreview() {
+  function dismissPreview() { clearPreview(false); }
+  function clearPreview(forEdit: boolean) {
     if (closed || invalidated || operation?.dispatched) return;
     operation?.abort.abort(); operation = undefined;
-    publish({ phase: 'suggestions', preparation: undefined, message: 'Not now. Nothing was asked.' });
+    editingQuestion = forEdit;
+    publish({ phase: 'suggestions', preparation: undefined, message: forEdit ? 'Edit your question, then review it.' : 'Not now. Nothing was asked.' });
   }
   function close() {
     if (closed) return;
@@ -441,6 +445,14 @@ export function createAskingFlow(options: AskingOptions) {
   }
   return {
     getState, ask, choose, cancel, retry, followup, reopen, refresh, dismissPreview, invalidate, close,
+    isEditingQuestion() { return editingQuestion && state.phase === 'suggestions'; },
+    canEditQuestion() { return state.phase === 'consent' && operation?.expected?.kind === 'initial' && !operation.dispatched; },
+    editQuestion() {
+      if (state.phase !== 'consent' || operation?.expected?.kind !== 'initial' || operation.dispatched || !current(operation)) return;
+      const input = hostCopy(operation.expected.input);
+      clearPreview(true);
+      return input;
+    },
     getBinding: () => hostCopy(binding), getAccess: () => hostCopy(options.currentAccess()),
     reconcile() {
       if (closed || invalidated) return;
@@ -449,7 +461,7 @@ export function createAskingFlow(options: AskingOptions) {
     },
     openAsk() {
       if (!closed && !invalidated && !operation?.dispatched && !operation?.preparing && !['consent', 'deciding', 'submitting'].includes(state.phase))
-        publish({ phase: 'suggestions', message: 'Choose a question, then Ask to review it. Selecting sends nothing.' });
+        publish({ phase: 'suggestions', message: 'Choose a question to review.' });
     },
     subscribe(listener: (state: AskingState) => void) {
       if (closed) return () => {};

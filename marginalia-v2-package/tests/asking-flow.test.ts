@@ -341,9 +341,9 @@ test('the reviewed host plan remains visible through submitting, working and pro
   h.host.start = async input => { h.calls.push({ name: 'start', input }); return gate.promise; };
   await h.flow.ask('define', 'Explain'); const reviewed = hostCopy(h.prepared);
   const pending = h.approve(); await settle();
-  const plan = d.node.all().find(n => n.textContent.startsWith('Reviewed plan:'))!;
+  const plan = d.node.all().find(n => n.textContent.startsWith('Define it here with'))!;
   assert.equal(h.flow.getState().phase, 'submitting'); assert.deepEqual(h.flow.getState().preparation, reviewed);
-  assert.equal(plan.hidden, false); assert.equal(plan.textContent, 'Reviewed plan: Define it here with OpenAI Codex.');
+  assert.equal(plan.hidden, false); assert.equal(plan.textContent, 'Define it here with OpenAI Codex.');
   gate.resolve(job(h.prepared, h.binding, 'running')); await pending;
   assert.equal(h.flow.getState().phase, 'working'); assert.deepEqual(h.flow.getState().preparation, reviewed); assert.equal(plan.hidden, false);
   h.setObserved({ ...job(h.prepared, h.binding, 'running', 2), provisional: candidate('partial') }); await h.flow.refresh();
@@ -820,4 +820,46 @@ test('adapter retains and validates disclosure on availability and all preparati
     metadata = invalid;
     for (const call of calls) await assert.rejects(call(), /disclosure/);
   }
+});
+
+
+test('editing a reviewed initial question invalidates old consent and requires fresh exact review', async () => {
+  const h = harness();
+  await h.flow.ask('simulate', 'Model this passage.');
+  const old = h.flow.getState().preparation!.preview;
+  assert.equal(h.flow.canEditQuestion(), true);
+  const draft = h.flow.editQuestion()!;
+  assert.equal(draft.intent, 'simulate');
+  assert.equal(h.flow.getState().preparation, undefined);
+  await assert.rejects(h.flow.choose('this-time', old));
+  assert.equal(h.count('start'), 0);
+  await h.flow.ask('unsure', 'What does the assumption mean?');
+  assert.equal(h.flow.getState().preparation!.job.question, 'What does the assumption mean?');
+  assert.notEqual(h.flow.getState().preparation!.preview.id, old.id);
+  assert.equal(h.count('start'), 0);
+  h.flow.close();
+});
+
+
+test('review editor keeps typed text, removes old permission surface and reviews only on submit', async () => {
+  const h = harness(), d = dom();
+  const mount = mountAskingCard(d.host, { flow: h.flow, reviewOnly: true,
+    mountConsent: () => ({ update() {}, destroy() {} }), mountReply: mountedStub, replyOptions: () => ({}) });
+  try {
+    await h.flow.ask('simulate', 'Model this passage.');
+    const editor = d.node.all().find(n => n.tagName === 'textarea' && n.id.endsWith('-review-question'))!;
+    assert.equal(editor.value, 'Model this passage.');
+    editor.value = 'Explain this assumption.';
+    editor.dispatchEvent(new Event('input'));
+    assert.equal(editor.value, 'Explain this assumption.');
+    assert.equal(editor.parent!.parent!.hidden, false);
+    assert.equal(h.flow.getState().preparation, undefined);
+    assert.equal(h.count('prepare'), 1);
+    editor.parent!.parent!.dispatchEvent(new Event('submit', { cancelable: true }));
+    await settle();
+    assert.equal(h.flow.getState().phase, 'consent');
+    assert.equal(h.prepared.job.intent, 'unsure');
+    assert.equal(h.prepared.job.question, 'Explain this assumption.');
+    assert.equal(h.count('start'), 0);
+  } finally { mount.destroy(); }
 });
