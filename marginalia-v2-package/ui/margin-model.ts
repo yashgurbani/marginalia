@@ -1,5 +1,6 @@
 import { attachQuote, type QuoteAnchor, type SourceCapture, type Thread } from '../contracts/reader.ts';
 import type { JobSnapshot } from '../contracts/jobs.ts';
+import { findLiteralDefinitionEvidence, type LiteralDefinitionEvidence } from '../extension/lib/auto-assist/scorer.ts';
 
 /** Handoff is evidence of a possible send, never proof of remote delivery. */
 export function egressRecord(job: JobSnapshot) {
@@ -50,9 +51,12 @@ export function outgoingPreview(capture: SourceCapture, anchor: QuoteAnchor, que
 }
 export function sourceLocation(thread: Thread, capture: SourceCapture) { return attachQuote(thread.anchor, capture.text); }
 
+/** A captured-page quote, distinct from any generated definition result. */
+export function pageDefinitionEvidence(term: string, text: string): LiteralDefinitionEvidence | undefined {
+  return findLiteralDefinitionEvidence(text, term);
+}
+
 /** A conservative literal definition. Never invent a gloss or infer it from a paraphrase. */
 export function pageDefinition(term: string, text: string): string | undefined {
-  if (!term.trim() || term.length > 80 || term.trim().split(/\s+/).length > 5) return;
-  const escaped = term.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return text.match(new RegExp(`(?:^|[.!?]\\s+|\\n)(${escaped} (?:is|means|refers to) [^.!?\\n]{3,220}[.!?])`, 'i'))?.[1];
+  return pageDefinitionEvidence(term, text)?.quote;
 }

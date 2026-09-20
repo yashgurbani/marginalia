@@ -6,13 +6,23 @@ export type SelectionPolicy = {
   vocabulary: readonly string[]; dismissed?: readonly string[];
   placement: (candidate: DifficultyCandidate) => CandidatePlacement | null;
 };
+
+/** Familiarity is reader-stated vocabulary or a reader dismissal, never a modelled mastery score. */
+export function explicitFamiliarity(vocabulary: readonly string[], dismissed: readonly string[] = []): ReadonlySet<string> {
+  return new Set([...vocabulary, ...dismissed].map(normalizeTerm));
+}
+
+export function isExplicitlyFamiliar(candidate: DifficultyCandidate, vocabulary: readonly string[], dismissed: readonly string[] = []): boolean {
+  return explicitFamiliarity(vocabulary, dismissed).has(normalizeTerm(candidate.normalizedTerm));
+}
+
 export function selectAutoAssistCandidates(input: DifficultyInput, candidates: readonly DifficultyCandidate[], policy: SelectionPolicy): DifficultyCandidate[] {
   if (!policy.enabled || policy.excluded) return [];
   const limits = AUTO_ASSIST_POSTURE_LIMITS[policy.posture];
-  const familiar = new Set([...policy.vocabulary, ...(policy.dismissed ?? [])].map(normalizeTerm));
+  const familiar = explicitFamiliarity(policy.vocabulary, policy.dismissed ?? []);
   const selected: { candidate: DifficultyCandidate; position: CandidatePlacement }[] = [];
   const bands = new Map<number, number>(); const terms = new Set<string>();
-  const valid = candidates.slice(0, 2000).filter(c => Number.isFinite(c.score) && Number.isInteger(c.start) && Number.isInteger(c.end) && c.start >= 0 && c.end > c.start && c.end <= input.text.length && input.text.slice(c.start, c.end) === c.term && c.normalizedTerm === normalizeTerm(c.term) && !familiar.has(c.normalizedTerm));
+  const valid = candidates.slice(0, 2000).filter(c => Number.isFinite(c.score) && Number.isInteger(c.start) && Number.isInteger(c.end) && c.start >= 0 && c.end > c.start && c.end <= input.text.length && input.text.slice(c.start, c.end) === c.term && c.normalizedTerm === normalizeTerm(c.term) && !familiar.has(normalizeTerm(c.normalizedTerm)));
   for (const candidate of valid.sort((a, b) => b.score - a.score || a.start - b.start)) {
     if (terms.has(candidate.normalizedTerm)) continue;
     const position = policy.placement(candidate);

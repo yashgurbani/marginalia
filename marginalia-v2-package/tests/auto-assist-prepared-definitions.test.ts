@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPreparedDefinitions, type PreparedDefinitionDependencies, type PreparedPage, type PreparedTerm } from '../daemon/instant/prepared-definitions.ts';
+import { pageDefinition, pageDefinitionEvidence } from '../ui/margin-model.ts';
 const page: PreparedPage = { pageId: 'page', generation: '1', pageKeyHash: 'a'.repeat(64), model: 'gpt-5.6-luna', effort: 'medium', instructionVersion: '1' };
 const terms: PreparedTerm[] = ['viscosity', 'vorticity', 'advection', 'diffusion'].map((term, i) => ({ candidateId: `c${i}`, term, normalizedTerm: term, start: i * 20, end: i * 20 + term.length, contextHash: String(i).repeat(64) }));
 const usage = { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5, totalTokens: 15 };
@@ -13,6 +14,17 @@ function harness(overrides: Partial<PreparedDefinitionDependencies> = {}) {
   };
   return { engine: createPreparedDefinitions(deps), requests, counts: () => ({ admissions, cancelled, settled }) };
 }
+test('literal article definition evidence keeps exact spans and cannot be mistaken for generated output', () => {
+  const text = '😀 Boundary layer is a thin region near a surface.';
+  const evidence = pageDefinitionEvidence('Boundary layer', text);
+  assert.ok(evidence);
+  assert.equal(evidence.kind, 'literal-definition');
+  assert.equal(evidence.source, 'article');
+  assert.equal(evidence.generated, false);
+  assert.equal(text.slice(evidence.start, evidence.end), 'Boundary layer');
+  assert.equal(text.slice(evidence.quoteStart, evidence.quoteEnd), evidence.quote);
+  assert.equal(pageDefinition('Boundary layer', text), evidence.quote);
+});
 test('prepared definitions use batches of three, contextual cache costs zero, forget invalidates', async () => {
   const h = harness(); const first = await h.engine.prepare(page, terms);
   assert.equal(first.definitions.length, 4); assert.equal(h.requests.length, 2); assert.equal(h.counts().settled, 2);
@@ -51,4 +63,38 @@ test('dismissal invalidates the term cache and cancels a pending generation', as
   await h.engine.prepare(page, terms.slice(0, 2));
   const last = h.requests.at(-1) as { items: { candidateId: string }[] };
   assert.deepEqual(last.items.map(i => i.candidateId), ['c0']);
+});
+
+test('R1 selected definitions require complete compound term boundaries', () => {
+  for (const [term, text] of [['gravity', 'Anti-gravity is a hypothetical phenomenon.'], ['ion', 'anti-ion is a different particle.'], ['cat', "bob'cat is a wild animal."]]) {
+    assert.equal(pageDefinition(term, text), undefined, text);
+  }
+  const text = '😀 Anti-gravity is a hypothetical phenomenon.';
+  const evidence = pageDefinitionEvidence('Anti-gravity', text);
+  assert.ok(evidence);
+  assert.equal(text.slice(evidence.start, evidence.end), 'Anti-gravity');
+  assert.equal(text.slice(evidence.quoteStart, evidence.quoteEnd), evidence.quote);
+});
+
+test('R4 complete literal quotations fail closed on oversized prefixes instead of clipping', () => {
+  const oversized = 'context '.repeat(2000) + 'Qubit is a quantum unit.';
+  assert.equal(pageDefinition('Qubit', oversized), undefined);
+  assert.equal(pageDefinitionEvidence('Qubit', oversized), undefined);
+  const text = 'In physics, Qubit is a quantum unit.';
+  const evidence = pageDefinitionEvidence('Qubit', text);
+  assert.ok(evidence);
+  assert.equal(evidence.quote, text);
+  assert.equal(text.slice(evidence.quoteStart, evidence.quoteEnd), evidence.quote);
+  assert.equal(pageDefinition('Qubit', 'Qubit is ' + 'x'.repeat(221) + '.'), undefined);
+});
+
+test('R5 selected Define preserves five words and 80 characters independently of nomination', () => {
+  for (const term of ['one two three four five', 'a'.repeat(80)]) {
+    const text = `${term} is an explicitly named concept.`;
+    assert.equal(pageDefinition(term, text), text);
+    const evidence = pageDefinitionEvidence(term, text);
+    assert.ok(evidence);
+    assert.equal(text.slice(evidence.start, evidence.end), term);
+  }
+  for (const term of ['one two three four five six', 'a'.repeat(81)]) assert.equal(pageDefinition(term, `${term} is an explicitly named concept.`), undefined);
 });
