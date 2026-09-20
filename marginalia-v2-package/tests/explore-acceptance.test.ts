@@ -33,7 +33,7 @@ function storedShelf() {
   return { store, saved };
 }
 
-test('completed shelf opens only explicitly, saves the original return anchor, and reopens without another dispatch', async t => {
+test('completed shelf opens only explicitly, saves the original return anchor, and reopens without another dispatch', { timeout: 20_000 }, async t => {
   const trip = await journey('p11-explore', ['network.shelf']); t.after(() => trip.dispose());
   let daemon = await trip.start('initial');
   assert.equal((await daemon.request('POST', '/api/change', keepMutation('p11-thread', 'p11-keep', sourceText))).status, 200);
@@ -54,12 +54,15 @@ test('completed shelf opens only explicitly, saves the original return anchor, a
   const saved = bundle.replies[0];
   assert.equal(saved.validation.explore?.items.length, 2);
   let opens = 0, returned: unknown;
+  let pendingOpen: Promise<OpenShelfItemRequest> | undefined;
   const { root } = dom(t);
   const mounted = mountReply(root as unknown as HTMLElement, saved.reply, { sourceText, hostReport: saved.validation, capabilities: ['network.shelf'],
-    onShelfOpen: async item => {
+    onShelfOpen: item => {
       ++opens;
-      const result = await daemon.request('POST', '/api/shelf-open', { id: 'p11-open', threadId: 'p11-thread', replyVersionId: saved.id, ...item });
-      assert.equal(result.status, 200); return result.body.open as OpenShelfItemRequest;
+      return pendingOpen = (async () => {
+        const result = await daemon.request('POST', '/api/shelf-open', { id: 'p11-open', threadId: 'p11-thread', replyVersionId: saved.id, ...item });
+        assert.equal(result.status, 200); return result.body.open as OpenShelfItemRequest;
+      })();
     }, onShelfReturn: origin => { returned = origin; },
   });
   await until(() => !button(root, 'First reading').disabled);
@@ -71,13 +74,21 @@ test('completed shelf opens only explicitly, saves the original return anchor, a
   const duplicate = await daemon.request('POST', '/api/shelf-open', { id: 'p11-duplicate', threadId: 'p11-thread', replyVersionId: saved.id, blockId: 'shelf', itemId: 'duplicate' });
   assert.equal(duplicate.status, 409);
   button(root, 'First reading').fire('click');
+  // The renderer invokes the callback in a microtask; await its real HTTP work before DOM polling.
+  await settle();
+  assert.ok(pendingOpen, 'the explicit click starts a shelf-open request');
+  await pendingOpen;
   await until(() => root.querySelectorAll('a').length === 1);
   const link = root.querySelectorAll('a')[0];
   assert.equal((link as unknown as HTMLAnchorElement).href, 'https://example.org/first');
   assert.equal((link as unknown as HTMLAnchorElement).rel, 'noopener noreferrer');
   assert.equal(opens, 1);
   await until(() => !button(root, 'First reading').disabled);
+  pendingOpen = undefined;
   button(root, 'First reading').fire('click');
+  await settle();
+  assert.ok(pendingOpen, 'the second click starts its own shelf-open request');
+  await pendingOpen;
   await until(() => opens === 2 && !button(root, 'First reading').disabled);
   assert.equal(root.querySelectorAll('a').length, 1, 'popup fallback keeps one approved link');
   mounted.destroy();

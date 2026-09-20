@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { acceptP13Reply, reopenP13Reply, saveP13View } from './p13-acceptance-harness.ts';
 import { instantiateReply, instantiateSource } from './p13-instantiate-fixture.ts';
-import { dom, until, type TestElement } from './t05-dom.ts';
+import { dom, type TestElement } from './t05-dom.ts';
 
 registerHooks({
   resolve(specifier, context, next) { return specifier.endsWith('.css') ? { url: 'p13-instantiate:css', shortCircuit: true } : next(specifier, context); },
@@ -17,7 +17,7 @@ function numberInput(root: TestElement, label: string): TestElement {
   return field;
 }
 
-test('worked arithmetic crosses jobs, renders finite and undefined values, and reopens without another request', async t => {
+test('worked arithmetic crosses jobs, renders finite and undefined values, and reopens without another request', { timeout: 20_000 }, async t => {
   const accepted = await acceptP13Reply(t, {
     name: 'instantiate', intent: 'instantiate', question: 'Show a worked example of this passage.',
     sourceText: instantiateSource, reply: instantiateReply(),
@@ -26,16 +26,19 @@ test('worked arithmetic crosses jobs, renders finite and undefined values, and r
   assert.deepEqual(accepted.saved.validation.results, []);
 
   const first = dom(t), root = first.root;
+  let pendingSave: Promise<void> | undefined;
   const mounted = mountReply(root as unknown as HTMLElement, accepted.saved.reply, {
     sourceText: accepted.source.text,
     initialState: accepted.view,
-    onStateChange: state => saveP13View(accepted, 'p13-instantiate-view-undefined', state),
+    onStateChange: state => pendingSave = saveP13View(accepted, 'p13-instantiate-view-undefined', state),
   });
   assert.match(root.textContent, /Samples per tray: 4 samples/);
   assert.match(root.textContent, /TableQuantityValueUnitTotal24samples/);
   const trays = numberInput(root, 'trays');
   trays.value = '0'; Object.assign(trays, { valueAsNumber: 0 }); trays.fire('change');
-  await until(() => accepted.view.revision === 2);
+  assert.ok(pendingSave, 'changing the input starts a view-save request');
+  await pendingSave;
+  assert.equal(accepted.view.revision, 2);
   assert.match(root.textContent, /Samples per tray: The expression is undefined for these inputs\./);
   mounted.destroy();
 
