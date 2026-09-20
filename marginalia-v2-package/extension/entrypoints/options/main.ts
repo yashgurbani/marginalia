@@ -5,6 +5,7 @@ import './options.css';
 import { DEFAULT_HELPER_ORIGIN, HELPER_ORIGIN_KEY, validHelperOrigin } from '../../lib/helper-origin.ts';
 import { diagnosticsSection, loadReaderDiagnostics, type ReaderDiagnostics } from '../../../ui/diagnostics.ts';
 import { localPersistence } from '../../../ui/persistence.ts';
+import { HelperClient, HelperHttpError, HelperTransportError } from '../../../ui/helper.ts';
 const list = document.querySelector('#sites')!;
 const statusLine = document.querySelector<HTMLParagraphElement>('#status')!;
 async function hosts(): Promise<string[]> { const value = (await browser.storage.local.get('excludedHosts')).excludedHosts; return Array.isArray(value) ? value.filter(v => typeof v === 'string') : []; }
@@ -56,6 +57,11 @@ void render();
 const originInput = document.querySelector<HTMLInputElement>('#helper-origin')!;
 const originStatus = document.querySelector<HTMLElement>('#helper-origin-status')!;
 const diagnosticsRoot = document.querySelector<HTMLElement>('#diagnostics')!;
+const pairingForm = document.querySelector<HTMLFormElement>('#pairing-form');
+const pairingCodeInput = pairingForm?.querySelector<HTMLInputElement>('#pairing-code');
+const pairingButton = pairingForm?.querySelector<HTMLButtonElement>('button');
+const pairingStorage = localPersistence('marginalia-extension-reader');
+const pairingStorageName = 'marginalia-extension-reader';
 // Optional: some hosts mount only the diagnostics section, without the one-sentence status line.
 const diagnosticsStatus = document.querySelector<HTMLElement>('#diagnostics-status');
 // One sentence per state. The full list stays off the live region so it is not re-read on every check.
@@ -63,16 +69,21 @@ function diagnosticsSentence(value: ReaderDiagnostics): string {
   if (value.reachability === 'invalid') return 'Enter a local helper address such as http://127.0.0.1:43120.';
   if (value.reachability === 'checking') return 'Checking the local helper.';
   if (value.reachability === 'unreachable') return 'The local helper is unreachable. Start it and check the address.';
-  return value.pairing === 'paired' ? 'Local helper reachable. Pairing confirmed.' : 'Local helper reachable. Pair in the browser margin Settings.';
+  return value.pairing === 'paired' ? 'Local helper reachable. Pairing confirmed.' : 'Use a fresh six-digit code provided by the local helper, then choose Pair to connect this browser.';
 }
 function showDiagnostics(value: ReaderDiagnostics) {
-  diagnosticsRoot.replaceChildren(diagnosticsSection(value));
+  const canPair = value.reachability === 'reachable' && value.pairing !== 'paired';
+  if (pairingForm) pairingForm.hidden = !canPair;
+  if (value.pairing === 'paired') diagnosticsRoot.replaceChildren(diagnosticsSection(value)); else diagnosticsRoot.replaceChildren();
   if (diagnosticsStatus) diagnosticsStatus.textContent = diagnosticsSentence(value);
 }
 let diagnosticsGeneration = 0, diagnosticsAbort: AbortController | undefined;
 let stopped = false, addressRevision = 0;
 const pairingChanges = new BroadcastChannel('marginalia-extension-reader');
-function invalidateDiagnostics() { diagnosticsGeneration++; diagnosticsAbort?.abort(); diagnosticsRoot.replaceChildren(); if (diagnosticsStatus) diagnosticsStatus.textContent = ''; }
+let pairingGeneration = 0, pairingAbort: AbortController | undefined;
+function setPairingBusy(value: boolean) { if (pairingCodeInput) pairingCodeInput.disabled = value; if (pairingButton) pairingButton.disabled = value; }
+function cancelPairing() { pairingGeneration++; pairingAbort?.abort(); pairingAbort = undefined; setPairingBusy(false); }
+function invalidateDiagnostics() { diagnosticsGeneration++; diagnosticsAbort?.abort(); diagnosticsRoot.replaceChildren(); if (pairingForm) pairingForm.hidden = true; if (diagnosticsStatus) diagnosticsStatus.textContent = ''; }
 async function renderDiagnostics(origin: string) {
   invalidateDiagnostics();
   if (stopped || window.top !== window) return;
@@ -81,7 +92,7 @@ async function renderDiagnostics(origin: string) {
   const signal = diagnosticsAbort.signal;
   const valid = validHelperOrigin(origin);
   if (!valid) { showDiagnostics({ origin: 'Invalid local helper address', reachability: 'invalid', pairing: 'unknown' }); return; }
-  const saved = await localPersistence('marginalia-extension-reader').read<{ origin: string; token: string }>('pairing').catch(() => undefined);
+  const saved = await pairingStorage.read<{ origin: string; token: string }>('pairing').catch(() => undefined);
   if (generation !== diagnosticsGeneration) return;
   const token = saved?.origin === valid ? saved.token : undefined;
   showDiagnostics({ origin: valid, reachability: 'checking', pairing: 'unknown' });
@@ -90,11 +101,57 @@ async function renderDiagnostics(origin: string) {
   showDiagnostics(result);
 }
 pairingChanges.addEventListener('message', event => { if (event.data === 'pairing-changed') void renderDiagnostics(originInput.value); });
-originInput.addEventListener('input', () => { addressRevision++; invalidateDiagnostics(); });
-window.addEventListener('pagehide', () => { stopped = true; invalidateDiagnostics(); pairingChanges.close(); });
+originInput.addEventListener('input', () => { addressRevision++; cancelPairing(); invalidateDiagnostics(); });
+window.addEventListener('pagehide', () => { stopped = true; cancelPairing(); invalidateDiagnostics(); pairingChanges.close(); });
+
+function pairingFailureMessage(error: unknown): string {
+  if (error instanceof Error && error.message === 'Enter the six-digit code shown by the local helper.') return error.message;
+  if (error instanceof HelperHttpError && error.status === 403) {
+    if (error.message === 'Pairing code did not match.') return 'That code did not match. Check it and try again.';
+    if (error.message.startsWith('Pairing expired.')) return 'That code expired or has been used too many times. Get a fresh code from the local helper.';
+  }
+  if (error instanceof HelperTransportError) return 'The pairing result could not be confirmed. Check the local helper and try again.';
+  return 'This browser could not be paired. Check the local helper and try again.';
+}
+
+async function pairFromOptions() {
+  if (!pairingForm || !pairingCodeInput || stopped || window.top !== window || pairingAbort) return;
+  const origin = validHelperOrigin(originInput.value);
+  if (!origin) { if (diagnosticsStatus) diagnosticsStatus.textContent = 'Enter a local helper address before pairing.'; return; }
+  diagnosticsAbort?.abort(); diagnosticsGeneration++;
+  const generation = ++pairingGeneration, controller = new AbortController(); pairingAbort = controller; setPairingBusy(true);
+  if (diagnosticsStatus) diagnosticsStatus.textContent = 'Connecting this browser to the local helper…';
+  try {
+    const client = new HelperClient(origin);
+    const token = await client.pair(pairingCodeInput.value, controller.signal);
+    if (generation !== pairingGeneration || controller.signal.aborted || stopped) return;
+    if (!navigator.locks) throw new Error('Pairing storage is unavailable.');
+    await navigator.locks.request(pairingStorageName, async () => {
+      if (generation !== pairingGeneration || controller.signal.aborted || stopped) throw new Error('Pairing was cancelled.');
+      await pairingStorage.write('pairing', { origin, token },
+        () => generation === pairingGeneration && !controller.signal.aborted && !stopped,
+        controller.signal);
+    });
+    if (generation !== pairingGeneration || controller.signal.aborted || stopped) return;
+    pairingCodeInput.value = '';
+    pairingChanges.postMessage('pairing-changed');
+    await renderDiagnostics(origin);
+  } catch (error) {
+    if (generation !== pairingGeneration || controller.signal.aborted || stopped) return;
+    if (error instanceof Error && error.message === 'Pairing storage is unavailable.') {
+      if (diagnosticsStatus) diagnosticsStatus.textContent = 'This browser could not save the pairing. No local pairing was changed; try again.';
+    } else if (error instanceof Error && error.message === 'Pairing was cancelled.') {
+      return;
+    } else if (diagnosticsStatus) diagnosticsStatus.textContent = pairingFailureMessage(error);
+  } finally {
+    if (generation === pairingGeneration) { pairingAbort = undefined; setPairingBusy(false); }
+  }
+}
+if (pairingForm) pairingForm.onsubmit = event => { event.preventDefault(); return pairFromOptions(); };
 browser.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes[HELPER_ORIGIN_KEY]) {
     addressRevision++;
+    cancelPairing();
     originInput.value = typeof changes[HELPER_ORIGIN_KEY].newValue === 'string' ? changes[HELPER_ORIGIN_KEY].newValue : DEFAULT_HELPER_ORIGIN;
     void renderDiagnostics(originInput.value);
   }

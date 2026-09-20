@@ -52,7 +52,8 @@ registerHooks({
 
 export function storage(t: TestContext) {
   const stores = new Map<string, Map<string, unknown>>(), tails = new Map<string, Promise<void>>(), locks = new Map<string, Promise<unknown>>();
-  let beforeWrite = async (_key: string, _value: unknown) => {}, beforeRead = async (_key: string) => {}, openFailure = false;
+  let beforeWrite = async (_key: string, _value: unknown) => {}, beforeRead = async (_key: string) => {}, beforeCommit = async (_name: string) => {};
+  let openFailure = false, commitFailure = false, transactionCount = 0;
   const data = (name: string) => { if (!stores.has(name)) stores.set(name, new Map()); return stores.get(name)!; };
   replaceGlobals(t, {
     navigator: { locks: { request<T>(key: string, fn: () => Promise<T>): Promise<T> { const pending = (locks.get(key) ?? Promise.resolve()).catch(() => {}).then(fn); locks.set(key, pending.catch(() => {})); return pending; } } },
@@ -63,25 +64,40 @@ export function storage(t: TestContext) {
         if (openFailure) { opened.error = new Error('Storage is unavailable'); opened.onerror?.(); return; }
         const first = !stores.has(name); data(name);
         opened.result = { createObjectStore() {}, transaction(_store: string, mode = 'readonly') {
+          transactionCount++;
           const tx: any = {}, operations: any[] = [];
+          let state: 'active' | 'committing' | 'finished' = 'active', aborted = false, settled = false;
+          const finishAbort = (error?: unknown) => {
+            if (settled) return;
+            settled = true; state = 'finished'; tx.error = error;
+            if (error) { for (const op of operations) { op.request.error = error; op.request.onerror?.(); } tx.onerror?.(); }
+            tx.onabort?.();
+          };
+          tx.abort = () => {
+            if (state === 'committing' || state === 'finished') throw new DOMException('Transaction is no longer abortable.', 'InvalidStateError');
+            aborted = true;
+          };
           tx.objectStore = () => ({
             get(key: string) { const request: any = {}; operations.push({ kind: 'get', key, request }); return request; },
             getAll(range: { lower: string; upper: string; lowerOpen?: boolean }, count?: number) { const request: any = {}; operations.push({ kind: 'all', range, count, request }); return request; },
             getAllKeys(range: { lower: string; upper: string; lowerOpen?: boolean }, count?: number) { const request: any = {}; operations.push({ kind: 'keys', range, count, request }); return request; },
-            put(value: unknown, key: string) { operations.push({ kind: 'put', key, value: structuredClone(value), request: {} }); },
+            put(value: unknown, key: string) { const request: any = {}; operations.push({ kind: 'put', key, value: structuredClone(value), request }); return request; },
           });
           const pending = (tails.get(name) ?? Promise.resolve()).then(async () => {
-            await settle(); const next = new Map(data(name));
+            await settle(); if (aborted) { finishAbort(); return; }
+            const next = new Map(data(name));
             try {
               for (const op of operations) {
-                if (op.kind === 'put') { await beforeWrite(op.key, op.value); next.set(op.key, structuredClone(op.value)); }
-                else if (op.kind === 'get') { await beforeRead(op.key); op.request.result = structuredClone(next.get(op.key)); }
+                if (aborted) { finishAbort(); return; }
+                if (op.kind === 'put') { await beforeWrite(op.key, op.value); if (aborted) { finishAbort(); return; } next.set(op.key, structuredClone(op.value)); }
+                else if (op.kind === 'get') { await beforeRead(op.key); if (aborted) { finishAbort(); return; } op.request.result = structuredClone(next.get(op.key)); }
                 else op.request.result = [...next].filter(([key]) => (op.range.lowerOpen ? key > op.range.lower : key >= op.range.lower) && key <= op.range.upper).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, op.count).map(([key, value]) => op.kind === 'keys' ? key : structuredClone(value));
                 op.request.onsuccess?.();
+                if (aborted) { finishAbort(); return; }
               }
-              if (mode === 'readwrite') stores.set(name, next);
-              tx.oncomplete?.();
-            } catch (error) { tx.error = error; for (const op of operations) { op.request.error = error; op.request.onerror?.(); } tx.onabort?.(); tx.onerror?.(); }
+              if (mode === 'readwrite') { state = 'committing'; await beforeCommit(name); if (commitFailure) throw new Error('Storage commit failed.'); stores.set(name, next); }
+              state = 'finished'; settled = true; tx.oncomplete?.();
+            } catch (error) { finishAbort(error); }
           });
           tails.set(name, pending.catch(() => {})); return tx;
         } };
@@ -98,6 +114,14 @@ export function storage(t: TestContext) {
     close() { channels.delete(this); }
   }
   replaceGlobals(t, { BroadcastChannel: Channel, fetch: async () => { throw new Error('Unexpected network in this controlled test'); } });
-  return { data, Channel, onWrite(fn: typeof beforeWrite) { beforeWrite = fn; }, onRead(fn: typeof beforeRead) { beforeRead = fn; }, failOpen(value: boolean) { openFailure = value; } };
+  return {
+    data, Channel,
+    onWrite(fn: typeof beforeWrite) { beforeWrite = fn; },
+    onRead(fn: typeof beforeRead) { beforeRead = fn; },
+    onCommit(fn: typeof beforeCommit) { beforeCommit = fn; },
+    failOpen(value: boolean) { openFailure = value; },
+    failCommit(value: boolean) { commitFailure = value; },
+    transactionCount: () => transactionCount,
+  };
 }
 export const asHost = (node: TestElement) => node as unknown as HTMLElement;

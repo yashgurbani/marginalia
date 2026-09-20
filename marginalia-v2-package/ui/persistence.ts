@@ -329,16 +329,45 @@ export function localPersistence(name = 'marginalia-reader') {
       request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
     });
   }
-  async function write(key: string, value: unknown, stillCurrent?: () => boolean): Promise<void> {
+  async function write(key: string, value: unknown, stillCurrent?: () => boolean, signal?: AbortSignal): Promise<void> {
     const snapshot = structuredClone(value);
     const db = await database;
-    if (stillCurrent && !stillCurrent()) return;
+    if (signal?.aborted || (stillCurrent && !stillCurrent())) return;
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction('reader', 'readwrite');
-      transaction.objectStore('reader').put(snapshot, key);
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error ?? new Error('Saving was interrupted.'));
+      let transaction: IDBTransaction | undefined;
+      let terminal = false;
+      let transactionFailure: unknown;
+      let signalListener: (() => void) | undefined;
+      const cleanup = () => {
+        if (signal && signalListener) { signal.removeEventListener('abort', signalListener); signalListener = undefined; }
+      };
+      const requestAbort = () => {
+        const active = transaction;
+        if (terminal || !active) return;
+        try { active.abort(); }
+        catch (error) {
+          if (!(error instanceof DOMException && error.name === 'InvalidStateError')) transactionFailure ??= error;
+        }
+      };
+      try {
+        const active = db.transaction('reader', 'readwrite'); transaction = active;
+        if (!signal) {
+          active.oncomplete = () => resolve();
+          active.onerror = () => reject(active.error);
+          active.onabort = () => reject(active.error ?? new Error('Saving was interrupted.'));
+          active.objectStore('reader').put(snapshot, key);
+          return;
+        }
+        active.onerror = () => { transactionFailure ??= active.error; };
+        active.oncomplete = () => { terminal = true; cleanup(); if (transactionFailure) reject(new Error('Saving failed.')); else resolve(); };
+        active.onabort = () => { terminal = true; cleanup(); reject(transactionFailure || active.error ? new Error('Saving failed.') : new Error('Saving was interrupted.')); };
+        signalListener = requestAbort; signal.addEventListener('abort', signalListener, { once: true });
+        if (signal.aborted) { requestAbort(); return; }
+        const request = active.objectStore('reader').put(snapshot, key);
+        request.onsuccess = () => { if (signal.aborted || (stillCurrent && !stillCurrent())) requestAbort(); };
+      } catch (error) {
+        terminal = true; cleanup(); reject(error);
+      }
     });
   }
   const journal: Persistence = { load: () => read('journal'), save: value => write('journal', value) };
