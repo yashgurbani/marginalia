@@ -1,3 +1,4 @@
+import { marginSurfaces as surfaces } from './margin-surfaces/registry.ts';
 import { mountAskingDraft } from './asking/mount.ts';
 import { blockerActions, blockerMessages } from './asking/flow.ts';
 import type { AskingBlocker } from './asking/types.ts';
@@ -13,14 +14,12 @@ import { anchorAt, readingAnchorAt, orderedThreads, outgoingPreview, sourceLocat
 import type { JobSnapshot } from '../contracts/jobs.ts';
 import { HelperClient, HelperTransportError, HelperHttpError, attachmentTextHash, documentHelper, forgetPairingIfCurrent } from './helper.ts';
 import { mountHelperManagement } from './helper-management.ts';
-import { mountNoteEditor } from './note-editor.ts';
-import { retainedCopiesSection } from './retained-copies.ts';
 import { createT08Mount, type AskingMountFactory, type AskingSelection } from './asking-host.ts';
 import type { MountedReply } from '../renderer/index.ts';
 import { canonicalReplyData, capabilitiesForIntent, validateReply, type SourceBinding } from '../contracts/reply.ts';
 import { mountSolverRecompute } from './solver-recompute.ts';
 import { mountHearIt } from './hear-it.ts';
-import { diagnosticsSection, loadReaderDiagnostics, type ReaderDiagnostics } from './diagnostics.ts';
+import { loadReaderDiagnostics, type ReaderDiagnostics } from './diagnostics.ts';
 import type { VocabularyObservation, VocabularyObservationResult } from '../contracts/library.ts';
 import { mountInstantDefinition } from './instant/definition.ts';
 import { mountInstantOnboarding } from './instant/onboarding.ts';
@@ -182,20 +181,11 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const rail = el('div', undefined, 'm-rail');
   const panel = el('div', undefined, 'm-panel');
   const bar = el('div', undefined, 'm-bar');
-  const heading = el('header', undefined, 'm-head');
-  const sourceTitle = el('h1', capture.title); sourceTitle.id = instance + '-source-title';
-  heading.setAttribute('role', 'region'); heading.setAttribute('aria-labelledby', sourceTitle.id);
-  // Keep the byline honest: drop empty fields and the literal placeholder "unknown".
-  const knownField = (value?: string) => Boolean(value && value.trim() && value.trim().toLowerCase() !== 'unknown');
-  const sourceMetadata = el('p', [capture.pageType, capture.author, capture.publicationDate, capture.venue].filter(knownField).join(' · '), 'm-meta');
-  sourceMetadata.id = instance + '-source-metadata';
+  const homeSurface = surfaces.home(capture, instance);
+  const { heading, headline, compose, reading } = homeSurface;
   function beginReading() {}
-  // One header zone: the page title, one meta line, one control.
-  const headline = el('div', undefined, 'm-headline'); headline.append(sourceTitle);
-  heading.append(headline, sourceMetadata);
-  const compose = el('div', undefined, 'm-compose');
-  const map = el('nav', undefined, 'm-map'); map.setAttribute('aria-label', 'Page map: sections, notes and reading position');
-  const reading = el('div', undefined, 'm-reading');
+  const marksSurface = surfaces.marks({ sections }, (threadId, opener) => { void safely(() => openSavedThread(threadId, opener)); });
+  const { map } = marksSurface;
   const selectionCard = el('section', undefined, 'm-selection'); selectionCard.hidden = true;
   const instantDefinitionHost = el('div', undefined, 'm-instant-definition-slot');
   const selectionRelatedHost = el('div', undefined, 'm-related-slot');
@@ -212,55 +202,30 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const footer = el('footer', undefined, 'm-footer');
   const footerSlots = { related: el('div', undefined, 'm-footer-related'), actions: el('div', undefined, 'm-footer-actions'), voice: el('div', undefined, 'm-footer-voice'), history: el('div', undefined, 'm-footer-history'), requests: el('div', undefined, 'm-footer-requests'), retained: el('div', undefined, 'm-footer-retained') };
   // The footer is assembled as one row further down, once its controls exist.
-  const localLibrary = el('section', undefined, 'm-local-library'); localLibrary.hidden = true;
-  localLibrary.setAttribute('aria-label', 'Library work on this page');
-  localLibrary.append(el('h2', 'Work on this page'), footerSlots.history, footerSlots.requests, footerSlots.retained);
-  if (options.onLibrary) localLibrary.append(button('Open Library', () => options.onLibrary?.()));
-  localLibrary.append(button('Close Library', () => { localLibrary.hidden = true; libraryButton.focus({ preventScroll: true }); }));
-  const focusLocalLibraryAction = () => {
-    const target = [...localLibrary.querySelectorAll<HTMLButtonElement>('button')].find(control =>
-      !control.disabled && control.tabIndex >= 0 && !control.hidden && !control.closest('[hidden]') && !control.closest('[aria-hidden="true"]'));
-    target?.focus();
-  };
+  const librarySurface = surfaces.library(footerSlots, {
+    openLibrary: () => options.onLibrary?.(), hasExternalLibrary: () => !!options.onLibrary,
+    useExternalLibrary: () => earlierDrafts.hidden && !footerSlots.requests.children.length && !footerSlots.retained.children.length,
+  });
+  const { element: localLibrary, control: libraryButton, focusAction: focusLocalLibraryAction } = librarySurface;
   const status = el('p', '', 'm-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const notice = el('div', undefined, 'm-notice'); notice.hidden = true; notice.tabIndex = 0;
   footer.prepend(notice);
   const toast = el('div', undefined, 'm-toast'); toast.hidden = true;
-  const setup = el('section', undefined, 'm-settings'); setup.hidden = true;
-  const settingsBody = el('div'), managementHost = el('div'), forgetHost = el('div', undefined, 'm-forget-slot');
-  setup.append(settingsBody, managementHost, ...(options.settingsContent ? [options.settingsContent] : []));
+  const settingsSurface = surfaces.settings(options.settingsContent);
+  const { setup, settingsBody, managementHost, forgetHost } = settingsSurface;
   rail.append(map);
   const scroll = el('div', undefined, 'm-scroll'); scroll.append(egressSheet, selectionCard, threadList, footer);
-  const replyFrame = el('section', undefined, 'm-reply-frame'); replyFrame.hidden = true;
-  const replyBody = el('div', undefined, 'm-reply-frame-body');
-  const backStatus = el('p', '', 'm-meta'); backStatus.setAttribute('role', 'status'); backStatus.hidden = true;
-  const back = button('Back', () => { void track(backHome()); }); back.className = 'm-back';
-  const liveReply = button('Reply', () => {
-    if (!askingMount) return;
-    askingHost.hidden = false; questionForm.hidden = true; questionArea.hidden = false;
-    showFullReply(questionArea, liveReply); askingMount.setVisible(true);
-  }); liveReply.className = 'm-reply-title'; liveReply.hidden = true;
-  replyFrame.append(back, backStatus, replyBody); scroll.append(replyFrame);
-  let replyOpener: HTMLElement | undefined, homeScroll = 0, returningHome = false;
-  let savedReplyHome: { node: HTMLElement; parent: HTMLElement; next: ChildNode | null } | undefined;
-  function showFullReply(node: HTMLElement, opener?: HTMLElement) {
-    if (replyFrame.hidden) { homeScroll = scroll.scrollTop; replyOpener = opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined); }
-    if (savedReplyHome && savedReplyHome.node !== node) restoreSavedReply();
-    if (node !== questionArea && node.parentElement !== replyBody) savedReplyHome = { node, parent: node.parentElement!, next: node.nextSibling };
-    if (node.parentElement !== replyBody) replyBody.append(node);
-    for (const child of Array.from(replyBody.children)) (child as HTMLElement).hidden = child !== node;
-    node.hidden = false; replyFrame.hidden = false; shell.classList.add('m-reply-open');
-    backStatus.hidden = true; scroll.scrollTop = 0; back.focus({ preventScroll: true });
-  }
-  function restoreSavedReply() {
-    if (!savedReplyHome) return;
-    const { node, parent, next } = savedReplyHome;
-    if (parent.isConnected) parent.insertBefore(node, next?.parentNode === parent ? next : null);
-    savedReplyHome = undefined;
-  }
+  const replySurface = surfaces.reply(shell, scroll, questionArea, {
+    back: () => { void track(backHome()); },
+    liveReply: () => {
+      if (!askingMount) return;
+      askingHost.hidden = false; questionForm.hidden = true; questionArea.hidden = false;
+      showFullReply(questionArea, liveReply); askingMount.setVisible(true);
+    },
+  });
+  const { replyFrame, replyBody, liveReply, showFullReply, restoreSavedReply } = replySurface;
   async function backHome() {
-    if (returningHome || replyFrame.hidden) return;
-    returningHome = true; back.disabled = true;
+    if (!replySurface.beginReturn()) return;
     try {
       if (askingMount && !askingHost.hidden) {
         if (!askingMount.saveForNavigation) throw new Error('This reply needs a saving connection before returning.');
@@ -274,13 +239,11 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       } while (alive() && before !== canonicalReplyData([...replyMounts.values()].map(entry => entry.mounted.getState())));
       if (!alive()) return;
       askingMount?.setVisible(false); restoreSavedReply();
-      questionArea.hidden = true; replyFrame.hidden = true; shell.classList.remove('m-reply-open');
-      scroll.scrollTop = homeScroll; renderQuestionContinuation();
-      (replyOpener?.isConnected ? replyOpener : noteEditor.element).focus({ preventScroll: true });
+      replySurface.returnHome(() => renderQuestionContinuation(), noteEditor.element);
       announce('Saved');
     } catch (error) {
-      if (alive()) { backStatus.textContent = error instanceof Error ? error.message : 'Saving failed. Your reply is kept here.'; backStatus.hidden = false; }
-    } finally { returningHome = false; back.disabled = false; }
+      if (alive()) replySurface.failedReturn(error);
+    } finally { replySurface.endReturn(); }
   }
   panel.append(...(options.instantHelp ? [instantOnboardingHost] : []), heading, autoAssistAssumesHost, setup, localLibrary, scroll, status, toast); shell.append(rail, panel); workspace.append(shell); root.append(workspace);
   const management = options.helperManagement && options.allowHelper !== false ? mountHelperManagement(managementHost) : undefined;
@@ -336,9 +299,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const hasAttachmentObservation = (threadId: string) => attachmentObservedThisMount.has(threadId) || attachmentObservations.has(attachmentObservationKey(threadId, captureTextHash));
   const threadNodes = new Map<string, { signature: string; node: HTMLElement }>();
   /** Thread ID to the ID of the card it displays inside. Display only; records are untouched. */
-  const groupLead = new Map<string, string>();
+  const groupLead = homeSurface.groupLead;
   const threadRelated = new Map<string, RelatedMount>();
-  const railThreadNodes = new Map<string, HTMLButtonElement>();
   const replyMounts = new Map<string, { threadId: string; node: HTMLElement; mounted: MountedReply; flush(): Promise<void>; close(): void }>();
   const replyLoads = new Map<string, number>();
   const sessionKey = 'marginalia-draft-tab';
@@ -539,12 +501,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (blocker === 'expired-preview' && questionDraft) { showQuestion(questionDraft); return; }
     repairInstructions('Response status', 'The response could not be confirmed. Keep this retained request and use its recorded status control when available before reviewing another request.');
   }
-  const settingsButton = button('Settings', () => { if (setup.hidden) openSettings(); else setup.hidden = true; });
+  const settingsButton = settingsSurface.control(() => { if (setup.hidden) openSettings(); else setup.hidden = true; });
   const barActions: HTMLElement[] = [];
-  const libraryButton = button('Library', () => {
-    if (options.onLibrary && earlierDrafts.hidden && !footerSlots.requests.children.length && !footerSlots.retained.children.length) options.onLibrary();
-    else { localLibrary.hidden = !localLibrary.hidden; if (!localLibrary.hidden) focusLocalLibraryAction(); }
-  });
   barActions.push(libraryButton, settingsButton);
   collapse.className = 'm-head-toggle'; headline.append(collapse);
   rail.prepend(el('span', 'Marginalia', 'm-wordmark'));
@@ -552,12 +510,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   if (options.initialOpen === false || (options.initialOpen !== true && narrowViewport())) {
     shell.classList.add('is-collapsed'); openButton.setAttribute('aria-expanded', 'false'); rail.append(map);
   }
-  const writeButton = button('Write here…', () => beginDraft()); writeButton.className = 'm-write'; compose.append(writeButton);
-  writeButton.addEventListener('focus', () => { if (hydrationFinished && !draft) beginDraft(); });
-  const readingTitle = el('h2'); readingTitle.tabIndex = -1;
-  const followingLabel = el('span', '', 'm-meta');
-  const followButton = button('Follow reading', () => { held = false; updateReading(); renderPosition(); readingTitle.focus(); });
-  reading.append(readingTitle, followingLabel, followButton);
+  const { writeButton, readingTitle } = homeSurface.mountReading({
+    beginDraft: () => beginDraft(), canBeginDraft: () => hydrationFinished && !draft,
+    follow: () => { held = false; updateReading(); renderPosition(); },
+  });
   function dismissResumeLine() { resumeLine?.remove(); resumeLine = undefined; resumePosition = undefined; resumeAnchor = undefined; }
   function showResumeLine(anchor: QuoteAnchor, position: number) {
     dismissResumeLine(); resumePosition = position; resumeAnchor = anchor;
@@ -567,22 +523,15 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   shell.addEventListener('click', dismissResumeLine, { signal });
   shell.addEventListener('input', dismissResumeLine, { signal });
-  const railThreads = el('div', undefined, 'm-rail-threads');
-  map.append(railThreads);
-  const activityButton = button('Work status', () => { void openEgress(); });
-  activityButton.className = 'm-activity'; activityButton.hidden = true; map.append(activityButton);
+  marksSurface.mountThreadRail();
+  const activityButton = replySurface.mountActivity(map, () => { void openEgress(); });
   function showActivity(text: string, sending: boolean, elapsedSeconds?: number) {
     if (!alive()) return;
     // Closing the question does not erase the last job's record.
     if (!text && activityJobId) return;
-    activityButton.hidden = !text; activityButton.dataset.sending = String(sending);
-    activityButton.setAttribute('aria-label', 'Open What was sent: ' + (text || 'work status') + (elapsedSeconds !== undefined && elapsedSeconds >= 30 ? `, ${Math.floor(elapsedSeconds)} seconds` : '') + '.');
-    activityButton.title = text; activityButton.textContent = text;
+    replySurface.updateActivity(text, sending, elapsedSeconds);
   }
-  function flowActivity(value: { phase: string; elapsedSeconds?: number }) {
-    const working = ['queued', 'sending', 'working', 'provisional', 'validating', 'loading-reply', 'cancel_requested'].includes(value.phase);
-    return { text: working ? 'Working' : value.phase === 'committed' ? 'Ready' : value.phase === 'unknown' || value.phase === 'timed_out' ? 'Outcome unconfirmed' : value.phase === 'failed' ? 'Failed' : value.phase === 'cancelled' ? 'Cancelled' : '', elapsedSeconds: value.elapsedSeconds };
-  }
+  const flowActivity = replySurface.activityFor;
   function updateActivity(value: { phase: string; sending?: boolean; elapsedSeconds?: number }) {
     if (!alive()) return;
     const generation = ++activityGeneration;
@@ -610,9 +559,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   async function openEgress() {
     const generation = ++egressGeneration;
     showPanel(); egressSheet.hidden = false;
-    const close = button('Close', closeEgress), content = el('div');
-    content.setAttribute('role', 'status'); content.textContent = 'Reading the stored record…';
-    egressSheet.replaceChildren(el('h2', 'What was sent'), close, content); close.focus();
+    const content = replySurface.openEgress(egressSheet, closeEgress);
     try {
       const jobId = activityJobId ?? questionDraft?.resumeJobId;
       if (!jobId) throw new Error('The stored record for this activity is unavailable. The outcome is unconfirmed.');
@@ -622,21 +569,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       if (job.id !== jobId) throw new Error('The stored record does not match this activity.');
       const record = egressRecord(job);
       const measured = egressMeasurements(job);
-      content.replaceChildren(el('p', record.summary));
-      content.append(el('h3', 'Size of reviewed content'), el('p', measured.reviewedBytes === null
-        ? 'Unknown for this record. No measurement is backfilled.'
-        : `${measured.reviewedBytes} UTF-8 bytes. The reviewed content size is recorded. Transmission size is unmeasured.`));
-      content.append(el('h3', 'Provider handoff'), el('p', measured.handoffRecorded
-        ? 'Recorded in the durable attempt record.'
-        : 'No durable provider handoff is recorded.'));
-      content.append(el('h3', 'Observed transmission'), el('p',
-        'Not observed. This record can establish provider handoff. Transmission evidence is unavailable.'));
-      for (const [label, value] of record.fields) content.append(el('h3', label), el('p', /^\d{4}-\d{2}-\d{2}T/.test(value) ? readerDate(value) : value));
-      const packet = el('pre', canonicalReplyData(record.packet));
-      packet.style.whiteSpace = 'pre-wrap'; packet.style.overflowWrap = 'anywhere';
-      content.append(el('p', record.retention, 'm-meta'), el('h3', 'Retained reading packet'), packet);
+      replySurface.renderEgress(content, record, measured);
     } catch (error) {
-      if (alive() && generation === egressGeneration) content.textContent = error instanceof Error ? error.message : 'The stored record is unavailable. The outcome is unconfirmed.';
+      if (alive() && generation === egressGeneration) replySurface.failedEgress(content, error);
     }
   }
   const footerCount = el('summary', '', 'm-meta');
@@ -705,9 +640,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const parkedPositionKey = 'parked-page-position:' + capture.url;
   const savedPageKey = 'saved-page:' + capture.url;
   let pageSaving = false;
-  const savePageButton = button('Save page', () => savePage(false)), parkPageButton = button('Read later', () => savePage(true));
-  reading.append(savePageButton);
-  savePageButton.disabled = true; parkPageButton.disabled = true;
+  const saveJourneySurface = surfaces.saveJourney(reading, savePage);
+  const { savePageButton, parkPageButton } = saveJourneySurface;
   function savePage(parked: boolean) {
     if (!hydrationFinished || pageSaving) return;
     pageSaving = true; savePageButton.disabled = true; parkPageButton.disabled = true;
@@ -759,7 +693,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   footer.append(footerRow);
   const skip = button('Go to margin', () => showPanel(true, skip)); skip.className = 'm-skip'; root.prepend(skip);
 
-  const noteEditor = mountNoteEditor(compose, {
+  const noteEditor = homeSurface.mountEditor({
     edit(text) {
       if (!draft && hydrationFinished) beginDraft();
       if (draft && (!saving || continuousSave) && (!draft.mutation || continuousSave)) {
@@ -824,27 +758,15 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function renderPosition() {
     if (!alive()) return;
-    readingTitle.textContent = sections[sectionIndex].title;
+    homeSurface.updateReadingTitle(sections[sectionIndex].title);
     const lastParagraph = capture.text.trimEnd().lastIndexOf('\n') + 1;
     const sourceEndVisible = source && readingPosition > 0 && source.getBoundingClientRect().bottom <= innerHeight;
     const atEnd = capture.text.length > 0 && (sourceEndVisible || readingPosition >= (lastParagraph || capture.text.length - 1));
     if (atEnd) { if (!endOffers.children.length) endOffers.append(think, further); if (endOffers.parentElement !== scroll) scroll.insertBefore(endOffers, footer); }
     else endOffers.remove();
     sectionMarkers.forEach((marker, index) => { marker.hidden = index === sectionIndex; });
-    followButton.hidden = true; followingLabel.hidden = false;
-    followingLabel.textContent = sections.length > 1 ? `Section ${sectionIndex + 1} of ${sections.length}` : '';
-    const overview = sectionMapState(sections, threadsNow(), capture, sectionIndex);
-    for (const node of Array.from(map.querySelectorAll<HTMLElement>('[data-section]'))) {
-      const index = Number(node.dataset.section), item = overview[index];
-      node.setAttribute('aria-current', String(item.current)); node.dataset.marked = String(item.marks > 0); node.dataset.notes = String(item.notes);
-      const text = `${sections[index].title}${item.current ? ', current reading position' : ''}`;
-      node.title = text; node.setAttribute('aria-label', text);
-      const density = node.querySelector<HTMLElement>('.m-density')!; density.textContent = ''; density.hidden = true;
-      node.style.setProperty('--note-density', String(Math.min(1, item.notes / Math.max(1, item.length / 500))));
-      node.querySelector('.m-map-marks')!.replaceChildren(...item.markPositions.map(position => { const tick = el('span', '', 'm-map-mark'); tick.style.setProperty('--mark-position', `${position * 100}%`); return tick; }));
-      const cue = node.querySelector<HTMLElement>('.m-map-position')!; cue.hidden = !item.current;
-      cue.style.setProperty('--reading-position', `${Math.max(0, Math.min(1, (readingPosition - sections[index].start) / item.length)) * 100}%`);
-    }
+    homeSurface.updateSection(sectionIndex, sections.length);
+    marksSurface.updateSections(sectionMapState(sections, threadsNow(), capture, sectionIndex), readingPosition);
     for (const thread of orderedThreads(threadsNow(), capture)) {
       const node = threadNodes.get(thread.id)?.node; if (!node) continue;
       const at = displayPosition(thread.anchor, capture);
@@ -861,19 +783,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     }
   }
   function sectionFor(start: number) { const index = sections.findIndex(s => start >= s.start && start < s.end); return index < 0 ? 0 : index; }
-  sections.forEach((section, index) => {
-    const segment = button('', () => {
-      const openingSheet = narrowViewport() && shell.classList.contains('is-collapsed');
-      hold(index); showPanel(openingSheet, segment); sourceAction(anchorAt(capture.text, section.start, section.end), !openingSheet);
-    });
-    segment.dataset.section = String(index); segment.className = `m-segment m-colour-${index % 6 + 1}`;
-    const relativeLength = Math.max(1, section.end - section.start) / Math.max(1, ...sections.map(item => item.end - item.start));
-    segment.style.flexGrow = String(Math.max(1, section.end - section.start));
-    segment.style.flexBasis = `${Math.max(40, relativeLength * 112)}px`;
-    segment.style.setProperty('--section-relative', String(relativeLength));
-    const density = el('span', '', 'm-density'), marks = el('span', '', 'm-map-marks'), cue = el('span', '', 'm-map-position');
-    for (const child of [density, marks, cue]) child.setAttribute('aria-hidden', 'true');
-    segment.append(density, marks, cue); map.append(segment);
+  marksSurface.mountSections((index, segment) => {
+    const openingSheet = narrowViewport() && shell.classList.contains('is-collapsed');
+    hold(index); showPanel(openingSheet, segment); sourceAction(anchorAt(capture.text, sections[index].start, sections[index].end), !openingSheet);
   });
   function persistDraft() {
     if (!draft || !alive()) return;
@@ -908,12 +820,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function renderCompose(focus = false) {
     if (!alive()) return;
-    savePageButton.disabled = !hydrationFinished || pageSaving; parkPageButton.disabled = !hydrationFinished || pageSaving;
-    writeButton.hidden = true; writeButton.disabled = !hydrationFinished;
-    noteEditor.update(draft ? { text: draft.text, continuous: true,
-      attachment: draft.anchor.kind === 'whole-page' ? 'Note on the whole page' : `Note on "${excerpt(displayAnchor(draft.anchor), 66)}"`,
-      saving, locked: !continuousSave && (pendingNoteCommitted || !!draft.mutation), canChange: !draft.threadId,
-       message: !storageReady ? 'Local storage is unavailable. Export this memory-only draft before closing.' : draftAttachmentSaveFailed ? 'This attachment change is not saved yet. Retry saving in Settings; your text is retained.' : draft.source && draft.source.text !== capture.text ? 'The original captured passage is retained. Change explicitly adopts the current capture.' : draft.mutation && !continuousSave ? 'This exact change is retained. Retry saving or resolve its conflict before editing.' : '' } : { text: '', attachment: '', saving: false, locked: !hydrationFinished, canChange: false, message: '', continuous: true });
+    saveJourneySurface.update(hydrationFinished, pageSaving);
+    homeSurface.updateHydration(hydrationFinished);
+    homeSurface.updateEditor({
+      draft: draft ? { text: draft.text, wholePage: draft.anchor.kind === 'whole-page', passage: displayAnchor(draft.anchor) } : undefined,
+      saving, locked: !continuousSave && (pendingNoteCommitted || !!draft?.mutation), canChange: !draft?.threadId,
+      hydrated: hydrationFinished, storageReady, attachmentSaveFailed: draftAttachmentSaveFailed,
+      originalCapture: !!draft?.source && draft.source.text !== capture.text, retainedMutation: !!draft?.mutation && !continuousSave,
+    });
     placeItems(); if (focus && draft) noteEditor.focus();
   }
   function saveDraft() { return track(saveDraftNow()); }
@@ -1536,8 +1450,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (focusKey && focusedThreadId) expanded.add(focusedThreadId);
     const threads = orderedThreads(threadsNow(), capture);
     for (const [key, entry] of threadNodes) if (!threads.some(t => t.id === key)) { closeReplies(key); threadRelated.get(key)?.destroy(); threadRelated.delete(key); replyLoads.set(key, (replyLoads.get(key) ?? 0) + 1); entry.node.remove(); threadNodes.delete(key); }
-    const empty = threadList.querySelector('.m-empty'); empty?.remove();
-    if (!threads.length) threadList.append(el('p', 'Suggestions appear as you write. Your notes, highlights and replies get marked on the left.', 'm-empty'));
+    homeSurface.updateEmpty(threadList, threads.length);
     threads.forEach(thread => {
       let entry = threadNodes.get(thread.id);
       if (entry?.signature !== threadContentKey(thread)) {
@@ -1556,18 +1469,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       // placeItems maintains source order without rebuilding reply/editor subtrees.
     });
     groupThreads(threads);
-    for (const [threadId, dot] of railThreadNodes) if (!threads.some(thread => thread.id === threadId)) { dot.remove(); railThreadNodes.delete(threadId); }
-    threads.forEach(thread => {
-      const label = thread.notes.find(note => !note.deletedAt)?.text ?? thread.anchor.exact;
-      let dot = railThreadNodes.get(thread.id);
-      if (!dot) {
-        dot = button('', () => { void safely(() => openSavedThread(thread.id, dot)); });
-        dot.className = 'm-rail-thread'; railThreadNodes.set(thread.id, dot);
-      }
-      dot.setAttribute('aria-label', 'Open saved thread: ' + excerpt(label, 66));
-      dot.title = 'Saved work: ' + excerpt(label, 66);
-      railThreads.append(dot);
-    });
+    marksSurface.updateThreads(threads);
     pageActions.hidden = !threads.length;
     footerCount.textContent = 'Connections';
     renderPosition(); paintHighlights();
@@ -1583,23 +1485,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
    * rewritten or removed: every thread keeps its ID, notes, replies and controls,
    * and stays stored, exportable and reachable.
    */
-  function groupThreads(threads: Thread[]) {
-    groupLead.clear();
-    // Every note keeps its own page-order entry. Same quotation text never
-    // creates a count disclosure or hides another independently saved note.
-    for (const thread of threads) {
-      const node = threadNodes.get(thread.id)?.node;
-      const repeats = node && [...node.children].find((child): child is HTMLDetailsElement => child.classList.contains('m-thread-repeats'));
-      if (!node || !repeats) continue;
-      const summary = repeats.querySelector('summary')!;
-      const followers = threads.filter(other => groupLead.get(other.id) === thread.id);
-      if (!followers.length) { repeats.hidden = true; repeats.open = false; repeats.replaceChildren(summary); continue; }
-      const notes = followers.reduce((sum, other) => sum + other.notes.filter(note => !note.deletedAt).length, 0);
-      summary.textContent = '';
-      repeats.hidden = false;
-      repeats.replaceChildren(summary, ...followers.map(other => threadNodes.get(other.id)!.node));
-    }
-  }
+  function groupThreads(threads: Thread[]) { homeSurface.groupThreads(threads, threadNodes); }
   /**
    * A grouped thread sits inside its lead's expander. Every explicit open, focus,
    * rail or resume path calls this first, so the target card is shown and focusable.
@@ -1632,17 +1518,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     sourceButton.addEventListener('focus', () => highlight(thread.anchor)); sourceButton.addEventListener('blur', () => highlight(null));
     const sourceBlock = el('div', undefined, 'm-thread-source'); sourceBlock.append(sourceButton);
     if (location.state === 'moved' || location.state === 'lost' || location.state === 'unsure') {
-      const marker = el('div', undefined, 'm-reader-note');
-      marker.append(el('p', 'You were here', 'm-meta'));
-      const attachmentCopy = location.state === 'moved'
-        ? hasAttachmentObservation(thread.id) ? 'This passage moved. This attachment is saved; the original quotation is still here.' : 'This passage moved. The original quotation is still here.'
-        : location.state === 'unsure'
-          ? 'More than one passage could match. The original quotation is still here.'
-          : 'This passage could not be found. The original quotation is still here.';
-      const message = el('p', attachmentMessages.get(thread.id) ?? attachmentCopy, 'm-meta m-attachment-status');
-      message.setAttribute('role', 'status');
-      const observed = hasAttachmentObservation(thread.id);
-      const look = actionButton(thread.id + ':reattach', location.state === 'moved' ? 'Remember this attachment' : 'Look again', () => {
+      sourceBlock.append(surfaces.recovery({ threadId: thread.id, state: location.state,
+        observed: hasAttachmentObservation(thread.id), pending: attachmentPending.has(thread.id), message: attachmentMessages.get(thread.id),
+      }, look => {
         if (!alive() || attachmentPending.has(thread.id) || hasAttachmentObservation(thread.id)) return;
         attachmentPending.add(thread.id); look.disabled = true;
         const show = (text: string) => {
@@ -1686,14 +1564,13 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
             if (alive() && current) current.disabled = false;
           }
         })());
-      });
-      look.className = 'm-reattach-action'; look.disabled = attachmentPending.has(thread.id);
-      marker.append(message); if (!observed) marker.append(look); sourceBlock.append(marker);
+      }));
     }
-    const noteBlocks: HTMLElement[] = [];
-    for (const note of thread.notes.filter(note => !note.deletedAt)) {
-      const edit = actionButton(thread.id + ':' + 'edit-note', 'Edit note', () => beginDraft(thread.anchor, thread, note.id)); edit.dataset.focusKey = thread.id + ':note:' + note.id;
-      const remove = actionButton(thread.id + ':remove-note:' + note.id, 'Remove this note', () => safely(async () => {
+    const noteBlocks = homeSurface.noteBlocks(thread, {
+      edit: note => beginDraft(thread.anchor, thread, note.id),
+      read: note => beginDraft(thread.anchor, currentThread(thread.id), note.id),
+      ask: note => ask(thread.anchor, currentThread(thread.id), { noteId: note.id, revision: note.revision, text: note.text }),
+      remove: note => safely(async () => {
         await change({ id: id(), kind: 'note-remove', threadId: thread.id, noteId: note.id, removed: true, expectedRevision: note.revision });
         toast.hidden = false; const undo = actionButton(thread.id + ':' + 'undo', 'Undo', () => safely(async () => {
           const current = currentThread(thread.id)!, removed = current.notes.find(item => item.id === note.id)!;
@@ -1701,13 +1578,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
           toast.hidden = true; threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); announce('Note restored.');
         }));
         toast.replaceChildren(el('span', 'Note removed.'), undo); undo.focus();
-      }));
-      // The note reads at rest; its own controls join the quiet row on hover or focus.
-      const noteTools = actions(edit, actionButton(thread.id + ':ask-note:' + note.id, 'Ask about this note', () => ask(thread.anchor, currentThread(thread.id), { noteId: note.id, revision: note.revision, text: note.text })), remove);
-      noteTools.classList.add('m-thread-tools');
-      const noteText = button(note.text, () => beginDraft(thread.anchor, currentThread(thread.id), note.id)); noteText.className = 'm-note';
-      const noteBlock = el('div', undefined, 'm-reader-note'); noteBlock.append(noteText, noteTools); noteBlocks.push(noteBlock);
-    }
+      }),
+    });
     // The note outranks the quote. With no note, the quote reads in its place.
     sourceButton.classList.add(noteBlocks.length ? 'm-source-meta' : 'm-source-lead', 'm-clamp-2');
     if (noteBlocks.length) { body.append(...noteBlocks); if (sourceBlock.children.length > 1) { sourceButton.hidden = true; body.append(sourceBlock); } }
@@ -1715,26 +1587,20 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const state = el('select'); state.dataset.focusKey = thread.id + ':state'; state.setAttribute('aria-label', 'Thread state');
     for (const value of ['open', 'parked', 'done', 'archived'] as const) { const option = el('option', value === 'parked' ? 'Read later' : value[0].toUpperCase() + value.slice(1)); option.value = value; state.append(option); } state.value = thread.state;
     state.addEventListener('change', () => void safely(async () => { await change({ id: id(), kind: 'thread-state', threadId: thread.id, expectedRevision: thread.revision, state: state.value as Thread['state'] }); announce('Thread ' + (state.value === 'parked' ? 'saved for later' : state.value) + '.'); threadNodes.get(thread.id)?.node.querySelector('select')?.focus(); }));
-    const highlightToggle = actionButton(thread.id + ':highlight', thread.highlighted ? 'Remove highlight' : 'Highlight', () => safely(async () => {
+    const { highlightToggle, colourPicker } = marksSurface.highlightControls(thread, {
+      toggle: () => safely(async () => {
       const current = currentThread(thread.id);
       if (!current) throw new Error('The saved passage is unavailable.');
       await change({ id: id(), kind: 'highlight', threadId: current.id, highlighted: !current.highlighted, expectedRevision: current.revision });
       announce(current.highlighted ? 'Highlight removed. The kept passage and thread remain.' : 'Passage highlighted on this device.');
-    }));
-    if (thread.anchor.kind === 'whole-page') highlightToggle.disabled = true;
-    const colourPicker = el('div', undefined, 'm-highlight-colours'); colourPicker.setAttribute('role', 'group'); colourPicker.setAttribute('aria-label', 'Highlight colour');
-    if (thread.highlighted) for (const colour of HIGHLIGHT_COLOURS) {
-      const swatch = actionButton(thread.id + ':highlight-colour:' + colour, '', () => safely(async () => {
+    }),
+      colour: colour => safely(async () => {
         const current = currentThread(thread.id);
         if (!current) throw new Error('The saved passage is unavailable.');
         await change({ id: id(), kind: 'highlight', threadId: current.id, highlighted: true, highlightColour: colour, expectedRevision: current.revision });
         announce(`${colour[0].toUpperCase() + colour.slice(1)} highlight selected.`);
-      }));
-      swatch.className = 'm-highlight-swatch'; swatch.dataset.highlightColour = colour;
-      swatch.setAttribute('aria-label', colour[0].toUpperCase() + colour.slice(1));
-      swatch.setAttribute('aria-pressed', String(highlightColour(thread.highlightColour) === colour));
-      colourPicker.append(swatch);
-    }
+      }),
+    });
     const removeThread = actionButton(thread.id + ':' + 'remove', 'Remove', () => safely(async () => {
       await change({ id: id(), kind: 'remove', threadId: thread.id, removed: true, expectedRevision: thread.revision });
       toast.hidden = false; const undo = actionButton(thread.id + ':' + 'undo', 'Undo', () => safely(async () => { const current = journal.state.threads.find(t => t.id === thread.id)!; await change({ id: id(), kind: 'remove', threadId: thread.id, removed: false, expectedRevision: current.revision }); toast.hidden = true; threadNodes.get(thread.id)?.node.querySelector<HTMLElement>('.m-source-action')?.focus(); announce('Thread restored.'); }));
@@ -2171,15 +2037,18 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function renderSettings() {
     if (!alive()) return;
-    const focused = settingsBody.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
-    const pairingFocused = focused?.getAttribute('aria-label') === 'Pairing code';
-    const caret = pairingFocused && focused instanceof HTMLInputElement ? [focused.selectionStart, focused.selectionEnd] : undefined;
-    settingsBody.replaceChildren(el('h2', 'Settings'));
-    if (journal.unsaved && needsReconciliation) settingsBody.append(el('p', 'Another tab saved a different version. Recovering preserves it and retains your changes for review.', 'm-error'), actionButton('settings:' + 'recover-unsaved-changes', 'Recover unsaved changes', () => safely(async () => {
+    settingsSurface.update({
+      needsReconciliation: journal.unsaved && needsReconciliation,
+      needsSaving: !!(hydrationFinished && (journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() || persistence.suggestions.unsaved(suggestionScope).length || pendingNoteMutation || pendingNoteCommitted || draftSaveFailed || !!draft)),
+      allowHelper: options.allowHelper !== false, pairingDraft, pairingFailure,
+      helperOrigin: helper?.origin, helperPaired: !!helper?.token, denied, forget: !!forget,
+      conflicts: sourceBoundJournal(journal.state, capture.url).conflicts,
+    }, {
+      recover: () => safely(async () => {
       await locked(() => journal.reconcilePersistence()); needsReconciliation = false; pendingNoteCommitted = false;
       changed(); renderThreads(); renderCompose(); renderSettings(); announce('Recovered changes need deliberate review. Your note and question drafts are retained.');
-    })));
-    if (hydrationFinished && (journal.unsaved || draftBuffer.unsaved() || questionBuffer.unsaved() || persistence.suggestions.unsaved(suggestionScope).length || pendingNoteMutation || pendingNoteCommitted || draftSaveFailed || !!draft)) settingsBody.append(el('p', 'Some work needs saving or conflict review. Memory-only recovery lasts only while this document stays open; export before closing.', 'm-error'), actionButton('settings:' + 'retry-saving', 'Retry saving', () => safely(async () => {
+      }),
+      retry: () => safely(async () => {
       if (draftAttachmentSaveFailed) { await draftBuffer.flush(); draftAttachmentSaveFailed = false; draftSaveFailed = false; announce('Draft attachment saved on this device. The note remains a draft.'); }
       else if (draft || pendingNoteMutation) await saveDraftNow();
       else { await locked(() => journal.retryPersistence()); await draftBuffer.flush(); }
@@ -2190,19 +2059,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       draftSaveFailed = false;
       if (!questionWasAttachmentFailed && questionDraft && !questionArea.hidden && !questionForm.hidden) showQuestion(questionDraft);
       changed(); renderThreads(); renderCompose(); renderSettings();
-    })));
-    if (options.allowHelper === false) settingsBody.append(el('p', 'Open the browser-owned margin or localhost page to connect the local helper.', 'm-meta'));
-    else {
-      const code = el('input'); code.dataset.focusKey = 'settings:pairing-code'; code.type = 'text'; code.inputMode = 'numeric'; code.autocomplete = 'one-time-code'; code.maxLength = 16; code.setAttribute('aria-label', 'Pairing code'); code.placeholder = 'Six-digit helper code'; code.value = pairingDraft;
-      if (pairingFailure) settingsBody.append(el('p', pairingFailure === 'expired'
-        ? 'Get a fresh code from the helper to continue.' : 'Enter the code shown in the helper settings.', 'm-pairing-repair'));
-      if (helper) {
-        const helperSettings = el('a', 'Open helper settings'); helperSettings.dataset.focusKey = 'settings:helper-page'; helperSettings.href = helper.origin + '/#pair-helper'; helperSettings.target = '_blank'; helperSettings.rel = 'noopener noreferrer';
-        settingsBody.append(helperSettings);
-      }
-      code.addEventListener('input', () => { pairingDraft = code.value; });
-      settingsBody.append(el('p', 'Reading and notes work without an account. Pairing does not establish model login, readiness or permission to send.', 'm-meta'), label('Pairing code', code), actions(
-        actionButton('settings:' + 'pair', 'Pair', () => safely(async () => {
+      }),
+      pairingInput: value => { pairingDraft = value; },
+      pair: code => safely(async () => {
           const client = helper; if (!client) throw new Error('The trusted helper connection is unavailable.');
           const previousToken = client.token;
           try { await client.pair(code.value, signal); }
@@ -2229,33 +2088,25 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
           // Pairing only restores the draft. Its explicit Continue action opens review.
           if (questionDraft && !questionSaving) { setup.hidden = true; showQuestion(questionDraft); }
           renderQuestionContinuation(); announce('Paired with the local helper. No queued work or model request was sent.');
-        })),
-        actionButton('settings:' + 'save-queued-changes', 'Save queued changes', () => safely(sync)),
-        actionButton('settings:' + 'disconnect', 'Disconnect', () => safely(async () => {
+      }),
+      sync: () => safely(sync),
+      disconnect: () => safely(async () => {
           const client = helper; if (!client) throw new Error('The local connection is unavailable.');
           const token = client.token; let removed = false;
           const result = await client.disconnect(async () => { await locked(async () => { removed = await forgetPairingIfCurrent(persistence, client.origin, token); }); if (removed) channel?.postMessage('pairing-changed'); });
           renderSettings();
           announce(result === 'replaced' || !removed ? 'A newer pairing is retained. The earlier revocation may be unconfirmed.' : result === 'unconfirmed' ? 'Local pairing removed. Remote revocation is unconfirmed; the helper may still list this browser.' : 'Local pairing removed. ' + (result === 'revoked' ? 'The helper confirmed revocation.' : 'There was no active token to revoke.'));
-        }))));
-    }
-    const theme = el('select'); theme.dataset.focusKey = 'settings:theme'; theme.setAttribute('aria-label', 'Theme');
-    for (const value of ['system', 'light', 'dark']) { const option = el('option', value[0].toUpperCase() + value.slice(1)); option.value = value; theme.append(option); }
-    theme.value = document.documentElement.dataset.theme ?? 'system';
-    theme.addEventListener('change', () => { if (theme.value === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = theme.value; void track(persistence.write('theme', theme.value)).catch(fail); });
-    settingsBody.append(label('Theme', theme), el('p', 'Model choices, actual grants, exclusions and vocabulary are managed in the local library and settings.', 'm-meta'), retainedCopiesSection(),
-      actionButton('settings:question-preview', denied ? 'Allow question previews here' : 'Block question previews here', () => safely(async () => { const next = !denied; await persistence.write('denied:' + new URL(capture.url).origin, next); denied = next; renderSettings(); announce('Local preview preference saved. Helper permission records are unchanged.'); })),
-      actionButton('settings:' + 'close-settings', 'Close settings', () => { setup.hidden = true; updateManagement(); settingsButton.focus({ preventScroll: true }); }));
-    if (forget) settingsBody.append(el('h3', 'Prepared page help'), forgetHost);
-    if (options.allowHelper !== false) {
-      if (diagnosticsEpoch !== helper?.connectionVersion) diagnostics = { origin: helper?.origin ?? diagnostics.origin,
-        reachability: 'checking', pairing: 'unknown' };
-      settingsBody.append(diagnosticsSection(diagnostics), actionButton('settings:' + 'check-how-things-are', 'Check how things are', () => refreshDiagnostics()));
-    }
-    for (const conflict of sourceBoundJournal(journal.state, capture.url).conflicts) {
-      const item = el('details'), mutation = conflict.change;
-      item.append(el('summary', 'Review a retained change'), el('p', conflict.message), el('pre', mutation.kind === 'note' ? mutation.text : mutation.kind === 'keep' ? mutation.note ?? mutation.anchor.exact : JSON.stringify(mutation)));
-      const resolve = (useHelper: boolean) => safely(async () => {
+      }),
+      theme: value => { void track(persistence.write('theme', value)).catch(fail); },
+      preview: () => safely(async () => { const next = !denied; await persistence.write('denied:' + new URL(capture.url).origin, next); denied = next; renderSettings(); announce('Local preview preference saved. Helper permission records are unchanged.'); }),
+      close: () => { setup.hidden = true; updateManagement(); settingsButton.focus({ preventScroll: true }); },
+      diagnostics: () => {
+        if (diagnosticsEpoch !== helper?.connectionVersion) diagnostics = { origin: helper?.origin ?? diagnostics.origin,
+          reachability: 'checking', pairing: 'unknown' };
+        return diagnostics;
+      },
+      refreshDiagnostics,
+      resolve: (mutation, useHelper) => safely(async () => {
         if (useHelper) await resolveHelperConflict(journal, locked, mutation.id, async latest => {
           const client = trustedHelper(), epoch = client.connectionVersion;
           const sourceUrl = latest.kind === 'keep' ? latest.capture.url : currentThread(latest.threadId)?.sourceUrl;
@@ -2269,13 +2120,8 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         if (released) { draft = released; pendingNoteMutation = undefined; pendingNoteCommitted = false; await draftBuffer.save(draft); }
         changed(); renderThreads(); renderCompose(); renderSettings();
         announce(useHelper ? 'Helper version selected. Original changes remain in history; your note draft is retained.' : 'Device version kept locally, including deliberate absence. Nothing was uploaded or accepted remotely; your note draft is retained.');
-      });
-      item.append(actionButton('settings:' + 'keep-device-version-keep-my-change-in-history', 'Keep device version; keep my change in history', () => resolve(false)));
-      if (options.allowHelper !== false && helper?.token) item.append(actionButton('settings:' + 'use-helper-version-keep-my-change-in-history', 'Use helper version; keep my change in history', () => resolve(true)));
-      settingsBody.append(item);
-    }
-    if (pairingFocused) { const next = settingsBody.querySelector<HTMLInputElement>('[aria-label="Pairing code"]'); next?.focus({ preventScroll: true }); if (next && caret) next.setSelectionRange(caret[0], caret[1]); }
-    else if (focused && !focused.isConnected) Array.from(settingsBody.querySelectorAll<HTMLElement>('button,select')).find(node => !!focused.dataset.focusKey && node.dataset.focusKey === focused.dataset.focusKey)?.focus({ preventScroll: true });
+      }),
+    });
   }
   function exportWork() {
     return safely(async () => {
