@@ -10,7 +10,7 @@ import { attachQuote, type QuoteAnchor } from '../../contracts/reader.ts';
 import { ReaderJournal } from '../../ui/journal.ts';
 import { localPersistence } from '../../ui/persistence.ts';
 import { resumeAnchor, validResumeThreadId, type ResumeCheckpoint } from '../../contracts/resume.ts';
-import { actionMatches, retainedKeep, sameSelection, selectionAction, validContentAction, validKeepReceipt, KEEP_RECEIPT_LIMIT, KEEP_RECEIPT_BYTES, KEEP_RECEIPT_TTL, type ActionRequest, type SelectionAction, type KeepReceipt } from '../lib/selection-actions.ts';
+import { actionMatches, retainedKeep, sameSelection, sameCommandSelection, nativeCommand, validCommandReply, selectionAction, validContentAction, validKeepReceipt, KEEP_RECEIPT_LIMIT, KEEP_RECEIPT_BYTES, KEEP_RECEIPT_TTL, type ActionRequest, type SelectionAction, type KeepReceipt } from '../lib/selection-actions.ts';
 
 export default defineBackground(() => {
   const helper = helperReconnect();
@@ -79,11 +79,12 @@ export default defineBackground(() => {
     if (!validSnapshot(data) || before.documentId !== after?.documentId || after.documentLifecycle !== 'active' || pageIdentity(after.url) !== data.capture.url || !await permitted(after.url, tab.incognito)) throw new Error('The page changed. Select the passage again.');
     return { ...data, browserDocument: before.documentId };
   }
-  async function runSelectionAction(tabId: number, action: SelectionAction | 'read-later', snapshot: Awaited<ReturnType<typeof source>>, operation: string = crypto.randomUUID()) {
+  async function runSelectionAction(tabId: number, action: SelectionAction | 'read-later', snapshot: Awaited<ReturnType<typeof source>>, operation: string = crypto.randomUUID(), commandCheck?: () => Promise<void>) {
     const epoch = exclusionEpoch;
     const check = async () => {
       const live = await source(tabId, snapshot.browserDocument);
       if (epoch !== exclusionEpoch || !sameSelection(snapshot, live)) throw new Error('The passage changed. Select it again.');
+      if (commandCheck) await commandCheck();
     };
     if (action !== 'read-later' && !snapshot.anchor) throw new Error('Select a passage first.');
     if (action === 'keep') {
@@ -91,6 +92,10 @@ export default defineBackground(() => {
         const key = 'selection-keep:' + tabId;
         const raw = (await browser.storage.session.get(key))[key];
         const receipts = await pruneKeepReceipts(), retained = receipts[key];
+        if (commandCheck && validKeepReceipt(raw) && raw.snapshot.browserDocument === snapshot.browserDocument && sameCommandSelection(raw.snapshot, snapshot)) {
+          if (raw.expires <= Date.now()) throw new Error('Stale source request.');
+          operation = raw.operation;
+        }
         if (validKeepReceipt(raw) && raw.operation === operation && raw.expires <= Date.now()) throw new Error('Stale source request.');
         if (retained?.operation === operation && (retained.snapshot.browserDocument !== snapshot.browserDocument || !sameSelection(retained.snapshot, snapshot))) throw new Error('Stale source request.');
         const attempt: KeepReceipt = retained?.operation === operation ? retained : { operation, threadId: crypto.randomUUID(), snapshot: structuredClone(snapshot), expires: Date.now() + KEEP_RECEIPT_TTL };
@@ -158,6 +163,45 @@ export default defineBackground(() => {
       const panel = await opening;
       readReply(await browser.tabs.sendMessage(tabId, { type: action === 'keep' ? 'action-kept' : 'action-open', version: 1, panel }, { documentId: frame.documentId, frameId: 0 }));
     })().catch(() => {});
+  });
+  browser.commands?.onCommand.addListener((command, tab) => {
+    if (!nativeCommand(command) || !tab || !Number.isInteger(tab.id) || tab.id! < 0 || tab.incognito || !allowedPage(tab.url)) return;
+    const tabId = tab.id!, request = crypto.randomUUID(), epoch = exclusionEpoch;
+    // Chrome's command gesture opens the neutral shell before any asynchronous work.
+    const opening = command === 'keep-selection' ? Promise.resolve(false) : openNative(tabId, tab.url!, tab.incognito);
+    let captured: Awaited<ReturnType<typeof source>> | undefined;
+    const feedback = async (status: 'Kept' | 'Try again') => {
+      if (!captured) return;
+      await browser.tabs.sendMessage(tabId, { type: 'command-result', version: 1, request, document: captured.document, revision: captured.revision, status }, { documentId: captured.browserDocument, frameId: 0 });
+    };
+    void (async () => {
+      if (!await permitted(tab.url!, tab.incognito) || epoch !== exclusionEpoch) return;
+      const frame = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
+      if (!frame?.documentId || frame.documentLifecycle !== 'active' || pageIdentity(frame.url) !== pageIdentity(tab.url!)) return;
+      const capture = async () => {
+        const currentTab = await browser.tabs.get(tabId);
+        if (!currentTab.active || currentTab.windowId !== tab.windowId || epoch !== exclusionEpoch) throw new Error('The page changed.');
+        const reply = readReply(await browser.tabs.sendMessage(tabId, { type: 'command-capture', version: 1, command, request }, { documentId: frame.documentId, frameId: 0 }));
+        if (!validCommandReply(reply, request) || (command !== 'open-margin' && !reply.snapshot.anchor)) throw new Error('Select a passage first.');
+        const live = await source(tabId, frame.documentId);
+        if (!sameCommandSelection(reply.snapshot, live)) throw new Error('The passage changed. Select it again.');
+        return live;
+      };
+      captured = await capture();
+      const check = async () => { if (!sameCommandSelection(captured!, await capture())) throw new Error('The passage changed. Select it again.'); };
+      if (command === 'open-margin') {
+        const panel = await opening;
+        await check();
+        readReply(await browser.tabs.sendMessage(tabId, { type: 'action-open', version: 1, panel }, { documentId: frame.documentId, frameId: 0 }));
+        return;
+      }
+      await runSelectionAction(tabId, command === 'keep-selection' ? 'keep' : 'simulate', captured, crypto.randomUUID(), check);
+      if (command === 'keep-selection') await feedback('Kept');
+      else {
+        const panel = await opening;
+        readReply(await browser.tabs.sendMessage(tabId, { type: 'action-open', version: 1, panel }, { documentId: frame.documentId, frameId: 0 }));
+      }
+    })().catch(() => { void feedback('Try again').catch(() => {}); });
   });
   async function resume(tabId: number, expectedDocument: string, threadId: string) {
     const snapshot = await source(tabId, expectedDocument);

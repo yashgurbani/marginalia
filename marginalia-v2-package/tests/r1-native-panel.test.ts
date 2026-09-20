@@ -26,6 +26,7 @@ function background(hosts: unknown = [], url = 'https://example.org/a', incognit
   const event = (name: string) => ({ addListener: (fn: (...args: any[]) => any) => { listeners[name] = fn; } });
   const tab = { id: 42, url, incognito, windowId: 8 };
   const browser = {
+    commands: { onCommand: event('command') },
     alarms: { onAlarm: event('alarm') }, storage: {
       local: { setAccessLevel: async () => {}, get: async () => { await gate.promise; return { excludedHosts: hosts }; } },
       session: { setAccessLevel: async () => {}, get: async () => ({}), set: async () => {}, remove: async () => {} }, onChanged: event('storage'),

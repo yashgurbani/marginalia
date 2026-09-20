@@ -10,7 +10,7 @@ import { allowedPage, isMessage, pageIdentity, validAnchor, validSavedMarks, typ
 import { clearResumeMarker, resumeThreadId } from '../../contracts/resume.ts';
 import { HIGHLIGHT_COLOURS, highlightColour, type HighlightColour } from '../../contracts/reader.ts';
 import { createSelectionBar } from '../lib/selection-bar.ts';
-import { sameSelection, KEEP_RECEIPT_TTL, type SelectionAction } from '../lib/selection-actions.ts';
+import { sameSelection, sameCommandSelection, validCommandCapture, KEEP_RECEIPT_TTL, type SelectionAction } from '../lib/selection-actions.ts';
 
 const READING_LINE_OFFSET = 24;
 type ProjectedNode = ReturnType<typeof projectPage>['nodes'][number];
@@ -113,6 +113,36 @@ export default defineContentScript({
     let selectedSnapshot: Snapshot | null = null, selectionGeneration = 0, actionInFlight = false, selectionTabEntered = false;
     let pendingGesture: { id: string; operation: string; action: SelectionAction; snapshot: Snapshot; expires: number } | undefined;
     let keepAttempt: { operation: string; snapshot: Snapshot; expires: number } | undefined;
+    let commandCapture: { request: string; snapshot: Snapshot; range: Range | null; epoch: number } | undefined;
+    function commandFocusAllowed() {
+      if (typeof browser.dom?.openOrClosedShadowRoot !== 'function') return false;
+      try {
+        let focused = document.activeElement;
+        const visited = new Set<Element>();
+        while (focused) {
+          if (!(focused instanceof HTMLElement) || visited.has(focused) || focused.closest('iframe,frame,object,embed,input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"]')) return false;
+          visited.add(focused);
+          // Read only focus, including closed roots. Never capture their content
+          // or infer the focused frame from a host containing the old range.
+          const root = browser.dom.openOrClosedShadowRoot(focused);
+          if (root === null) return true;
+          if (!(root instanceof ShadowRoot)) return false;
+          const nested = root.activeElement;
+          if (nested === null) return true;
+          if (!(nested instanceof HTMLElement)) return false;
+          focused = nested;
+        }
+        return true;
+      } catch { return false; }
+    }
+    function freshCommandSelection(selection: boolean) {
+      if (!alive || !commandFocusAllowed()) return null;
+      const next = captureSelection(documentId, revision, selection, rememberSections);
+      if (!next || (selection && !next.anchor)) return null;
+      if (!snapshot || !sameCommandSelection(snapshot, next)) next.revision = ++revision;
+      snapshot = next; dirty = false; lastProjection = Date.now();
+      return next;
+    }
     const selectionBar = createSelectionBar(action => {
       const selected = selectedSnapshot, liveSelection = getSelection();
       if (!alive || actionInFlight || !selected?.anchor || !snapshot || !sameSelection(selected, snapshot) ||
@@ -192,8 +222,10 @@ export default defineContentScript({
         if (!await permitted()) { clear(); return; }
         if (!alive || generation !== selectionGeneration || epoch !== pageEpoch) return;
         if (snapshot && snapshot.capture.url !== pageIdentity(location.href)) clear();
-        const next = captureSelection(documentId, ++revision, true, rememberSections);
+        const next = captureSelection(documentId, revision, true, rememberSections);
         if (!next?.anchor) { selectionBar.hide(); return; }
+        // Releasing a shortcut's Shift key is not a new passage or retry identity.
+        if (!snapshot || !sameCommandSelection(snapshot, next)) next.revision = ++revision;
         const range = getSelection()?.getRangeAt(0);
         if (!range) return;
         pendingGesture = undefined; keepAttempt = undefined; selectionTabEntered = false; selectedSnapshot = next; snapshot = next; dirty = false; lastProjection = Date.now(); rememberPositionNodes(); readingPosition(); selectionBar.show(range);
@@ -215,6 +247,29 @@ export default defineContentScript({
     ctx.addEventListener(document, 'load', () => { dirty = true; }, { capture: true });
     browser.runtime.onMessage.addListener((message: unknown, sender: { id?: string; tab?: unknown }, respond: (value: MessageReply) => void) => respondAsync(() => {
       if (sender.id !== browser.runtime.id || sender.tab) return;
+      if (validCommandCapture(message)) return (async () => {
+        const epoch = pageEpoch;
+        if (!await permitted() || epoch !== pageEpoch) return null;
+        const next = freshCommandSelection(message.command !== 'open-margin');
+        if (!next) { selectionBar.commandStatus('Select a passage first'); return null; }
+        const range = getSelection()?.rangeCount ? getSelection()!.getRangeAt(0).cloneRange() : null;
+        commandCapture = { request: message.request, snapshot: structuredClone(next), range, epoch };
+        return { request: message.request, snapshot: next };
+      })();
+      if (isMessage(message, 'command-result') && Object.keys(message).length === 6 &&
+        typeof message.request === 'string' && message.document === documentId && Number.isSafeInteger(message.revision) &&
+        (message.status === 'Kept' || message.status === 'Try again' || message.status === 'The passage changed. Select it again.')) {
+        const status = message.status;
+        return (async () => {
+          const captured = commandCapture;
+          if (!captured || captured.request !== message.request || captured.snapshot.revision !== message.revision || captured.epoch !== pageEpoch || !await permitted()) return false;
+          const live = freshCommandSelection(true);
+          if (captured.epoch !== pageEpoch || !live || !sameCommandSelection(captured.snapshot, live)) return false;
+          commandCapture = undefined;
+          if (captured.range) { selectionBar.show(captured.range); selectionBar.commandStatus(status); }
+          return true;
+        })();
+      }
       if (isMessage(message, 'auto-assist-dismiss') && typeof message.candidateId === 'string') return (async () => {
         const candidate = autoCandidates.find(item => item.candidateId === message.candidateId); if (!candidate) throw new Error('Stale source request.');
         try { await autoAssist.dismiss(candidate.term); } catch (error) { scheduleInstantPage(); throw error; }

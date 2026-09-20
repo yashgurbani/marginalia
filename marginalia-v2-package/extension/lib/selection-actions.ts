@@ -12,6 +12,19 @@ export const KEEP_RECEIPT_BYTES = 2_000_000;
 export const KEEP_RECEIPT_TTL = 5 * 60_000;
 export type KeepReceipt = { operation: string; threadId: string; snapshot: Snapshot & { browserDocument: string }; expires: number };
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
+export type NativeCommand = 'keep-selection' | 'simulate-selection' | 'open-margin';
+export const nativeCommand = (value: unknown): value is NativeCommand => value === 'keep-selection' || value === 'simulate-selection' || value === 'open-margin';
+export type CommandCapture = { type: 'command-capture'; version: 1; command: NativeCommand; request: string };
+export function validCommandCapture(value: unknown): value is CommandCapture {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const r = value as Record<string, unknown>;
+  return Object.keys(r).length === 4 && r.type === 'command-capture' && r.version === 1 && nativeCommand(r.command) && uuid(r.request);
+}
+export function validCommandReply(value: unknown, request: string): value is { request: string; snapshot: Snapshot } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const r = value as Record<string, unknown>;
+  return Object.keys(r).length === 2 && uuid(r.request) && r.request === request && validSnapshot(r.snapshot);
+}
 export function validKeepReceipt(value: unknown): value is KeepReceipt {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const r = value as Partial<KeepReceipt>;
@@ -43,6 +56,9 @@ function sameCapture(a: SourceCapture, b: SourceCapture) {
   return a.url === b.url && a.text === b.text && a.title === b.title && a.pageType === b.pageType &&
     a.extractionVersion === b.extractionVersion && a.author === b.author &&
     a.publicationDate === b.publicationDate && a.venue === b.venue && JSON.stringify(a.sections) === JSON.stringify(b.sections);
+}
+export function sameCommandSelection(a: Snapshot, b: Snapshot) {
+  return sameSelection(a, b) && sameCapture(a.capture, b.capture);
 }
 export function retainedKeep(state: JournalState, snapshot: Snapshot): string | undefined {
   if (!snapshot.anchor) return;

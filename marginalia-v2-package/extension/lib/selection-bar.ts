@@ -92,6 +92,13 @@ export function createSelectionBar(onAction: (action: SelectionAction) => Promis
   }
   return {
     show, hide, position,
+    commandStatus(text: 'Kept' | 'Try again' | 'Select a passage first' | 'The passage changed. Select it again.') {
+      if (!host?.isConnected || !status || pending) return;
+      status.textContent = text; status.hidden = false;
+      buttons.forEach(button => { button.hidden = text === 'Kept'; });
+      position();
+      if (text === 'Kept') expiry = setTimeout(hide, 1800);
+    },
     owns: (event: Event) => !!host && event.composedPath().includes(host),
     visible: () => !!host?.isConnected,
     focused: () => !!shadow?.activeElement,
