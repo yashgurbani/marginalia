@@ -1,3 +1,4 @@
+import type { EffectiveModelChoice } from './model-controls.ts';
 /** Provider observations, not committed replies. T06 owns durable jobs and validation. */
 export type ProviderKind = 'app-server' | 'mcp-server';
 export type ProviderState = 'starting' | 'running' | 'cancel_requested' | 'completed' | 'failed' | 'cancelled' | 'outcome_unknown';
@@ -12,6 +13,8 @@ export interface ProviderHandle {
   revision?: number;
   mode: 'structured-final' | 'workspace-files';
   model: string;
+  /** Absent on legacy requests. V2 callers must bind this through review, policy and dispatch. */
+  modelControls?: EffectiveModelChoice;
   threadId?: string;
   turnId?: string;
   state: ProviderState;
@@ -27,6 +30,8 @@ export interface ProviderRequest {
   workspace: string;
   policyKey: string;
   model: string;
+  /** Absent on legacy requests. V2 callers must bind this through review, policy and dispatch. */
+  modelControls?: EffectiveModelChoice;
   prompt: string;
   mode: 'structured-final' | 'workspace-files';
   outputSchema?: Record<string, unknown>;

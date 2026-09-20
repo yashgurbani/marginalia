@@ -1,8 +1,11 @@
+import { CONTROL_MODELS, type ControlModel, type ModelChoice } from './model-controls.ts';
 import { validateReply, type CandidateReply } from './reply.ts';
 
 export const INSTANT_HELP_KEY = 'library.instant-help.v1';
-export const INSTANT_MODELS = ['gpt-5.6-luna', 'gpt-6-astra'] as const;
-export type InstantModel = typeof INSTANT_MODELS[number];
+export const INSTANT_MODELS = CONTROL_MODELS;
+export type InstantModel = ControlModel;
+/** V2 choice, resolved separately from legacy operating/consent settings. */
+export type InstantModelChoice = ModelChoice;
 export type InstantAction = 'define' | 'explain-simply';
 export type InstantHelpSettings = {
   version: 1; revision: number; enabled: boolean; updatedAt: string | null;

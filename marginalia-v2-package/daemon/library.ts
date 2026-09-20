@@ -1,3 +1,4 @@
+import { MODEL_CONTROLS_KEY, MODEL_KINDS, defaultModelControls, parseModelChoice, parseModelControls, parseModelControlsChange, parseModelControlsReset, type ModelControls, type ModelControlsSnapshot, type ModelControlsChange, type ModelControlsReset } from '../contracts/model-controls.ts';
 import { createHash } from 'node:crypto';
 import { AUTO_ASSIST_KEY, AUTO_ASSIST_POSTURE_LIMITS, AUTO_DEFINITION_BATCH_SIZE, AUTO_DEFINITION_BUDGET_PERCENT, defaultAutoAssistSettings, type AutoAssistSettings, type AutoAssistSettingsChange } from '../contracts/auto-assist.ts';
 import { defaultInstantHelpSettings, INSTANT_HELP_KEY, INSTANT_MODELS, type InstantHelpSettings, type InstantHelpSettingsChange } from '../contracts/instant.ts';
@@ -13,6 +14,17 @@ const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 export const DEFAULT_MODELS = Object.freeze({ fast: 'gpt-5.6-luna', deep: 'gpt-6-astra' });
 
 type StoredModels = { fast: string; deep: string; revision: number; updatedAt: string };
+
+/** A reader may explicitly reset unsupported legacy choices; originals remain untouched. */
+export class ModelControlsMigrationError extends Error {
+  readonly expectedRevision = 0;
+  readonly expectedCompatibilityKey: string;
+  constructor(identity: string) {
+    super('An older model choice is unsupported. Review it or explicitly reset model choices.');
+    this.name = 'ModelControlsMigrationError';
+    this.expectedCompatibilityKey = identity;
+  }
+}
 
 /**
  * Library and reader-controlled settings over the existing ReaderStore database.
@@ -95,6 +107,78 @@ export class LibrarySettingsService {
     return threadId ? { thread: this.reader.get(threadId)! } : undefined;
   }
 
+  /** Additive V2 persistence seam. Existing send routes stay on V1 until backend integration. */
+  modelControls(): ModelControlsSnapshot {
+    const row = this.reader.db.prepare('SELECT value FROM settings WHERE key=?').get(MODEL_CONTROLS_KEY) as { value: string } | undefined;
+    if (row) {
+      if (row.value.length > 16_384) throw new Error('Saved model controls are too large.');
+      return modelControlsSnapshot(parseModelControls(JSON.parse(row.value)));
+    }
+    const value = defaultModelControls();
+    // A persisted legacy value is explicit, even when it equals the old default.
+    // Keep the original record; unsupported IDs require reader review.
+    const legacy = this.reader.db.prepare('SELECT value FROM settings WHERE key=?').get(MODELS_KEY) as { value: string } | undefined;
+    if (legacy) {
+      if (legacy.value.length > 16_384) throw new Error('Saved legacy model choices are too large.');
+      const previous = this.models();
+      for (const kind of MODEL_KINDS) {
+        if (kind === 'instant') continue;
+        try { value.choices[kind] = parseModelChoice({ ...value.choices[kind], model: kind === 'define' ? previous.fast : previous.deep }); }
+        catch { throw new ModelControlsMigrationError(digest(['legacy-model-controls', legacy.value, this.reader.db.prepare('SELECT value FROM settings WHERE key=?').get(INSTANT_HELP_KEY) ?? null])); }
+        value.origins[kind] = 'legacy';
+      }
+    }
+    const instant = this.reader.db.prepare('SELECT value FROM settings WHERE key=?').get(INSTANT_HELP_KEY) as { value: string } | undefined;
+    if (instant) {
+      const previous = this.instantHelp();
+      value.choices.instant = parseModelChoice({ model: previous.model, effort: previous.effort, fast: false });
+      value.origins.instant = 'legacy';
+    }
+    return modelControlsSnapshot(value);
+  }
+
+  saveModelControls(input: ModelControlsChange): ModelControlsSnapshot {
+    const change = parseModelControlsChange(input);
+    return this.reader.db.transaction(() => {
+      const current = this.modelControls();
+      this.assertModelControlsRevision(current, change);
+      const { compatibilityKey: _key, ...next } = current;
+      next.choices[change.kind] = change.choice;
+      next.origins[change.kind] = 'reader';
+      return this.persistModelControls(next);
+    })();
+  }
+
+  resetModelControls(input: ModelControlsReset): ModelControlsSnapshot {
+    const change = parseModelControlsReset(input);
+    return this.reader.db.transaction(() => {
+      let current: ModelControlsSnapshot;
+      try { current = this.modelControls(); }
+      catch (error) {
+        if (!(error instanceof ModelControlsMigrationError)) throw error;
+        if (change.expectedRevision !== error.expectedRevision || change.expectedCompatibilityKey !== error.expectedCompatibilityKey) throw new ConflictError('Legacy model choices changed. Review them again.');
+        return this.persistModelControls(defaultModelControls());
+      }
+      this.assertModelControlsRevision(current, change);
+      return this.persistModelControls({ ...defaultModelControls(), revision: current.revision });
+    })();
+  }
+
+  private assertModelControlsRevision(current: ModelControlsSnapshot, change: ModelControlsReset) {
+    if (current.revision !== change.expectedRevision || current.compatibilityKey !== change.expectedCompatibilityKey) throw new ConflictError('Model choices changed elsewhere. Reload Settings before saving.');
+    if (current.revision === Number.MAX_SAFE_INTEGER) throw new Error('Model controls revision needs review.');
+  }
+
+  private persistModelControls(value: ModelControls): ModelControlsSnapshot {
+    const next = parseModelControls({ ...value, revision: value.revision + 1, updatedAt: new Date().toISOString() });
+    this.reader.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+      .run(MODEL_CONTROLS_KEY, JSON.stringify(next));
+    const result = modelControlsSnapshot(next);
+    this.reader.db.prepare('INSERT INTO events(kind,payload,createdAt) VALUES(?,?,?)')
+      .run('model-controls-changed', JSON.stringify({ revision: result.revision, compatibilityKey: result.compatibilityKey }), next.updatedAt);
+    return result;
+  }
+
   models(): ModelSettings {
     const row = this.reader.db.prepare('SELECT value FROM settings WHERE key=?').get(MODELS_KEY) as { value: string } | undefined;
     if (!row) return withCompatibility({ ...DEFAULT_MODELS, revision: 0, updatedAt: null });
@@ -108,6 +192,7 @@ export class LibrarySettingsService {
   }
 
   saveModels(change: ModelSettingsChange): ModelSettings {
+    if (this.reader.db.prepare('SELECT 1 FROM settings WHERE key=?').get(MODEL_CONTROLS_KEY)) throw new ConflictError('Use the per-request model settings.');
     validateModel(change.fast);
     validateModel(change.deep);
     if (!Number.isSafeInteger(change.expectedRevision) || change.expectedRevision < 0) throw new Error('Invalid settings revision.');
@@ -178,6 +263,10 @@ export class LibrarySettingsService {
   }
 
   saveInstantHelp(change: InstantHelpSettingsChange): InstantHelpSettings {
+    if (this.reader.db.prepare('SELECT 1 FROM settings WHERE key=?').get(MODEL_CONTROLS_KEY)) {
+      const previous = this.instantHelp();
+      if (change.model !== previous.model || change.effort !== previous.effort) throw new ConflictError('Use the per-request model settings.');
+    }
     if (!Number.isSafeInteger(change.expectedRevision) || change.expectedRevision < 0) throw new Error('Invalid settings revision.');
     const { expectedRevision, ...fields } = change;
     const next: InstantHelpSettings = { ...fields, version: 1, revision: expectedRevision + 1, updatedAt: new Date().toISOString() };
@@ -386,4 +475,9 @@ function validateAutoAssistSettings(value: AutoAssistSettings) {
   if (!value.autoDefinitions || value.autoDefinitions.budgetPercent !== AUTO_DEFINITION_BUDGET_PERCENT
     || value.autoDefinitions.batchSize !== AUTO_DEFINITION_BATCH_SIZE) throw new Error('Invalid automatic definition settings.');
   if (value.updatedAt !== null && (typeof value.updatedAt !== 'string' || !Number.isFinite(Date.parse(value.updatedAt)))) throw new Error('Invalid auto assist date.');
+}
+
+function modelControlsSnapshot(value: ModelControls): ModelControlsSnapshot {
+  const normalized = parseModelControls(value);
+  return { ...normalized, compatibilityKey: digest(['marginalia.model-controls.v2', normalized]) };
 }

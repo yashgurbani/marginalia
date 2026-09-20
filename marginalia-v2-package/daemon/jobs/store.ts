@@ -1,3 +1,4 @@
+import { parseEffectiveModelChoice, effectiveModelChoiceKey, type EffectiveModelChoice } from '../../contracts/model-controls.ts';
 import type { UnformattedSkillOutput } from '../../contracts/reader-skills.ts';
 import { checkedUnformatted, authoredSkillText, skillReplyAllowed, rejectedSkillOutput, skillOutputHash } from '../reader-skills.ts';
 import type { EvidenceRetrieval } from '../../contracts/evidence.ts';
@@ -133,6 +134,7 @@ export class JobStore {
       `);
       ensureColumn(this.db, 'jobs', 'preparedPayloadDigest', "TEXT NOT NULL DEFAULT ''");
       ensureColumn(this.db, 'jobs', 'requestDigest', "TEXT NOT NULL DEFAULT ''");
+      ensureColumn(this.db, 'jobs', 'modelControls', 'TEXT');
       ensureColumn(this.db, 'job_attempts', 'predecessorAttemptId', 'TEXT');
       ensureColumn(this.db, 'job_attempts', 'authorizationFingerprint', 'TEXT');
       ensureColumn(this.db, 'job_attempts', 'handoffMarked', 'INTEGER NOT NULL DEFAULT 0');
@@ -397,11 +399,44 @@ export class JobStore {
       confinement: row.confinement, confinementReference: row.confinementReference, confinementReason: row.confinementReason,
       policyFingerprint: row.policyFingerprint, evidenceScope: row.evidenceScope, modelTurns: 0 }));
   }
+  /** V2 host-only seam: bind once before creating an attempt, in the creation transaction.
+   * This persists identity, not consent or capability proof. Backend must also bind the
+   * same choice into prepared/review/policy digests before activating this seam. */
+  bindModelControls(jobId: string, value: EffectiveModelChoice): EffectiveModelChoice {
+    const choice = parseEffectiveModelChoice(value);
+    return this.db.transaction(() => {
+      const job = this.get(jobId);
+      if (!job || job.model !== choice.actual.model || job.provider !== choice.provider || job.context.intent !== choice.kind ||
+          job.context.modelSettingsRevision !== choice.settingsRevision || job.context.modelCompatibilityKey !== choice.settingsCompatibilityKey) throw new JobConflictError('Model controls do not match the request.');
+      const existing = this.modelControls(jobId);
+      if (existing) {
+        if (effectiveModelChoiceKey(existing) !== effectiveModelChoiceKey(choice)) throw new JobConflictError('Model controls are immutable for this request.');
+        return existing;
+      }
+      if (job.latestAttemptId || job.state !== 'queued' || job.cancelRequested) throw new JobConflictError('Model controls must be frozen before attempt creation.');
+      this.db.prepare('UPDATE jobs SET modelControls=? WHERE id=? AND modelControls IS NULL').run(effectiveModelChoiceKey(choice), jobId);
+      return choice;
+    })();
+  }
+
+  modelControls(jobId: string): EffectiveModelChoice | undefined {
+    const row = this.db.prepare('SELECT modelControls FROM jobs WHERE id=?').get(jobId) as { modelControls: string | null } | undefined;
+    if (!row?.modelControls) return undefined;
+    if (row.modelControls.length > 4096) throw new JobConflictError('Stored model controls are invalid.');
+    return parseEffectiveModelChoice(JSON.parse(row.modelControls));
+  }
+
+  private assertModelControlsHandle(jobId: string, handle: ProviderHandle) {
+    const expected = this.modelControls(jobId);
+    if (expected ? !handle.modelControls || effectiveModelChoiceKey(expected) !== effectiveModelChoiceKey(handle.modelControls) : handle.modelControls !== undefined) throw new JobConflictError('Provider model controls binding changed.');
+  }
+
   checkpoint(attemptId: string, incoming: ProviderHandle): ProviderHandle {
     return this.db.transaction(() => {
       const a = this.db.prepare('SELECT * FROM job_attempts WHERE id=?').get(attemptId) as AttemptRow | undefined;
       if (!a || incoming.jobId !== attemptId) throw new JobConflictError('Unknown provider attempt.');
       const job = this.get(a.jobId)!;
+      this.assertModelControlsHandle(job.id, incoming);
       if (job.provider !== incoming.provider || job.model !== incoming.model || job.mode !== incoming.mode || job.policyKey !== incoming.policyKey) throw new JobConflictError('Provider checkpoint binding changed.');
       const current = a.providerHandle ? JSON.parse(a.providerHandle) as ProviderHandle : undefined;
       if (terminal.has(a.state)) throw new JobConflictError('This provider attempt is already terminal.');
@@ -452,6 +487,7 @@ export class JobStore {
       incoming.provider !== current.provider || incoming.providerInstanceId !== current.providerInstanceId ||
       incoming.workspace !== current.workspace || incoming.policyKey !== current.policyKey ||
       incoming.model !== current.model || incoming.mode !== current.mode ||
+      (incoming.modelControls ? effectiveModelChoiceKey(incoming.modelControls) : undefined) !== (current.modelControls ? effectiveModelChoiceKey(current.modelControls) : undefined) ||
       incoming.threadId !== current.threadId || incoming.turnId !== current.turnId ||
       incoming.revision !== current.revision || job.latestAttemptId !== attemptId ||
       !job.cancelRequested || !['timed_out', 'cancelled', 'outcome_unknown'].includes(job.state)) return;
@@ -668,13 +704,20 @@ export class JobStore {
     })();
   }
   /** expected is captured before asynchronous workspace and runtime preparation. */
-  withDispatchHandoff<T>(expected: Readonly<JobSnapshot>, attemptId: string, authority: Pick<JobConsentAuthority, 'assertSharedDatabase'>, finalize: (current: Readonly<JobSnapshot>) => T): T {
+  withDispatchHandoff<T>(expected: Readonly<JobSnapshot>, attemptId: string, authority: Pick<JobConsentAuthority, 'assertSharedDatabase'>, finalize: (current: Readonly<JobSnapshot>) => T, modelControls?: EffectiveModelChoice): T {
     authority.assertSharedDatabase(this.db);
+    const reviewedControlsKey = modelControls === undefined ? undefined : effectiveModelChoiceKey(modelControls);
     return this.db.transaction(() => {
+      const assertControls = () => {
+        const stored = this.modelControls(expected.id);
+        if ((stored ? effectiveModelChoiceKey(stored) : undefined) !== reviewedControlsKey) throw new JobConflictError('Reviewed model controls changed before handoff.');
+      };
+      assertControls();
       const current = this.get(expected.id);
       this.assertDispatchFence(expected, current, attemptId);
       const result = finalize(current!);
       if (result && typeof (result as { then?: unknown }).then === 'function') throw new JobConflictError('Dispatch finalization must be synchronous.');
+      assertControls();
       this.assertDispatchFence(expected, this.get(expected.id), attemptId);
       const update = this.db.prepare('UPDATE job_attempts SET handoffMarked=1 WHERE id=? AND jobId=? AND revision=? AND state=? AND handoffMarked=0 AND dispatchClaimed=0')
         .run(attemptId, expected.id, expected.attempts.find(a => a.id === attemptId)!.revision, expected.attempts.find(a => a.id === attemptId)!.state);
@@ -738,5 +781,6 @@ function mapProviderState(state: ProviderHandle['state'], tombstone: boolean, ca
 /** Raw observation never crosses the public job boundary, even for legacy/corrupt handles. */
 function publicProviderHandle(handle: ProviderHandle): ProviderHandle {
   const { rawFinalOutput: _raw, ...publicHandle } = handle;
+  if (publicHandle.modelControls) publicHandle.modelControls = parseEffectiveModelChoice(publicHandle.modelControls);
   return publicHandle;
 }
