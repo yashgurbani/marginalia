@@ -85,7 +85,7 @@ test('question work announces preparation before slow ranking and saving', async
   e.onWrite(async key => { if (holdSaving && key.startsWith('question:')) await saving.promise; });
   const api = await mountMargin(asHost(d.root), { capture, storageName: crypto.randomUUID(), allowHelper: false,
     asking: () => ({ open() {}, setVisible() {}, destroy() {} }) });
-  api.select(anchor); button(d.root, 'Ask').click();
+  api.select(anchor); button(d.root.querySelector('.m-selection-actions')!, 'Ask').click();
   await until(() => d.root.querySelector('.m-question .m-meta')?.textContent === 'Preparing ideas.');
   holdRanking = false; ranking.resolve(); await api.drain();
   holdSaving = true; button(d.root, 'Define it here').click(); await settle();
@@ -100,7 +100,7 @@ test('closing a question while its choice save is pending does not open stale re
   e.onWrite(async key => { if (hold && key.startsWith('question:')) await save.promise; });
   const api = await mountMargin(asHost(d.root), { capture, storageName: crypto.randomUUID(), allowHelper: false,
     asking: () => ({ open() { opens++; }, setVisible() {}, destroy() {} }) });
-  api.select(anchor); button(d.root, 'Ask').click(); await api.drain();
+  api.select(anchor); button(d.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
   hold = true; button(d.root, 'Define it here').click();
   d.root.querySelector('.m-question .m-asking-draft')!.fire('keydown', { key: 'Escape' });
   hold = false; save.resolve(); await api.drain();
@@ -114,7 +114,7 @@ test('closing during a delayed question attachment switch does not reopen the dr
   e.onWrite(async key => { if (hold && key.startsWith('question:')) await save.promise; });
   const replacement = { ...anchor, exact: 'Vorticity', end: 'Vorticity'.length, suffix: capture.text.slice('Vorticity'.length) };
   const api = await mountMargin(asHost(d.root), { capture, storageName: crypto.randomUUID(), allowHelper: false });
-  api.select(anchor); button(d.root, 'Ask').click(); await api.drain();
+  api.select(anchor); button(d.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
   hold = true; api.select(replacement); button(d.root.querySelector('.m-selection')!, 'Switch').click();
   d.root.querySelector('.m-question .m-asking-draft')!.fire('keydown', { key: 'Escape' });
   hold = false; save.resolve(); await api.drain();

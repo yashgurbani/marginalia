@@ -43,7 +43,7 @@ test('related margin reads saved overlaps locally, opens saved sources and refre
     onLibrary: thread => { opened = thread; } });
   await api.drain();
   const footer = e.root.querySelector('.m-related')!;
-  const toggle = button(e.root, 'Related');
+  const toggle = button(e.root, 'Connections');
   assert.equal(toggle.getAttribute('aria-expanded'), 'false'); assert.equal(footer.hidden, true); assert.equal(footer.textContent, ''); assert.deepEqual(requests, []);
   const beforeSelection = requests.length;
   api.select(anchor()); await api.drain(); assert.equal(requests.length, beforeSelection);
@@ -72,7 +72,7 @@ test('related margin reads saved overlaps locally, opens saved sources and refre
   let externalOpens = 0;
   Object.defineProperty(e.document.defaultView!, 'open', { configurable: true, value: () => { externalOpens++; return null; } });
   const fallback = await mountMargin(asHost(e.root), { capture, sourceRoot: asHost(source), storageName: e.namespace, helperOrigin: helper.origin, readPosition: async () => undefined });
-  button(e.root, 'Related').click(); await fallback.drain();
+  button(e.root, 'Connections').click(); await fallback.drain();
   const fallbackFooter = e.root.querySelector('.m-related')!, fallbackOpen = fallbackFooter.querySelectorAll('button')[0], fallbackTitle = fallbackOpen.textContent;
   fallbackOpen.click(); await fallback.drain();
   assert.equal(externalOpens, 0); assert.equal(fallbackFooter.querySelector('h3')!.textContent, fallbackTitle);
@@ -99,11 +99,11 @@ test('related margin reports an unavailable helper quietly and discards late res
   replaceGlobals(t, { fetch: async () => { throw new Error('offline'); } });
   let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, readPosition: async () => undefined });
   await api.drain(); const firstFooter = e.root.querySelector('.m-related')!; assert.equal(firstFooter.textContent, '');
-  button(e.root, 'Related').click(); await api.drain(); assert.equal(firstFooter.textContent, 'Related passages need the app on this device.');
+  button(e.root, 'Connections').click(); await api.drain(); assert.equal(firstFooter.textContent, 'Related passages need the app on this device.');
   api.destroy(); await api.drain();
   const pending = deferred<Response>(); replaceGlobals(t, { fetch: async () => pending.promise });
   api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, readPosition: async () => undefined });
-  const footer = e.root.querySelector('.m-related')!; const toggle = button(e.root, 'Related');
+  const footer = e.root.querySelector('.m-related')!; const toggle = button(e.root, 'Connections');
   assert.equal(footer.textContent, ''); toggle.click(); assert.equal(footer.textContent, 'Looking for related saved passages…'); toggle.click();
   pending.resolve(Response.json({ threads: [] })); await api.drain();
   assert.equal(toggle.getAttribute('aria-expanded'), 'false'); assert.equal(footer.textContent, '');
@@ -195,7 +195,7 @@ test('collapsed saved-work dot identifies and opens its thread without sending',
   assert.match(dot.getAttribute('aria-label')!, /^Open saved thread:/);
   dot.focus(); dot.click();
   await until(() => e.root.querySelector('.mg')!.classList.contains('is-collapsed') === false);
-  assert.equal(e.document.activeElement, e.root.querySelector('.m-source-action'));
+  assert.equal(e.document.activeElement, e.root.querySelector('.m-note'));
   e.root.fire('keydown', { key: 'Escape' });
   assert.equal(e.document.activeElement, dot);
   assert.equal(asks, 0);
@@ -304,9 +304,9 @@ test('bottom availability keeps local paths actionable and explains unavailable 
   assert.doesNotMatch(footer.textContent, /0 threads on this page/);
   assert.doesNotMatch(footer.textContent, /Related passages need the app on this device\./);
   assert.match(e.root.querySelector('.m-settings')!.textContent, /Hear it needs a local voice\./);
-  assert.equal(footer.querySelector('.m-footer-voice')!.children.length, 0);
-  assert.equal(Array.from(footer.querySelectorAll('button')).some(node => node.textContent === 'Related'), true);
-  button(footer, 'Related').click(); assert.match(footer.textContent, /Related passages need the app on this device\./);
+  assert.equal(e.root.querySelector('.m-footer-voice')!.children.length, 0);
+  assert.equal(Array.from(footer.querySelectorAll('button')).some(node => node.textContent === 'Connections'), true);
+  button(footer, 'Connections').click(); assert.match(footer.textContent, /Related passages need the app on this device\./);
   assert.equal(e.root.querySelectorAll('audio,video').length, 0);
 
   button(e.root, 'Library').click();
@@ -458,7 +458,7 @@ test('startup restoration cannot overwrite an interim recovery editor and failed
   e.onRead(async key => { if (key === 'journal' && !blocked) { blocked = true; await gate.promise; } });
   const mounting = mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false });
   await until(() => blocked); assert.equal(button(e.root, 'Write here\u2026').disabled, true); // It cannot create a draft before hydration.
-  button(e.root, 'Write here\u2026').click(); assert.equal(e.root.querySelector('.m-note-editor')!.hidden, true);
+  button(e.root, 'Write here\u2026').click(); assert.equal(e.root.querySelector('[aria-label="Your note"]')!.readOnly, true);
   gate.resolve(); const api = await mounting; e.onWrite(async key => { if (key.startsWith('draft:')) throw new Error('quota'); });
   button(e.root, 'Write here\u2026').click(); const field = e.root.querySelector('[aria-label="Your note"]')!; field.value = 'Only in this document'; field.fire('input'); await api.drain(); api.destroy(); await api.drain();
   const replacement = await mountMargin(asHost(e.root), { capture: { ...capture, text: 'A changed page', sections: undefined }, storageName: e.namespace, allowHelper: false });
@@ -513,7 +513,7 @@ test('embedded margin never reads a pairing credential or exposes management/pri
   const e = env(t), reads: string[] = []; e.onRead(async key => { reads.push(key); }); e.data(e.namespace).set('pairing', { token: 'must-not-read' });
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, helperManagement: true });
   assert.equal(reads.includes('pairing'), false); for (const name of ['Pair', 'Disconnect', 'Show pairing code', 'Refresh browser list']) assert.equal(e.root.querySelectorAll('button').some(n => n.textContent === name), false);
-  api.select(anchor()); button(e.root, 'Ask').click(); await api.drain(); const question = e.root.querySelector('[aria-label="Your question"]')!; question.value = 'Why?'; question.fire('input');
+  api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain(); const question = e.root.querySelector('[aria-label="Your question"]')!; question.value = 'Why?'; question.fire('input');
   button(e.root, 'Define it here').click(); await api.drain(); assert.equal(reads.includes('pairing'), false); api.destroy(); await api.drain();
 });
 test('Keep device version calls real T07 without sending or discarding the corresponding editor draft', async t => {
@@ -531,7 +531,7 @@ test('Keep device version calls real T07 without sending or discarding the corre
 test('selection and typing send nothing; unpaired choices stay drafts and a closed draft stays in history', async t => {
   const e = env(t); let opens = 0;
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: () => ({ open() { opens++; }, setVisible() {}, destroy() {} }) });
-  api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
+  api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
   const q = e.root.querySelector('[aria-label="Your question"]')!; q.value = 'My question'; q.fire('input'); await api.drain();
   assert.equal(opens, 0); assert.equal((e.data(e.namespace).get('journal') as JournalState | undefined)?.pending.length ?? 0, 0);
   button(e.root, 'Define it here').click(); await api.drain();
@@ -622,7 +622,7 @@ test('a replacement selection keeps or switches a note draft only after the expl
   stored = [...e.data(e.namespace)].find(([key]) => key.startsWith('draft:'))![1] as any;
   assert.deepEqual(stored.anchor, replacement); assert.deepEqual(stored.source, capture); assert.equal(stored.text, 'Exact revised note text');
   assert.equal(stored.threadId, undefined); assert.equal(stored.noteId, undefined); assert.equal(stored.revision, undefined);
-  assert.equal(journal.state.threads[0].anchor.start, original.start); assert.equal(journal.state.threads[0].notes[0].text, 'Original reader note');
+  assert.equal(journal.state.threads[0].anchor.start, original.start); assert.equal(journal.state.threads[0].notes[0].text, 'Exact revised note text');
 
   api.destroy(); await api.drain();
   api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false,
@@ -695,7 +695,7 @@ test('a failed question Switch keeps the visible B draft, retries explicitly, an
   e.onWrite(async key => { if (failQuestionWrites && key.startsWith('question:')) throw new Error('question quota'); });
   let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
   const original = anchor(), replacement = anchor(15, 30);
-  api.select(original); button(e.root, 'Ask').click(); await api.drain();
+  api.select(original); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
   let question = e.root.querySelector('[aria-label="Your question"]')!, context = e.root.querySelector('[aria-label="Context to attach"]')!;
   question.value = 'Exact question after failed switch?'; question.fire('input'); context.value = 'Exact context after failed switch'; context.fire('input'); await api.drain();
   failQuestionWrites = true; api.select(replacement); button(e.root.querySelector('.m-selection')!, 'Switch').click(); await api.drain();
@@ -718,8 +718,8 @@ test('explicit helper review invokes injected T08 only for acknowledged context;
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: (_root, context) => { hostContext = context; return { open(selection) { selected = selection; context.activity?.({ phase: 'working', sending: false, elapsedSeconds: 31 }); }, setVisible() {}, destroy() { destroyed++; } }; } });
   button(e.root, 'Ask about this note').click(); await api.drain(); const field = e.root.querySelector('[aria-label="Your question"]')!; field.value = 'Explain my note'; field.fire('input');
   button(e.root, 'Define it here').click(); await api.drain(); assert.equal(selected?.answeredNote.text, 'Original reader note'); assert.equal(selected?.sourceVersionId, 'source');
-  assert.equal(e.root.querySelector('.m-question')!.parentElement!.className, 'm-thread-body');
-  assert.equal(e.root.querySelector('.m-question')!.parentElement!.children[0].className, 'm-thread-content', 'reader notes remain above the asking/reply surface');
+  assert.equal(e.root.querySelector('.m-question')!.parentElement!.className, 'm-reply-frame-body');
+  assert.equal(e.root.querySelector('.m-thread-content .m-note')!.textContent, 'Original reader note', 'reader notes remain intact in home while the reply owns the margin');
   assert.equal(e.root.querySelector('.m-activity')!.dataset.sending, 'false'); assert.match(e.root.querySelector('.m-activity')!.getAttribute('aria-label')!, /31 seconds/);
   hostContext.retainedQuestion({ ...selected, question: 'More precise retained question' }); e.root.querySelector('.m-question')!.fire('keydown', { key: 'Escape' }); await api.drain(); assert.equal(destroyed, 1);
   api.destroy(); await api.drain(); assert.equal(seeded.journal.state.pending.length, 0);
@@ -759,11 +759,11 @@ test('opening a thread collapses the previous one and restores only on the same 
   let api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false });
   const first = button(e.root, 'Thread A'); first.focus(); first.click(); await settle(); assert.equal(size('thread-a'), 'full');
   const second = button(e.root, 'Thread B'); second.focus(); second.click();
-  assert.equal(size('thread-a'), 'line'); assert.equal(size('thread-b'), 'full');
+  assert.equal(size('thread-a'), 'full'); assert.equal(size('thread-b'), 'full');
   await api.drain(); api.destroy(); await api.drain();
 
   api = await mountMargin(asHost(e.root), { capture, sections: capture.sections, storageName: e.namespace, allowHelper: false });
-  assert.equal(size('thread-a'), 'line'); assert.equal(size('thread-b'), 'full');
+  assert.equal(size('thread-a'), 'full'); assert.equal(size('thread-b'), 'full');
   api.destroy(); await api.drain();
 
   const otherPage = { ...capture, url: 'https://example.org/b' };
@@ -771,7 +771,7 @@ test('opening a thread collapses the previous one and restores only on the same 
   for (const thread of otherState.threads) thread.sourceUrl = otherPage.url;
   e.data(e.namespace).set('journal', otherState);
   api = await mountMargin(asHost(e.root), { capture: otherPage, sections: otherPage.sections, storageName: e.namespace, allowHelper: false });
-  assert.equal(size('thread-b'), 'tick');
+  assert.equal(size('thread-b'), 'full');
   api.destroy(); await api.drain();
 });
 
@@ -818,7 +818,7 @@ for (const [label, intent, question] of [
       asking: () => ({ open() { opened++; }, setVisible() {}, destroy() {} }) });
     // The selection card now carries its own Simulate it control, so the suggestion
     // with the same label is chosen inside the question surface.
-    api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
+    api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
     button(e.root.querySelector('.m-question')!, label).click(); await api.drain();
     const draft = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
     assert.equal(draft.intent, intent); assert.deepEqual(draft.anchor, anchor());
@@ -855,13 +855,13 @@ test('whole-page Save and Read later persist once and restore the local reading 
   let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
   api.setReadingPosition(21);
   const footer = e.root.querySelector('.m-footer')!;
-  button(footer, 'Save page').click(); button(footer, 'Save page').click(); await api.drain();
+  button(e.root, 'Save page').click(); button(e.root, 'Save page').click(); await api.drain();
   let state = e.data(e.namespace).get('journal') as JournalState;
   assert.equal(state.threads.length, 1); assert.equal(state.threads[0].anchor.kind, 'whole-page'); assert.equal(state.threads[0].anchor.exact, ''); assert.equal(state.threads[0].state, 'open');
-  button(footer, 'Read later').click(); button(footer, 'Read later').click(); await api.drain();
+  button(e.root, 'Read later').click(); button(e.root, 'Read later').click(); await api.drain();
   state = e.data(e.namespace).get('journal') as JournalState;
   assert.equal(state.threads.length, 1); assert.equal(state.threads[0].state, 'parked');
-  assert.ok(button(footer, 'Export')); assert.deepEqual(requests, []);
+  assert.ok(button(e.root, 'Export')); assert.deepEqual(requests, []);
   api.destroy(); await api.drain();
   const { mountLibrary } = await import('../ui/library/index.ts');
   const library = mountLibrary(asHost(e.root), { listThreads: async () => structuredClone(state.threads), exportThread: async () => { throw new Error('Export is separate'); }, onOpenThread() {}, onClose() {} });
@@ -962,7 +962,7 @@ test('R4 rerender keeps focus on a named action when its label changes', async t
   const preview = button(e.root, 'Block question previews here'); preview.focus(); preview.click(); await api.drain();
   assert.equal(e.document.activeElement, button(e.root, 'Allow question previews here'));
   assert.deepEqual(e.root.querySelector('.m-footer')!.children.map(node => node.className),
-    ['m-notice', 'm-actions m-footer-row']);
+    ['m-notice', 'm-related', 'm-actions m-footer-row']);
   api.destroy(); await api.drain();
 });
 
@@ -975,7 +975,7 @@ test('R4 section markers mount only beside saved work and the current title appe
   assert.equal(e.root.querySelectorAll('.m-section-marker').length, 0);
   button(e.root, 'Follow reading').click(); api.setReadingPosition(21);
   const markers = e.root.querySelectorAll('.m-section-marker');
-  assert.deepEqual(markers.map(node => node.textContent), ['First']);
+  assert.deepEqual(markers.map(node => node.textContent), []);
   assert.equal(e.root.querySelector('.m-reading h2')!.textContent, 'Second');
   api.destroy(); await api.drain();
 });
@@ -1031,8 +1031,8 @@ test('R4b empty resting margin has five controls, count disclosure and end offer
     }
     return true;
   });
-  assert.deepEqual(visible.map(node => node.textContent), ['Collapse', 'Write here\u2026', 'Read later', 'Library', 'More']);
-  assert.equal(panel.querySelector('.m-empty')!.textContent, 'Keep a passage or write a note.');
+  assert.deepEqual(visible.map(node => node.textContent), ['Collapse', 'Save page', '', 'Ask', 'Connections', 'Skills', 'Library', 'Settings']);
+  assert.equal(panel.querySelector('.m-empty')!.textContent, 'Suggestions appear as you write. Your notes, highlights and replies get marked on the left.');
   assert.equal(panel.querySelector('.m-section-marker'), null);
   assert.equal(panel.querySelector('.m-map'), null);
   assert.ok(e.root.querySelector('.m-rail .m-map'));
@@ -1045,8 +1045,98 @@ test('R4b empty resting margin has five controls, count disclosure and end offer
   button(e.root, 'Save page').click(); await api.drain();
   const disclosure = e.root.querySelector('.m-page-actions')!;
   assert.equal(disclosure.hidden, false); assert.equal(disclosure.open, false);
-  assert.equal(disclosure.querySelector('summary')!.textContent, '1 thread on this page');
-  assert.deepEqual(disclosure.querySelectorAll('button').map(node => node.textContent), ['Related', 'Export']);
+  assert.equal(disclosure.querySelector('summary')!.textContent, 'Connections');
+  assert.deepEqual(disclosure.querySelectorAll('button').map(node => node.textContent), ['Export']);
   assert.equal(e.root.querySelector('.m-footer-history')!.closest('.m-local-library')!.hidden, true);
   api.destroy(); await api.drain();
+});
+
+test('v12 shared field autosaves one note identity, preserves multiline edits and never sends while typing', async t => {
+  const e = env(t), requests: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected request'); } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  const field = e.root.querySelector('[aria-label="Your note"]')!;
+  field.focus(); field.value = 'First thought\nSecond line'; field.fire('input'); await api.drain();
+  let saved = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(saved.threads.length, 1); const threadId = saved.threads[0].id, noteId = saved.threads[0].notes[0].id;
+  assert.equal(saved.threads[0].notes[0].text, field.value);
+  field.value += '\nA later thought'; field.fire('input'); await api.drain();
+  saved = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(saved.threads.length, 1); assert.equal(saved.threads[0].id, threadId); assert.equal(saved.threads[0].notes[0].id, noteId);
+  assert.equal(saved.threads[0].notes[0].text, field.value); assert.equal(e.root.querySelector('[aria-label="Your note"]'), field);
+  assert.deepEqual(requests, []); assert.ok(e.root.querySelector('.m-note-offers')!.children.length > 0);
+  api.destroy(); await api.drain();
+});
+
+test('v12 autosave retains newer typing while a journal write is delayed', async t => {
+  const e = env(t), entered = deferred<void>(), release = deferred<void>(); let once = true;
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  e.onWrite(async key => { if (key === 'journal' && once) { once = false; entered.resolve(); await release.promise; } });
+  const field = e.root.querySelector('[aria-label="Your note"]')!;
+  field.value = 'Earlier'; field.fire('input'); const drain = api.drain(); await entered.promise;
+  assert.equal(field.readOnly, false); field.value = 'Latest typing'; field.fire('input'); release.resolve(); await drain; await api.drain();
+  const saved = e.data(e.namespace).get('journal') as JournalState;
+  assert.equal(field.value, 'Latest typing'); assert.equal(saved.threads.length, 1); assert.equal(saved.threads[0].notes[0].text, 'Latest typing');
+  api.destroy(); await api.drain();
+});
+
+test('v12 Back reports view save failure and reopening retains the same mounted reply and controls', async t => {
+  const e = env(t), seeded = await threadFixture(e.namespace), reply = cached(seeded.thread);
+  reply.version.reply.title = 'Saved explanation';
+  await seeded.persistence.replies.cache(e.document.location.origin, seeded.thread.id, reply.source, [reply.version], [reply.view]);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false }); await api.drain();
+  const opener = e.root.querySelector('.m-reply-title')!; opener.click();
+  const frame = e.root.querySelector('.m-reply-frame')!, field = frame.querySelector('[aria-label="Controlled reply input"]')!;
+  assert.equal(frame.hidden, false);
+  e.onWrite(async key => { if (key.startsWith('reply:')) throw new Error('quota'); });
+  field.value = '7'; field.fire('input'); button(frame, 'Back').click(); await api.drain();
+  assert.equal(frame.hidden, false); assert.match(frame.textContent, /quota|unsaved|storage/i); assert.equal(field.value, '7');
+  e.onWrite(async () => {}); button(frame, 'Back').click(); await api.drain(); assert.equal(frame.hidden, true);
+  opener.click(); assert.equal(frame.querySelector('[aria-label="Controlled reply input"]'), field); assert.equal(field.value, '7');
+  const record = (await seeded.persistence.replies.list(seeded.thread.id))[0]; assert.equal(record.version.id, reply.version.id); assert.equal(record.local.parameters.x, 7);
+  api.destroy(); await api.drain();
+});
+
+test('v12 Back and live reopen keep one running request without opening or destroying it again', async t => {
+  const e = env(t); await threadFixture(e.namespace, true);
+  e.data(e.namespace).set('pairing', { origin: e.document.location.origin, token: 'x'.repeat(43) });
+  let opens = 0, destroys = 0, saves = 0; const visibility: boolean[] = [];
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: (_host, context) => ({
+    open(selection) { opens++; context.retainedQuestion?.({ ...selection, resumeJobId: 'running-request' }); context.onState?.({ phase: 'working' }); },
+    setVisible(value) { visibility.push(value); _host.hidden = !value; },
+    async saveForNavigation() { saves++; },
+    destroy() { destroys++; },
+  }) });
+  button(e.root, 'Ask about this note').click(); await api.drain(); button(e.root, 'Define it here').click(); await api.drain();
+  const frame = e.root.querySelector('.m-reply-frame')!; assert.equal(frame.hidden, false); assert.equal(opens, 1);
+  button(frame, 'Back').click(); await api.drain(); assert.equal(frame.hidden, true); assert.equal(saves, 1); assert.equal(destroys, 0);
+  const retained = [...e.data(e.namespace)].find(([key]) => key.startsWith('question:draft:'))![1] as any;
+  assert.equal(retained.resumeJobId, 'running-request');
+  const live = e.root.querySelector('.m-threads .m-reply-title')!; live.click();
+  assert.equal(frame.hidden, false); assert.equal(opens, 1); assert.equal(destroys, 0); assert.equal(visibility.at(-1), true);
+  api.destroy(); await api.drain();
+});
+
+test('v12 Back waits for newer reply edits and stays open when the newer save fails', async t => {
+  const e = env(t), seeded = await threadFixture(e.namespace), reply = cached(seeded.thread);
+  await seeded.persistence.replies.cache(e.document.location.origin, seeded.thread.id, reply.source, [reply.version], [reply.view]);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false }); await api.drain();
+  e.root.querySelector('.m-reply-title')!.click();
+  const frame = e.root.querySelector('.m-reply-frame')!, field = frame.querySelector('[aria-label="Controlled reply input"]')!;
+  const entered = deferred<void>(), release = deferred<void>(); let writes = 0;
+  e.onWrite(async (key, value) => {
+    if (!key.startsWith('reply:')) return;
+    if (++writes === 1) { entered.resolve(); await release.promise; }
+    if ((value as any)?.local?.parameters?.x === 9) throw new Error('newer view quota');
+  });
+  field.value = '5'; field.fire('input'); await entered.promise;
+  button(frame, 'Back').click(); field.value = '9'; field.fire('input'); release.resolve(); await api.drain();
+  assert.equal(frame.hidden, false); assert.equal(field.value, '9'); assert.match(frame.textContent, /quota|unsaved|storage/i);
+  e.onWrite(async () => {}); button(frame, 'Back').click(); await api.drain(); assert.equal(frame.hidden, true);
+  api.destroy(); await api.drain();
+  const restored = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false }); await restored.drain();
+  e.root.querySelector('.m-reply-title')!.click();
+  assert.equal(e.root.querySelector('.m-reply-frame')!.querySelector('[aria-label="Controlled reply input"]')!.value, '9');
+  assert.equal(e.root.querySelector('.m-reply-frame')!.querySelector('[data-reply-version]')!.dataset.replyVersion, reply.version.id);
+  restored.destroy(); await restored.drain();
 });

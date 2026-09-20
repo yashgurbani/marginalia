@@ -87,7 +87,7 @@ test('mounted Remove reply hides only the middle reply and the Undo toast restor
   assert.equal(e.root.querySelector('[aria-label="Your question"]'), question); assert.equal(question.value, 'Why does this follow?');
   assert.equal(seeded.journal.state.threads[0].highlighted, false);
   assert.match(e.root.querySelector('.m-toast')!.textContent, /Reply removed\.Undo/);
-  assert.match(e.root.textContent, /Removed replies \(1\)/);
+  assert.match(e.root.textContent, /Removed replies/);
   button(e.root.querySelector('.m-toast')!, 'Undo').click(); await api.drain();
   assert.ok(e.root.querySelector('[data-reply-version="middle"]'));
   assert.equal((await seeded.persistence.replies.list(seeded.thread.id))[1].version.id, 'middle');
@@ -134,7 +134,7 @@ for (const outcome of ['acknowledged', 'committed-response-lost', 'not-committed
   api.destroy(); await api.drain();
 
   api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperOrigin: e.document.location.origin });
-  await until(() => /Removed replies \(1\)/.test(e.root.textContent));
+  await until(() => /Removed replies/.test(e.root.textContent));
   assert.equal(calls.filter(call => call.path === '/api/reply-removal').length, 0, 'reconnect/remount does not drain removal intent');
   button(e.root, 'Sync').click(); await api.drain();
   const removal = calls.filter(call => call.path === '/api/reply-removal');

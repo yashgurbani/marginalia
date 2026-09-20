@@ -32,13 +32,14 @@ function harness(t:import('node:test').TestContext, access: { surface?: 'localho
   let beforeWrite:((key:string)=>Promise<void>)|undefined,authorize:(()=>Promise<void>)|undefined;
   let transport:any, flowOptions:any, cardOptions:any, closed=0; const repairs: string[] = [];
   const question={value:''},contextField={value:''};
-  const host={hidden:false,addEventListener(){},querySelector:()=>question,querySelectorAll:()=>[question,contextField]} as unknown as HTMLElement;
+  let input: (() => void) | undefined;
+  const host={hidden:false,addEventListener(type:string, listener:()=>void){if(type==='input')input=listener;},querySelector:()=>question,querySelectorAll:()=>[question,contextField]} as unknown as HTMLElement;
   const client={origin:'http://localhost:43120',token:'fixture-token',connectionVersion:1,permissionVersion:0,exportThread:async()=>({thread:structuredClone(thread),source:structuredClone(source),replies:[],replyViews:[]}),request:async(path:string,body?:unknown)=>{calls.push(path);(body===undefined?reads:posts).push(path);return{}},replies:async()=>({replies:[],source,views:[]})};
   const flow={getState:()=>structuredClone(state),openAsk(){state.phase='suggestions';},ask:async()=>{events.push('ask');const a=flowOptions.currentAccess();if(a.excluded){state={...state,phase:'excluded',blocker:'excluded'};return;}if(!a.supported){state={...state,phase:'unavailable',blocker:'unsupported'};return;}if(!a.canAuthorize||a.surface==='floating'){state={...state,phase:'unavailable',blocker:'browser-owned-required'};return;}await transport.get('/api/jobs');},reopen:async({jobId}:{jobId?:string})=>{events.push('reopen');await transport.get('/api/jobs');await transport.get('/api/jobs/'+jobId)},refresh:async()=>{events.push('refresh')},close(){state.phase='closed'},invalidate(){state.phase='stale';listener?.(state)},reconcile(){},subscribe(fn:(s:any)=>void){listener=fn;fn(state);return()=>{listener=undefined}}};
   const peer={createAskingHost(t:any){transport=t;return{readReply:async()=>{throw Error('not used')}}},bindAskingThread(t:Thread,s:SourceVersion,id:string){return{threadId:t.id,anchorId:t.anchorId,captureId:id,sourceVersionId:s.id,sourceHash:s.hash,sourceUrl:t.sourceUrl,sourceTitle:t.sourceTitle,sourcePageType:s.pageType,sourceCapturedAt:s.capturedAt,sourceText:s.text,anchor:t.anchor}},createAskingFlow:(options:any)=>{flowOptions=options;return flow},mountAskingCard:(optionsRoot:any, options:any)=>{cardOptions=options;return{destroy(){}}}};
   const context={helper:()=>client,signal:abort.signal,surface:access.surface??'localhost',access:()=>({excluded:access.excluded??false,supported:access.supported??true}),authorize:async()=>{await authorize?.()},currentThread:()=>thread,ensureContextSaved:async()=>{},read:async(key:string)=>access.resumeJobId&&key==='request:'+access.resumeJobId?{jobId:access.resumeJobId,binding:structuredClone(flowOptions.binding)}:writes.get(key),write:async(key:string,value:unknown)=>{await beforeWrite?.(key);writes.set(key,structuredClone(value));},persistence:{},track:<T>(work:Promise<T>)=>work,highlight(){},navigate(){},onCommitted(){},onClosed(){closed++},repair(blocker:string){repairs.push(blocker)}} as unknown as AskingContext;
   const mount=createT08Mount(async()=>peer as any)(host,context);t.after(()=>mount.destroy());
-  return{mount,calls,reads,posts,events,writes,client,abort,host,question,repairs,repair:(blocker:string)=>cardOptions.onRepair(blocker),access:()=>flowOptions?.currentAccess(),state:()=>structuredClone(state),closed:()=>closed,setWrite(fn:typeof beforeWrite){beforeWrite=fn},setAuthorize(fn:typeof authorize){authorize=fn},setState(value:any){state={...state,...value};listener?.(state)},send:(path:string,body:unknown)=>transport.request(path,body)};
+  return{mount,context,input:()=>input?.(),calls,reads,posts,events,writes,client,abort,host,question,repairs,repair:(blocker:string)=>cardOptions.onRepair(blocker),access:()=>flowOptions?.currentAccess(),state:()=>structuredClone(state),closed:()=>closed,setWrite(fn:typeof beforeWrite){beforeWrite=fn},setAuthorize(fn:typeof authorize){authorize=fn},setState(value:any){state={...state,...value};listener?.(state)},send:(path:string,body:unknown)=>transport.request(path,body)};
 }
 test('mounting and reopening a blank question perform no model call or implicit preparation',async t=>{
  const h=harness(t);assert.deepEqual(h.calls,[]);await h.mount.open(selection);assert.deepEqual(h.calls,[]);assert.deepEqual(h.events,[]);h.mount.setVisible(false);h.mount.setVisible(true);assert.equal(h.closed(),1,'invalidated hidden review returns to retained draft');assert.deepEqual(h.calls,[]);
@@ -183,4 +184,31 @@ test('C5 actual asking host passes repair navigation without preparing, sending 
   const h=harness(t); await h.mount.open(selection); const before=h.events.slice();
   h.repair('signed-out'); assert.deepEqual(h.repairs,['signed-out']);
   assert.deepEqual(h.events,before); assert.deepEqual(h.posts,[]);
+});
+
+for (const trigger of ['input', 'hide', 'dispose'] as const) test(`retained question rejection on ${trigger} stays recoverable without an unhandled rejection`, async t => {
+  const { documentQuestion } = await import('../ui/persistence.ts');
+  const h = harness(t); await h.mount.open(selection);
+  const entered = deferred(); let refuse = true, saved: AskingSelection | undefined;
+  const buffer = documentQuestion(crypto.randomUUID(), 'draft', selection.capture.url, {
+    read: async () => undefined,
+    write: async value => { entered.resolve(); if (refuse) throw new Error('Question storage failure'); saved = structuredClone(value); },
+  });
+  h.context.retainedQuestion = value => buffer.save(value);
+  h.question.value = `Exact newest ${trigger} question`;
+  if (trigger === 'input') h.input();
+  else if (trigger === 'hide') h.mount.setVisible(false);
+  else h.mount.destroy();
+  await entered.promise; await tick();
+  assert.equal(buffer.unsaved(), true); assert.equal(saved, undefined);
+  assert.equal(buffer.get()!.question, h.question.value);
+  if (trigger !== 'dispose') {
+    await assert.rejects(h.mount.saveForNavigation!(), /Question storage failure/);
+    assert.equal(buffer.unsaved(), true);
+    refuse = false; await h.mount.saveForNavigation!();
+  } else {
+    refuse = false; await buffer.save(buffer.get());
+  }
+  assert.equal(buffer.unsaved(), false); assert.equal(saved!.question, h.question.value);
+  assert.deepEqual(h.calls, []); assert.deepEqual(h.posts, []);
 });

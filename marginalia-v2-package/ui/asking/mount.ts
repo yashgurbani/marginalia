@@ -257,7 +257,7 @@ export function mountAskingDraft(host: HTMLElement, options: {
   };
   const form = make('form'); form.className = 'm-asking-draft'; form.id = options.id;
   const top = make('div'); top.className = 'm-offers';
-  const input = make('input'); input.type = 'text'; input.id = options.id + '-question'; input.maxLength = 4000;
+  const input = make('textarea'); input.rows = 3; input.id = options.id + '-question'; input.maxLength = 4000;
   input.placeholder = 'Ask something else\u2026'; input.setAttribute('aria-label', 'Your question'); input.value = options.question;
   const more = make('details'); more.append(make('summary', 'More'));
   const extra = make('div'), contextDetails = make('details'), context = make('textarea');
@@ -333,5 +333,10 @@ export function mountAskingDraft(host: HTMLElement, options: {
     else if (event.key.toLowerCase() === 'p') { event.preventDefault(); options.onPark(); }
     else if (event.key === 'Escape') { event.preventDefault(); options.onClose(); }
   }, { signal: abort.signal });
-  return { message, submit, chooseIndex: (index: number) => top.querySelectorAll<HTMLButtonElement>('button')[index]?.click(), setVisible: (visible: boolean) => { if (visible) host.append(form); else form.remove(); }, focus: () => input.focus(), changed: () => { ideas.hidden = false; }, destroy: () => { disposed = true; abort.abort(); if (options.moreAction && moreActionParent?.isConnected) { moreActionParent.append(options.moreAction); moreActionParent.hidden = false; } form.remove(); } };
+  return { message, submit,
+    openSkills() {
+      more.open = true; skillList.hidden = false;
+      if (!skillsAsked && typeof skillSource === 'function') { skillsAsked = true; showSkills(Promise.resolve().then(skillSource)); }
+    },
+    chooseIndex: (index: number) => top.querySelectorAll<HTMLButtonElement>('button')[index]?.click(), setVisible: (visible: boolean) => { if (visible) host.append(form); else form.remove(); }, focus: () => input.focus(), changed: () => { ideas.hidden = false; }, destroy: () => { disposed = true; abort.abort(); if (options.moreAction && moreActionParent?.isConnected) { moreActionParent.append(options.moreAction); moreActionParent.hidden = false; } form.remove(); } };
 }

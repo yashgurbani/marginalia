@@ -36,12 +36,12 @@ test('R4 top row preserves page identity and merges Hide into Collapse', async t
   assert.equal(e.root.querySelector('.m-bar'), null);
   assert.deepEqual(heading.querySelectorAll('button').map(node => node.textContent), ['Collapse']);
   const footerRow = e.root.querySelector('.m-footer-row')!;
-  assert.deepEqual(footerRow.children.slice(0, 2).map(node => node.textContent), ['Read later', 'Library']);
-  assert.equal(footerRow.children[2].querySelector('summary')!.textContent, 'More');
+  assert.deepEqual(footerRow.children.map(node => node.textContent), ['Connections', 'Skills', 'Library', 'Settings']);
+  assert.ok(e.root.querySelector('.m-settings .m-footer-more'));
   assert.equal(button(e.root, 'Follow reading').hidden, true);
   const settings = button(e.root, 'Settings'); settings.focus(); api.setReadingPosition(4);
   assert.equal(e.document.activeElement, settings); assert.equal(heading.querySelector('h1'), title);
   button(e.root, 'Write here\u2026').click();
-  assert.equal(button(e.root, 'Follow reading').hidden, false);
+  assert.equal(button(e.root, 'Follow reading').hidden, true);
   api.destroy(); await api.drain();
 });

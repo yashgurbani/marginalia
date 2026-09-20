@@ -63,25 +63,25 @@ test('typing into a fresh draft enables Save, and clearing it disables Save with
   field.value = 'Keep this thought'; field.dispatchEvent(new Event('input')); save.click();
   assert.deepEqual(calls, ['edit:A new thought', 'edit: \n ', 'edit:Keep this thought', 'save']);
 });
-test('a question mark offers Ask but input does not save or send', t => {
+test('Ask is available for written thoughts and input does not dispatch it', t => {
   const { editor, field, button, calls } = fixture(t); field.value = 'Why?'; field.dispatchEvent(new Event('input'));
-  assert.deepEqual(calls, ['edit:Why?']); assert.equal(button('Save note and review a question').hidden, false);
+  assert.deepEqual(calls, ['edit:Why?']); assert.equal(button('Ask').hidden, false);
   const hintId = field.getAttribute('aria-describedby'); assert.ok(hintId);
   const hint = field.doc.body.querySelector('small')!; assert.equal((hint as any).id, hintId);
-  assert.equal(hint.textContent, 'Enter saves; Shift+Enter adds a line. Asking always needs a separate action.');
+  assert.equal(hint.textContent, '');
   const status = field.doc.body.querySelectorAll('p').at(-1)!;
-  assert.equal(status.textContent, 'Save note and review a question is now available.');
+  assert.equal(status.textContent, '');
   field.value = 'Why exactly?'; field.dispatchEvent(new Event('input'));
-  assert.equal(status.textContent, 'Save note and review a question is now available.', 'the same appearance is not announced again per keystroke');
-  editor.update({ ...initial, text: field.value }); button('Save note and review a question').click();
+  assert.equal(status.textContent, '', 'typing has no status chatter');
+  editor.update({ ...initial, text: field.value }); button('Ask').click();
   assert.deepEqual(calls, ['edit:Why?', 'edit:Why exactly?', 'ask']);
 });
-test('Enter saves once, while Shift+Enter and composing Enter do not invoke save', t => {
+test('Enter, Shift+Enter and composing Enter preserve native multiline editing', t => {
   const { field, calls } = fixture(t);
   assert.equal(field.key({ key: 'Enter', shiftKey: true, isComposing: false }).defaultPrevented, false);
   assert.equal(field.key({ key: 'Enter', shiftKey: false, isComposing: true }).defaultPrevented, false);
-  assert.equal(field.key({ key: 'Enter', shiftKey: false, isComposing: false }).defaultPrevented, true);
-  assert.deepEqual(calls, ['save']);
+  assert.equal(field.key({ key: 'Enter', shiftKey: false, isComposing: false }).defaultPrevented, false);
+  assert.deepEqual(calls, []);
 });
 test('attachment choices are stable, explicit, and cannot be applied after a save starts', t => {
   const { editor, button, calls } = fixture(t); button('Change').click(); const stale = button('Another passage');
@@ -95,7 +95,7 @@ test('a detached old attachment choice cannot act after the editor is cleared', 
 });
 test('locked mutation retains readable text but refuses input, attachment changes, discard and Ask', t => {
   const { editor, field, button, calls } = fixture(t); editor.update({ ...initial, text: 'Pending?', locked: true });
-  field.dispatchEvent(new Event('input')); field.key({ key: 'Enter', isComposing: false }); button('Change').click(); button('Discard draft').click(); button('Save note and review a question').click();
+  field.dispatchEvent(new Event('input')); field.key({ key: 'Enter', isComposing: false }); button('Change').click(); button('Discard draft').click(); button('Ask').click();
   assert.equal(field.readOnly, true); assert.equal(field.disabled, false); assert.deepEqual(calls, []);
   button('Save note').click(); assert.deepEqual(calls, ['save'], 'explicit retry remains available');
 });

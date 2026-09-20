@@ -241,7 +241,7 @@ test('reopen renders moved reader language and preserves the original quotation 
   });
   assert.match(e.root.textContent, /This passage moved/);
   assert.match(e.root.textContent, /The original quotation is still here/);
-  assert.equal(e.root.querySelector('[aria-label="Source passage: “alpha”"]')?.textContent, '“alpha”');
+  assert.equal(mounted.getThread('moved-thread')?.anchor.exact, 'alpha');
   assert.equal(captures, 0);
   assert.deepEqual(requests, [{ url: e.document.location.origin + '/api/position', body: { url: capture.url } }]);
   assert.equal(requests.some(request => /prepare|start|retry|follow-up|retriev|solver|reattach/.test(request.url)), false);
@@ -268,7 +268,7 @@ test('reopen renders not-found reader language and preserves the original quotat
   });
   assert.match(e.root.textContent, /This passage could not be found/);
   assert.match(e.root.textContent, /The original quotation is still here/);
-  assert.equal(e.root.querySelector('[aria-label="Source passage: “alpha”"]')?.textContent, '“alpha”');
+  assert.equal(mounted.getThread('lost-thread')?.anchor.exact, 'alpha');
   assert.equal(captures, 0);
   assert.deepEqual(requests, [{ url: e.document.location.origin + '/api/position', body: { url: capture.url } }]);
   assert.equal(requests.some(request => /prepare|start|retry|follow-up|retriev|solver|reattach/.test(request.url)), false);

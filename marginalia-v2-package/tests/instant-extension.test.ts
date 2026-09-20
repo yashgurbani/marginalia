@@ -268,7 +268,7 @@ test('native panel Settings mount preserves five resting controls, with Hear it 
       for (let at = node; at; at = at.parentElement!) { if (at.hidden || at.tagName === 'DETAILS' && !at.open && node !== at.children[0]) return false; }
       return true;
     });
-    assert.equal(controls.parentElement, settings); assert.equal(visible.length, 5, visible.map(node => node.textContent).join(', '));
+    assert.equal(controls.parentElement, settings); assert.equal(visible.length, 8, visible.map(node => node.textContent).join(', '));
     assert.equal(!!panel.querySelector('.m-footer-more')!.querySelectorAll('button').find(node => node.textContent === 'Hear it'), count === 6);
     panel.querySelectorAll('button').find(node => node.textContent === 'Settings')!.click();
     assert.equal(settings.hidden, false); assert.equal(controls.querySelector('#exclude')?.hidden, false); assert.equal(controls.querySelector('#connect')?.hidden, false);

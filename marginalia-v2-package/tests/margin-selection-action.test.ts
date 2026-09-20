@@ -15,6 +15,43 @@ const mount = (root: ReturnType<typeof dom>['root'], namespace: string) =>
   mountMargin(asHost(root), { capture, storageName: namespace, allowHelper: false, readPosition: async () => undefined });
 const drafts = (e: ReturnType<typeof env>, prefix: string) => [...e.data(e.namespace)].filter(([key]) => key.startsWith(prefix)).map(([, value]) => value as any);
 
+for (const rejectWrites of [false, true]) test(`switching note targets preserves typing during the navigation write${rejectWrites ? ' when storage fails' : ''}`, { timeout: 8000 }, async t => {
+  let cleanup = async () => {}; t.after(() => cleanup());
+  const { deferred } = await import('./t05-dom.ts');
+  const { unsavedDrafts } = await import('../ui/persistence.ts');
+  const e = env(t), requests: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => { requests.push(url); throw new Error('Unexpected request'); } });
+  const journal = documentJournal(e.namespace, localPersistence(e.namespace).journal);
+  await journal.load();
+  await journal.change({ id: 'keep-a', kind: 'keep', threadId: 'thread-a', capture, anchor: anchor(), note: 'First note' });
+  await journal.change({ id: 'keep-b', kind: 'keep', threadId: 'thread-b', capture, anchor: anchor(15, 30), note: 'Second note' });
+  let api = await mount(e.root, e.namespace); await api.drain();
+  cleanup = async () => { e.onWrite(async () => {}); api.destroy(); await api.drain(); };
+  e.root.querySelectorAll('.m-note').find(node => node.textContent === 'First note')!.click(); await api.drain();
+  const field = e.root.querySelector('[aria-label="Your note"]')!;
+  field.value = 'First saved edit'; field.fire('input'); await api.drain();
+  const entered = deferred<void>(), release = deferred<void>(); let once = true;
+  e.onWrite(async (key) => {
+    if (once && key.startsWith('draft:')) { once = false; entered.resolve(); await release.promise; }
+    if (rejectWrites && (key.startsWith('draft:') || key === 'journal')) throw new Error('Navigation storage failure');
+  });
+  e.root.querySelectorAll('.m-note').find(node => node.textContent === 'Second note')!.click(); await entered.promise;
+  assert.equal(field.readOnly, false);
+  const latest = 'Latest edit during navigation\nKept exactly.';
+  field.value = latest; field.fire('input'); release.resolve(); await api.drain();
+  const saved = e.data(e.namespace).get('journal') as JournalState;
+  const retained = drafts(e, 'draft:').find(value => value?.text === latest) ?? unsavedDrafts(e.namespace).find(value => value.draft?.text === latest)?.draft;
+  assert.ok(saved.threads.some(thread => thread.notes.some(note => note.text === latest)) || retained, 'newer input must remain saved or recoverable');
+  assert.equal(field.value, latest);
+  assert.equal(saved.threads.find(thread => thread.id === 'thread-a')!.notes[0].text, 'First saved edit');
+  if (rejectWrites) { assert.equal(retained?.threadId, 'thread-b'); assert.equal(retained?.noteId, 'keep-b-note'); }
+  else assert.equal(saved.threads.find(thread => thread.id === 'thread-b')!.notes[0].text, latest);
+  e.onWrite(async () => {}); api.destroy(); await api.drain();
+  api = await mount(e.root, e.namespace); await api.drain();
+  assert.equal(e.root.querySelector('[aria-label="Your note"]')!.value, latest);
+  assert.equal(journal.state.threads.length, 2); assert.deepEqual(requests, []);
+});
+
 test('the selection card rests on four controls and keeps Read later in the footer', async t => {
   const e = env(t);
   const api = await mount(e.root, e.namespace); await api.drain();
@@ -23,7 +60,7 @@ test('the selection card rests on four controls and keeps Read later in the foot
   assert.deepEqual(card.querySelector('.m-selection-actions')!.children.map(node => node.textContent), ['Keep', 'Note', 'Ask', 'Simulate it']);
   assert.equal(card.querySelector('.m-selection-more'), null, 'the More disclosure is gone');
   assert.equal(card.querySelectorAll('button').some(node => node.textContent === 'Read later'), false, 'Read later is a page action');
-  assert.equal(e.root.querySelector('.m-footer-row')!.children[0].textContent, 'Read later');
+  assert.equal(e.root.querySelector('.m-footer-row')!.children[0].textContent, 'Connections');
   api.destroy(); await api.drain();
 });
 
@@ -136,7 +173,7 @@ async function resumeRetainedSimulation(t: import('node:test').TestContext) {
   button(e.root, 'Return to retained question').click(); await api.drain();
   assert.equal(opened.length, 0, 'reopening a retained request sends nothing and opens no review');
   const form = e.root.querySelector('.m-asking-draft')!;
-  return { e, api, opened, requests, form, input: form.querySelector('input')! };
+  return { e, api, opened, requests, form, input: form.querySelector('textarea')! };
 }
 
 test('a restored simulation submitted unchanged reaches review as a simulation', async t => {
@@ -331,7 +368,7 @@ for (const action of ['ask', 'simulate'] as const) test(`two unpaired ${action} 
   await api.drain();
   assert.equal(await api.selectionAction(action, anchor()), false);
   const form = e.root.querySelector('.m-asking-draft')!;
-  if (action === 'ask') { const input = form.querySelector('input')!; input.value = 'Why does this passage matter?'; input.fire('input'); await api.drain(); }
+  if (action === 'ask') { const input = form.querySelector('textarea')!; input.value = 'Why does this passage matter?'; input.fire('input'); await api.drain(); }
   for (let i = 0; i < 2; i++) { form.fire('submit'); await api.drain(); }
   const retained = drafts(e, 'question:draft:');
   const state = e.data(e.namespace).get('journal') as JournalState | undefined;
@@ -408,7 +445,7 @@ for (const action of ['ask', 'simulate'] as const) test(`durable blocked ${actio
   const e = env(t), first = await mount(e.root, e.namespace); await first.drain();
   await first.selectionAction(action, anchor()); await first.drain();
   const form = e.root.querySelector('.m-asking-draft')!;
-  if (action === 'ask') { const input = form.querySelector('input')!; input.value = 'Why does this passage matter?'; input.fire('input'); await first.drain(); }
+  if (action === 'ask') { const input = form.querySelector('textarea')!; input.value = 'Why does this passage matter?'; input.fire('input'); await first.drain(); }
   form.fire('submit'); await first.drain(); form.fire('submit'); await first.drain();
   const saved = structuredClone(drafts(e, 'question:draft:')[0]);
   first.destroy(); await first.drain(); reloadStorage(e);
@@ -440,7 +477,7 @@ for (const action of ['ask', 'simulate'] as const) test(`a paired reload continu
   const e = env(t), first = await mount(e.root, e.namespace); await first.drain();
   await first.selectionAction(action, anchor()); await first.drain();
   const form = e.root.querySelector('.m-asking-draft')!;
-  if (action === 'ask') { const input = form.querySelector('input')!; input.value = 'Explain the first passage'; input.fire('input'); await first.drain(); }
+  if (action === 'ask') { const input = form.querySelector('textarea')!; input.value = 'Explain the first passage'; input.fire('input'); await first.drain(); }
   form.fire('submit'); await first.drain();
   const saved = structuredClone(drafts(e, 'question:draft:')[0]);
   first.destroy(); await first.drain(); pair(e); reloadStorage(e);
@@ -457,7 +494,7 @@ for (const action of ['ask', 'simulate'] as const) test(`a paired reload continu
 test('editing a blocked simulation persists plain-question intent across a storage-only reload', async t => {
   const e = env(t), first = await mount(e.root, e.namespace); await first.drain();
   await first.selectionAction('simulate', anchor()); await first.drain();
-  const input = e.root.querySelector('.m-asking-draft')!.querySelector('input')!;
+  const input = e.root.querySelector('.m-asking-draft')!.querySelector('textarea')!;
   input.value = 'Explain this passage instead'; input.fire('input'); await first.drain();
   assert.equal(drafts(e, 'question:draft:')[0].intent, 'unsure');
   input.value = 'Simulate this passage.'; input.fire('input'); await first.drain();
@@ -474,7 +511,7 @@ test('failed question persistence never creates a thread and an explicit retry k
   const e = env(t), api = await mount(e.root, e.namespace); await api.drain();
   t.after(async () => { api.destroy(); await api.drain(); });
   await api.selectionAction('ask', anchor()); await api.drain();
-  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('textarea')!;
   e.onWrite(async key => { if (key.startsWith('question:draft:')) throw new Error('Controlled write failure'); });
   input.value = 'Retain my unsaved question'; input.fire('input'); await api.drain();
   form.fire('submit'); await api.drain();
@@ -539,7 +576,7 @@ for (const failure of ['unavailable', 'unconfigured', 'rejected', 'offline', 'in
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: true, readPosition: async () => undefined });
   t.after(async () => { api.destroy(); await api.drain(); }); await api.drain();
   await api.selectionAction('ask', anchor()); await api.drain();
-  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('textarea')!;
   input.value = 'Retain this until the helper is ready'; input.fire('input'); await api.drain();
   for (let i = 0; i < 2; i++) { form.fire('submit'); await api.drain(); }
   assert.deepEqual(requests, ['/api/read/jobs', '/api/read/jobs']);
@@ -557,7 +594,7 @@ for (const invalidation of ['closed', 'revoked', 'cancelled'] as const) test(`a 
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: true, readPosition: async () => undefined });
   t.after(async () => { api.destroy(); await api.drain(); }); await api.drain();
   await api.selectionAction('ask', anchor()); await api.drain();
-  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('textarea')!;
   input.value = 'Keep this question'; input.fire('input'); await api.drain(); form.fire('submit');
   await until(() => requests.length > 0);
   if (invalidation === 'closed') api.destroy();
@@ -578,7 +615,7 @@ test('editing while availability is pending keeps the new words and creates no t
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: true, readPosition: async () => undefined });
   t.after(async () => { api.destroy(); await api.drain(); }); await api.drain();
   await api.selectionAction('ask', anchor()); await api.drain();
-  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('textarea')!;
   input.value = 'The earlier question'; input.fire('input'); await api.drain(); form.fire('submit');
   await until(() => reads > 0); input.value = 'Keep these newer words'; input.fire('input');
   held.resolve(Response.json({ configured: true, available: true, unverified: [], disclosureVersion: null })); await api.drain();
@@ -603,7 +640,7 @@ test('editing during context synchronization preserves the newer durable draft a
     asking: () => ({ open() { opens++; }, setVisible() {}, destroy() {} }) });
   t.after(async () => { api.destroy(); await api.drain(); }); await api.drain();
   await api.selectionAction('ask', anchor()); await api.drain();
-  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('textarea')!;
   input.value = 'Earlier question'; input.fire('input'); await api.drain(); form.fire('submit');
   await until(() => syncing); input.value = 'These newer words must survive'; input.fire('input');
   held.resolve(Response.json({})); await api.drain();
@@ -683,7 +720,7 @@ test('C5 trusted transition waits for the exact draft to be saved and exposes lo
   trusted.addEventListener('click', () => { transitions++; }); controls.append(trusted);
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, settingsContent: asHost(controls), readPosition: async () => undefined });
   t.after(() => api.destroy()); await api.selectionAction('simulate', anchor()); await api.drain();
-  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('textarea')!;
   e.onWrite(async key => { if (key.startsWith('question:draft:')) throw new Error('Controlled draft save failure'); });
   input.value = 'Keep these latest words'; input.fire('input'); await api.drain();
   button(form, 'Open browser margin').click();
@@ -742,4 +779,28 @@ for (const [failure, expected] of [
   assert.deepEqual(h.requests, before); assert.equal(h.prepared.length, prepared);
   assert.equal(h.journal.unsaved, true); assert.equal(h.journal.state.pending.length, 1);
   h.api.destroy(); await h.api.drain();
+});
+
+
+test('real host reports retained-question storage failure and Back keeps the exact draft until retry', async t => {
+  let cleanup = async () => {}; t.after(() => cleanup());
+  const { unsavedQuestions } = await import('../ui/persistence.ts');
+  const e = env(t); pair(e); const h = await realReview(t, e);
+  cleanup = async () => { e.onWrite(async () => {}); h.api.destroy(); await h.api.drain(); };
+  await h.api.selectionAction('simulate', anchor()); await h.api.drain();
+  const frame = e.root.querySelector('.m-reply-frame')!;
+  const field = frame.querySelectorAll('textarea').find(node => node.id.endsWith('-review-question'))!;
+  assert.ok(field); const prepared = h.prepared.length;
+  e.onWrite(async key => { if (key.startsWith('question:draft:')) throw new Error('Retained question storage failure'); });
+  field.value = 'Keep this exact edited question'; field.fire('input'); await h.api.drain();
+  assert.match(e.root.textContent, /Retained question storage failure/);
+  button(frame, 'Back').click(); await h.api.drain();
+  assert.equal(frame.hidden, false); assert.equal(field.value, 'Keep this exact edited question');
+  const recovered = unsavedQuestions(e.namespace).find(entry => entry.draft?.question === field.value);
+  assert.ok(recovered); assert.equal(recovered.durable, false);
+  assert.equal(recovered.draft!.threadId, h.journal.state.threads[0].id);
+  e.onWrite(async () => {}); button(frame, 'Back').click(); await h.api.drain();
+  assert.equal(frame.hidden, true);
+  assert.equal(drafts(e, 'question:draft:')[0].question, field.value);
+  assert.equal(h.prepared.length, prepared); assert.equal(h.requests.includes('/api/jobs'), false);
 });

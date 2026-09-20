@@ -95,7 +95,7 @@ test('without an injected backend the resting margin and selection behave exactl
     }
     return true;
   });
-  assert.deepEqual(visible.map(node => node.textContent), ['Collapse', 'Write here\u2026', 'Read later', 'Library', 'More']);
+  assert.deepEqual(visible.map(node => node.textContent), ['Collapse', 'Save page', '', 'Ask', 'Connections', 'Skills', 'Library', 'Settings']);
   api.select(anchor);
   assert.equal(e.root.querySelector('.m-instant-definition'), null);
   assert.doesNotMatch(e.root.textContent, /Instant help.*unavailable/i);

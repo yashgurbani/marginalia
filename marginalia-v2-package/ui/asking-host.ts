@@ -20,6 +20,7 @@ export type AskingSelection = {
 };
 export type AskingMountFactory = (host: HTMLElement, api: AskingContext) => {
   open(selection: AskingSelection): void | Promise<void>; setVisible(visible: boolean): void; destroy(): void;
+  saveForNavigation?(): Promise<void>;
 };
 export type AskingContext = {
   helper(): HelperClient; signal: AbortSignal; authorize(sourceUrl: string): Promise<void>;
@@ -44,7 +45,7 @@ export type AskingContext = {
   onState?(state: { phase: string }): void;
   /** Compatibility hook for the branch's activity fixture; does not authorize or send. */
   activity?(state: { phase: string; sending?: boolean; elapsedSeconds?: number }): void;
-  retainedQuestion?(selection: AskingSelection): void;
+  retainedQuestion?(selection: AskingSelection): void | Promise<void>;
 };
 export const createAskingHost = (context: AskingContext) => context;
 
@@ -128,6 +129,14 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       if (!client || client !== context.helper() || client.connectionVersion !== connectionEpoch || !client.token || abort.signal.aborted) throw new Error('The helper connection changed. Earlier outcomes are unconfirmed; nothing is automatically resent.');
       return client;
     }
+    function retainQuestion(value: AskingSelection): Promise<void> {
+      const identity = canonicalReplyData(value);
+      const work = context.track((async () => { await context.retainedQuestion?.(value); })());
+      // Input, hide and disposal cannot await. Observe their failure without
+      // changing the recovery snapshot or turning an awaited save into success.
+      void work.catch(() => { if (lastDraft === identity) lastDraft = undefined; });
+      return work;
+    }
     function snapshotQuestion() {
       if (!currentSelection) return;
       // The card owns its DOM. Capture retained input at the host boundary only;
@@ -142,7 +151,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       const value = { ...structuredClone(currentSelection), question: question.value, context: fields[1]?.value ?? '', intent };
       const identity = canonicalReplyData(value);
       if (identity === lastDraft) return;
-      lastDraft = identity; lastQuestionSnapshot = value; context.retainedQuestion?.(value);
+      lastDraft = identity; lastQuestionSnapshot = value; void retainQuestion(value);
     }
     host.addEventListener('input', snapshotQuestion, { signal: abort.signal });
     async function openNow(selection: AskingSelection) {
@@ -195,7 +204,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
             const retained = { jobId: input.id, request: structuredClone(body), binding: currentBinding, question: flow?.getState().question, selection: selected };
             await context.write('request:' + input.id, retained); // Never overwrite an earlier unknown request's identity.
             await context.write('request', retained); // Read-only resume pointer, not the authority for dispatch.
-            currentSelection = selected; context.retainedQuestion?.(selected);
+            currentSelection = selected; void retainQuestion(selected);
 
             await connection();
           }
@@ -312,6 +321,19 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       card?.destroy(); card = undefined; flow?.close(); flow = undefined;
     }
     return {
+      async saveForNavigation() {
+        if (destroyed || abort.signal.aborted) throw new Error('This reply has closed.');
+        // Do not hide, invalidate, cancel or reopen the flow until every current
+        // view and draft write succeeds. A later edit requires another pass.
+        let before: string;
+        do {
+          snapshotQuestion();
+          before = canonicalReplyData([...writers].map(writer => writer.mounted.getState()));
+          await Promise.all([...writers].map(writer => writer.flush()));
+          if (lastQuestionSnapshot) await retainQuestion(structuredClone(lastQuestionSnapshot));
+          if (destroyed || abort.signal.aborted) throw new Error('This reply changed while saving.');
+        } while (before !== canonicalReplyData([...writers].map(writer => writer.mounted.getState())));
+      },
       open(selection) {
         if (destroyed || abort.signal.aborted) return Promise.reject(new Error('This asking view is closed.'));
         if (opening) return opening;

@@ -53,7 +53,7 @@ test('draft offers reach review directly', async t => {
     onClose() {}, onKeep() {}, onPark() {},
   });
   t.after(() => mounted.destroy());
-  assert.equal(d.root.querySelector('input')!.value, 'Retained question');
+  assert.equal(d.root.querySelector('textarea')!.value, 'Retained question');
   mounted.chooseIndex(2);
   await Promise.resolve();
   assert.deepEqual(chosen[0]?.slice(0, 3), ['diagram', 'diagram question', '']);

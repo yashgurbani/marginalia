@@ -26,7 +26,7 @@ const mount = (root: ReturnType<typeof dom>['root'], namespace: string) =>
 const threadNode = (root: ReturnType<typeof dom>['root'], id: string) =>
   root.querySelectorAll('[data-thread]').find(node => node.dataset.thread === id);
 
-test('a repeated passage folds later threads into the lead card without losing either thread', async t => {
+test('a repeated passage keeps distinct page-order notes without losing either thread', async t => {
   const e = env(t);
   await seed(e.namespace, [
     { threadId: 'lead', anchor: anchor(0, 14), note: 'The first reading', sourceVersionId: 'version-one' },
@@ -36,9 +36,9 @@ test('a repeated passage folds later threads into the lead card without losing e
 
   const lead = threadNode(e.root, 'lead')!, follower = threadNode(e.root, 'follower')!;
   const repeats = lead.querySelector('.m-thread-repeats')!;
-  assert.equal(follower.parentElement, repeats, 'the later thread sits inside the lead expander');
-  assert.equal(repeats.hidden, false);
-  assert.equal(repeats.querySelector('summary')!.textContent, '1 more note');
+  assert.equal(follower.parentElement?.className, 'm-threads', 'each note remains at its page position');
+  assert.equal(repeats.hidden, true);
+  assert.equal(repeats.querySelector('summary')!.textContent, '');
   assert.equal(e.root.querySelectorAll('[data-thread]').length, 2);
   assert.deepEqual(e.root.querySelectorAll('[data-thread]').map(node => node.dataset.thread).sort(), ['follower', 'lead']);
   assert.match(lead.textContent, /The first reading/);
@@ -79,7 +79,7 @@ test('the same quoted words at different offsets stay separate cards', async t =
   api.destroy(); await api.drain();
 });
 
-test('opening a folded thread opens its expander and focuses its source passage', async t => {
+test('opening a repeated-passage thread focuses its own note', async t => {
   const e = env(t);
   await seed(e.namespace, [
     { threadId: 'lead', anchor: anchor(0, 14), note: 'The first reading', sourceVersionId: 'version-one' },
@@ -89,9 +89,8 @@ test('opening a folded thread opens its expander and focuses its source passage'
 
   await api.openThread('follower'); await api.drain();
   const follower = threadNode(e.root, 'follower')!;
-  const enclosing = follower.parentElement!.closest('.m-thread-repeats')!;
-  assert.equal(enclosing.open, true);
-  assert.equal(e.document.activeElement, follower.querySelector('.m-source-action'));
+  assert.equal(follower.parentElement!.closest('.m-thread-repeats'), null);
+  assert.equal(e.document.activeElement, follower.querySelector('.m-note'));
   api.destroy(); await api.drain();
 });
 
@@ -115,7 +114,7 @@ test('a record with no source version never groups, and never takes a follower',
   api.destroy(); await api.drain();
 });
 
-test('focusing a folded thread reveals it, and a re-render keeps its expander open', async t => {
+test('focusing a repeated-passage thread keeps every note accessible through a rerender', async t => {
   const e = env(t);
   await seed(e.namespace, [
     { threadId: 'lead', anchor: anchor(0, 14), note: 'The first reading', sourceVersionId: 'version-one' },
@@ -127,12 +126,12 @@ test('focusing a folded thread reveals it, and a re-render keeps its expander op
 
   api.focusThread('follower'); await api.drain();
   const follower = threadNode(e.root, 'follower')!;
-  assert.equal(follower.parentElement!.closest('.m-thread-repeats'), enclosing);
-  assert.equal(enclosing.open, true, 'focusing a follower opens its group ancestor');
+  assert.equal(follower.parentElement!.closest('.m-thread-repeats'), null);
+  assert.equal(enclosing.hidden, true, 'page-order notes require no expander');
 
   // A later explicit focus re-renders and regroups both cards; the open expander stays open.
   api.focusThread('lead'); await api.drain();
-  assert.equal(threadNode(e.root, 'follower')!.parentElement!.closest('.m-thread-repeats')!.open, true);
+  assert.equal(threadNode(e.root, 'follower')!.parentElement!.className, 'm-threads');
   api.destroy(); await api.drain();
 });
 

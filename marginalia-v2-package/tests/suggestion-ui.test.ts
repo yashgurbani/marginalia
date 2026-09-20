@@ -38,10 +38,10 @@ test('real asking surface ranks all eight candidates, numbers three, and records
   const opener = e.document.createElement('button'); e.document.body.append(opener); opener.focus();
   api.select(anchor()); assert.equal(e.document.activeElement, opener);
   assert.deepEqual(e.root.querySelector('.m-selection-actions')!.querySelectorAll('button').map(node => node.textContent), ['Keep', 'Note', 'Ask', 'Simulate it']);
-  button(e.root, 'Ask').click(); await api.drain();
+  button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
   const expected = rankEligibleSuggestions({ block: suggestionBlock(anchor().exact), page: suggestionPage(capture.pageType), posture: 'balanced', usefulNearby: [], dismissed: [] }, SUGGESTION_ORDER);
   assert.deepEqual(offers(e.root), expected.slice(0, 3).map(item => item.intent));
-  assert.equal(e.root.querySelector('.m-question')!.parentElement, e.root.querySelector('.m-selection'));
+  assert.equal(e.root.querySelector('.m-question')!.parentElement, e.root.querySelector('.m-reply-frame-body'));
   assert.equal(e.root.querySelectorAll('form').length, 1);
   assert.deepEqual(e.root.querySelector('.m-offers')!.querySelectorAll('.m-suggestion').map(node => node.children[0].textContent), ['1', '2', '3']);
   const [record] = records(e.data(e.namespace));
@@ -60,7 +60,7 @@ for (const [label, intent] of [['Simulate it', 'simulate'], ['Check this claim',
     replaceGlobals(t, { fetch: async () => { requests++; throw new Error('Unexpected outbound request'); } });
     const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, suggestionEligibility: SUGGESTION_ORDER,
       asking: () => ({ open() { hostOpens++; }, setVisible() {}, destroy() {} }) });
-    api.select(anchor()); button(e.root, 'Ask').click(); await api.drain(); choose(e.root, label); await api.drain();
+    api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain(); choose(e.root, label); await api.drain();
     const [record] = records(e.data(e.namespace));
     assert.equal(record.resolution, 'chosen'); assert.equal(record.choice, intent); assert.ok(record.resolvedAt);
     assert.equal(typeof record.latencyMs, 'number'); assert.equal(hostOpens, 0); assert.equal(requests, 0);
@@ -81,7 +81,7 @@ test('whole-page asks use the same ranked surface without dispatch', async t => 
 test('dismissal, explicit new ideas and page close have distinct no-choice resolutions', async t => {
   for (const resolution of ['dismissed', 'replaced', 'page-closed'] as const) {
     const e = env(t), api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, suggestionEligibility: SUGGESTION_ORDER, allowHelper: false });
-    api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
+    api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
     if (resolution === 'dismissed') e.root.querySelector('.m-question')!.fire('keydown', { key: 'Escape' });
     else if (resolution === 'replaced') { const input = e.root.querySelector('[aria-label="Your question"]')!; input.value = 'Why?'; input.fire('input'); button(e.root, 'More ideas').click(); }
     else api.destroy();
@@ -149,7 +149,7 @@ for (const resolution of ['chosen', 'dismissed', 'replaced'] as const) {
   test(`failed ${resolution} resolution survives close/remount and retries the exact observed decision`, async t => {
     const e = env(t);
     let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, suggestionEligibility: SUGGESTION_ORDER, allowHelper: false });
-    await api.drain(); api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
+    await api.drain(); api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
     e.onWrite(async (key, value) => { if (key.startsWith('suggestion-exposure:') && (value as SuggestionExposureRecord).resolution === resolution) throw new Error('resolution quota'); });
     if (resolution === 'chosen') choose(e.root, 'Simulate it');
     else if (resolution === 'dismissed') e.root.querySelector('.m-question')!.fire('keydown', { key: 'Escape' });
@@ -204,7 +204,7 @@ for (const chosen of [false, true]) for (const failSwitch of [false, true]) {
     e.onWrite(async key => { if (failQuestion && key.startsWith('question:draft:')) throw new Error('question quota'); });
     let api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, suggestionEligibility: SUGGESTION_ORDER, allowHelper: false,
       asking: () => ({ open() { hostOpens++; }, setVisible() {}, destroy() {} }) });
-    await api.drain(); api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
+    await api.drain(); api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
     if (chosen) { choose(e.root, 'Simulate it'); await api.drain(); }
     const field = e.root.querySelector('[aria-label="Your question"]')!;
     field.value = 'My exact question'; field.fire('input');
@@ -286,14 +286,14 @@ test('production passage and page inputs produce different first offers', async 
   const e = env(t), first: string[] = [];
   for (const text of ['viscosity', 'y = x + 2', '1. Open the lid.\n2. Pour water.', 'Heat causes expansion because the particles move faster.', 'The rate rose 24% [3].']) {
     const source = { ...capture, text }, api = await mountMargin(asHost(e.root), { capture: source, storageName: crypto.randomUUID(), allowHelper: false });
-    api.select({ start: 0, end: text.length, exact: text, prefix: '', suffix: '' }); button(e.root, 'Ask').click(); await api.drain();
+    api.select({ start: 0, end: text.length, exact: text, prefix: '', suffix: '' }); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
     first.push(offers(e.root)[0]); api.destroy(); await api.drain();
   }
   assert.ok(new Set(first).size >= 4, first.join(', '));
   const pageFirst: string[] = [];
   for (const pageType of ['paper', 'social']) {
     const text = 'An ordinary sentence with several words.', api = await mountMargin(asHost(e.root), { capture: { ...capture, pageType, text }, storageName: crypto.randomUUID(), allowHelper: false });
-    api.select({ start: 0, end: text.length, exact: text, prefix: '', suffix: '' }); button(e.root, 'Ask').click(); await api.drain();
+    api.select({ start: 0, end: text.length, exact: text, prefix: '', suffix: '' }); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
     pageFirst.push(offers(e.root)[0]); api.destroy(); await api.drain();
   }
   assert.notEqual(pageFirst[0], pageFirst[1]);
@@ -301,7 +301,7 @@ test('production passage and page inputs produce different first offers', async 
 
 test('a stored same-session dismissal moves the first offer on the next Ask', async t => {
   const e = env(t), api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, suggestionEligibility: SUGGESTION_ORDER, allowHelper: false });
-  api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
+  api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
   const first = offers(e.root)[0];
   e.root.querySelector('.m-question')!.fire('keydown', { key: 'Escape' }); await api.drain();
   assert.equal(records(e.data(e.namespace))[0].resolution, 'dismissed');
@@ -311,7 +311,7 @@ test('a stored same-session dismissal moves the first offer on the next Ask', as
 
 test('typing and background work leave visible offers fixed until More ideas is pressed', async t => {
   const e = env(t), api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
-  api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
+  api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
   const original = offers(e.root), field = e.root.querySelector('[aria-label="Your question"]')!;
   assert.equal(original[0], 'define'); field.value = 'How does this compare with Kelvin?'; field.fire('input'); await api.drain();
   assert.deepEqual(offers(e.root), original);
@@ -334,7 +334,7 @@ test('a questioning reader note influences the first mounted offers', async t =>
 
 test('unknown eligibility is never claimed as runnable in production observations', async t => {
   const e = env(t), api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
-  api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
+  api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
   assert.deepEqual(records(e.data(e.namespace)), []);
   const observation = [...e.data(e.namespace)].find(([key]) => key.startsWith('suggestion-observation:'))![1] as any;
   assert.deepEqual(observation.eligible, []); assert.equal(observation.eligibility, 'unknown'); assert.equal(observation.candidates.length, 8); assert.equal(observation.shown.length, 3);
@@ -344,7 +344,7 @@ test('unknown eligibility is never claimed as runnable in production observation
 test('card keyboard offers work on controls, never while typing, and Escape restores the opener', async t => {
   const e = env(t), api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
   const opener = e.document.createElement('button'); e.document.body.append(opener); opener.focus();
-  api.select(anchor()); assert.equal(e.document.activeElement, opener); button(e.root, 'Ask').click(); await api.drain();
+  api.select(anchor()); assert.equal(e.document.activeElement, opener); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain();
   const row = e.root.querySelector('.m-selection-actions')!, first = offers(e.root)[0]; row.children[1].focus();
   row.children[1].fire('keydown', { key: '/' }); const field = e.root.querySelector('[aria-label="Your question"]')!; assert.equal(e.document.activeElement, field);
   for (const key of ['1', '2', '3', 'k', 'p', 'Escape']) field.fire('keydown', { key });
@@ -372,7 +372,7 @@ test('fresh selection reaches the review host in one choice after real awaited c
       const saved = helper.store.exportThread(selection.threadId!); assert.ok(saved); assert.equal(saved.thread.sourceVersionId, selection.sourceVersionId);
       assert.equal(saved.thread.anchor.exact, anchor().exact);
     }, setVisible() {}, destroy() {} }) });
-  api.select(anchor()); button(e.root, 'Ask').click(); await api.drain(); assert.equal(requests.length, 0);
+  api.select(anchor()); button(e.root.querySelector('.m-selection-actions')!, 'Ask').click(); await api.drain(); assert.equal(requests.length, 0);
   button(e.root, 'Define it here').click(); await api.drain();
   assert.equal(opened, 1, e.root.textContent); assert.ok(requests.includes('/api/change')); assert.ok(requests.includes('/api/read/threads'));
   assert.equal(helper.jobs.list().length, 0); assert.equal(requests.some(path => path.startsWith('/api/jobs')), false);

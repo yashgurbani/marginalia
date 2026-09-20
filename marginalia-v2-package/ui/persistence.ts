@@ -263,6 +263,12 @@ function questionBuffer(io: QuestionIO) {
   return {
     bind(next: QuestionIO) { io = next; },
     get: () => structuredClone(value), unsaved: () => dirty,
+    async flush() {
+      // Follow the tail if another input arrived during this write.
+      let pending: Promise<void>;
+      do { pending = tail; await pending; } while (pending !== tail);
+      if (dirty) throw new Error('Your question is still unsaved. Keep it open and retry saving.');
+    },
     async load() {
       if (!known) { const before = revision, saved = await io.read(); if (!known && before === revision) { value = structuredClone(saved); known = true; } }
       return structuredClone(value);
