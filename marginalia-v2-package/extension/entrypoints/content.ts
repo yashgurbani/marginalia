@@ -7,7 +7,7 @@ import { browser } from 'wxt/browser';
 import { readReply, respondAsync, type MessageReply } from '../lib/respond.ts';
 import { captureSelection, locate, projectPage, type SectionMarker } from '../lib/capture.ts';
 import { allowedPage, isMessage, pageIdentity, validAnchor, validSavedMarks, type Snapshot } from '../lib/protocol.ts';
-import { clearResumeMarker, resumeThreadId } from '../../contracts/resume.ts';
+import { resumeCleanupUrl, resumeThreadId } from '../../contracts/resume.ts';
 import { HIGHLIGHT_COLOURS, highlightColour, type HighlightColour } from '../../contracts/reader.ts';
 import { createSelectionBar } from '../lib/selection-bar.ts';
 import { sameSelection, sameCommandSelection, validCommandCapture, KEEP_RECEIPT_TTL, type SelectionAction } from '../lib/selection-actions.ts';
@@ -48,7 +48,8 @@ export default defineContentScript({
       if (!threadId) return;
       try {
         const result = readReply(await browser.runtime.sendMessage({ type: 'resume', version: 1, threadId })) as { consumed?: boolean } | undefined;
-        if (result?.consumed === true && location.href === markerUrl) history.replaceState(history.state, '', clearResumeMarker(markerUrl));
+        const cleanupUrl = result?.consumed === true ? resumeCleanupUrl(location.href, markerUrl) : undefined;
+        if (cleanupUrl !== undefined) history.replaceState(history.state, '', cleanupUrl);
       } catch { /* A failed resume never blocks ordinary reading or navigation. */ }
     }
     async function instantAllowed() { return ((await instantMessage('instant-policy')) as { allowed?: boolean })?.allowed === true; }

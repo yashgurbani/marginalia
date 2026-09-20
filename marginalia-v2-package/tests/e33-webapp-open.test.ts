@@ -50,8 +50,11 @@ test('E33 actual webapp library opening preserves complete, partial and absent s
   }
   const resumed: string[] = [];
   replaceGlobals(t, { location: { origin: e.document.location.origin, assign: (href: string) => { resumed.push(href); } } });
-  await boundaries.libraryOptions.onResumePage(bundles.get('complete')!.thread);
-  assert.deepEqual(resumed, ['https://invented-venue.example/2020/complete#marginalia-resume=complete']);
+  const savedThread = bundles.get('complete')!.thread;
+  for (const hash of ['', '#section', '#/chapter/2?mode=read', '#part%20two', '#marginalia-resume=old']) {
+    await boundaries.libraryOptions.onResumePage({ ...savedThread, sourceUrl: savedThread.sourceUrl + hash });
+    assert.equal(resumed.at(-1), savedThread.sourceUrl + '#marginalia-resume=v2:complete:' + encodeURIComponent(hash));
+  }
   assert.equal(requests.filter(path => path === '/api/read/export').length, 3);
   assert.equal(requests.every(path => ['/api/position', '/api/read/export', '/api/read/replies'].includes(path)), true);
 });
