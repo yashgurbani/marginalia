@@ -12,6 +12,14 @@ async function changeExclusion(host: string, excluded: boolean) { return readRep
 async function render() {
   list.replaceChildren();
   const current = await hosts();
+  // The host supplies the source hostname, not an exclusion rule. Resolve the
+  // closest existing rule using the same dot boundary as page exclusion.
+  // Fragments remain navigation hints and can never mutate a rule.
+  const requested = location.hash?.startsWith('#site=') ? location.hash.slice(6) : '';
+  const hostname = (value: string) => value.length <= 253 && /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(value);
+  const focusHost = window.top === window && hostname(requested)
+    ? current.filter(host => hostname(host) && (requested === host || requested.endsWith('.' + host))).sort((a, b) => b.length - a.length)[0]
+    : undefined;
   if (!current.length) {
     const empty = document.createElement('li');
     empty.textContent = 'Your exclusion list is empty. With Instant help on, readable page text is sent to Codex ahead of time when you open an allowed page.';
@@ -34,6 +42,7 @@ async function render() {
       statusLine.tabIndex = -1; statusLine.focus();
     };
     row.append(remove); list.append(row);
+    if (host === focusHost) remove.focus();
   }
 }
 document.querySelector<HTMLFormElement>('#add')!.onsubmit = async event => {

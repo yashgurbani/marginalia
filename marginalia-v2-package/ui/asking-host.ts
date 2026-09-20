@@ -6,6 +6,7 @@ import { canonicalReplyData, capabilitiesForIntent, validateReply } from '../con
 import { replySaveLifecycle, type localPersistence } from './persistence.ts';
 import type { HelperClient } from './helper.ts';
 import type { ReaderSkillSelection } from '../contracts/reader-skills.ts';
+import type { AskingBlocker } from './asking/types.ts';
 
 export type AskingSelection = {
   capture: SourceCapture; anchor: QuoteAnchor; threadId?: string; sourceVersionId?: string;
@@ -37,6 +38,7 @@ export type AskingContext = {
   onCommitted(threadId: string): void;
   /** Open the existing host-owned settings surface. */
   openSettings?(): void;
+  repair?(blocker: AskingBlocker): void | Promise<void>;
   prepareReplyView?(threadId: string, replyVersionId: string): Promise<void>;
   onClosed?(): void;
   onState?(state: { phase: string }): void;
@@ -74,6 +76,7 @@ type Peer = {
     mountReply(host: HTMLElement, reply: CandidateReply, options: ReplyOptions): MountedReply;
     replyOptions(result: Result): Omit<ReplyOptions, 'sourceText' | 'hostReport' | 'onFollowup'>;
     onCommitted(result: Result): void;
+    onRepair?(blocker: AskingBlocker): void | Promise<void>;
   }): { destroy(): void };
 };
 async function loadPeer(): Promise<Peer> {
@@ -228,6 +231,7 @@ export function createT08Mount(loader: () => Promise<Peer> = loadPeer): AskingMo
       let mountingReply = '';
       card = peer.mountAskingCard(host, {
         flow, presentation: 'inline', reviewOnly: true,
+        onRepair: context.repair,
         returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
         mountConsent: (root, sheetOptions) => mountConsentSheet(root, { ...sheetOptions, onOpenSettings: context.openSettings }),
         replyOptions: result => {

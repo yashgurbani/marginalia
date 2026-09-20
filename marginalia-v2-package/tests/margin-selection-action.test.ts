@@ -55,7 +55,7 @@ test('a simulate action saves the same simulate draft a click saves, and an unpl
 
   assert.equal(await api.selectionAction('simulate', anchor()), false, 'asking is blocked without pairing');
   await api.drain();
-  assert.equal(e.root.querySelector('.m-selection')!.textContent.includes('Pair this browser in Settings to ask'), true);
+  assert.equal(e.root.querySelector('.m-selection')!.textContent.includes('Open the browser margin to continue this request'), true);
   api.destroy(); await api.drain();
 });
 
@@ -70,7 +70,7 @@ test('a blocked simulate keeps the simulation in the retained draft and sends no
   assert.equal(saved.intent, 'simulate', 'the blocked start still records what was asked for');
   assert.notEqual(saved.question, '');
   assert.deepEqual(saved.anchor, anchor());
-  assert.equal(e.root.textContent.includes('Pair this browser in Settings to ask'), true);
+  assert.equal(e.root.textContent.includes('Open the browser margin to continue this request'), true);
   assert.deepEqual(requests, []);
   const state = e.data(e.namespace).get('journal') as JournalState | undefined;
   assert.equal(state?.threads.length ?? 0, 0, 'no passage is saved and no request is prepared');
@@ -609,4 +609,137 @@ test('editing during context synchronization preserves the newer durable draft a
   held.resolve(Response.json({})); await api.drain();
   assert.equal(opens, 0); assert.equal(drafts(e, 'question:draft:')[0].question, 'These newer words must survive');
   assert.equal(journal.state.threads.length, 1, 'context creation had already been admitted, but no stale question reaches review');
+});
+
+test('C5 page repair invokes the existing trusted transition once without helper calls or replay', async t => {
+  const e = env(t); const calls: string[] = []; let transitions = 0;
+  replaceGlobals(t, { fetch: async (url: string) => { calls.push(url); throw new Error('offline'); } });
+  const controls = e.document.createElement('section'), trusted = e.document.createElement('button');
+  trusted.id = 'trusted-open'; trusted.addEventListener('click', () => { transitions++; }); controls.append(trusted);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, settingsContent: asHost(controls), readPosition: async () => undefined });
+  t.after(() => api.destroy());
+  await api.selectionAction('simulate', anchor()); await api.drain();
+  const card = e.root.querySelector('.m-asking-draft')!;
+  assert.equal(e.root.querySelector('.m-blocked')!.hidden, true);
+  assert.equal(card.querySelectorAll('.m-asking-repair').length, 1);
+  button(card, 'Open browser margin').click();
+  assert.equal(transitions, 1, 'transition stays synchronous in the initiating click');
+  await api.drain(); assert.deepEqual(calls, []);
+  assert.equal(drafts(e, 'question:draft:')[0].intent, 'simulate');
+  assert.equal((e.data(e.namespace).get('journal') as JournalState | undefined)?.threads.length ?? 0, 0);
+});
+
+test('C5 unpaired repair focuses the exact code input without issuing or exchanging a code', async t => {
+  const e = env(t); const calls: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => { calls.push(url); throw new Error('offline'); } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperOrigin: 'http://127.0.0.1:43120', readPosition: async () => undefined });
+  t.after(() => api.destroy()); api.select(anchor()); await api.drain();
+  button(e.root.querySelector('.m-selection')!, 'Pair helper').click();
+  assert.equal(e.document.activeElement.getAttribute('aria-label'), 'Pairing code');
+  const link = e.root.querySelectorAll('a').find(node => node.textContent === 'Open helper settings')!;
+  assert.equal((link as any).href, 'http://127.0.0.1:43120/#pair-helper');
+  await api.drain(); assert.deepEqual(calls, []);
+});
+
+test('C5 local site repair focuses the current-site control without changing its preference', async t => {
+  const e = env(t); await localPersistence(e.namespace).write('denied:' + new URL(capture.url).origin, true);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, readPosition: async () => undefined });
+  t.after(() => api.destroy()); api.select(anchor()); await api.drain();
+  button(e.root.querySelector('.m-selection')!, 'Review site setting').click();
+  assert.equal(e.document.activeElement.textContent, 'Allow question previews here');
+  assert.equal(await localPersistence(e.namespace).read('denied:' + new URL(capture.url).origin), true);
+});
+
+test('C5 helper-page fragment focuses manual issuance without generating a code', async t => {
+  const e = env(t); e.document.location.hash = '#pair-helper'; const calls: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => { calls.push(url); return Response.json({ browsers: [] }); } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperManagement: true, readPosition: async () => undefined });
+  t.after(() => api.destroy()); await api.drain();
+  assert.equal(e.document.activeElement.textContent, 'Show pairing code');
+  assert.equal(calls.some(url => url.includes('pairing-code')), false);
+});
+
+for (const [error, sentence, target] of [
+  ['Pairing expired. Request a new code from the local helper.', 'Get a fresh code from the helper to continue.', 'settings:helper-page'],
+  ['Pairing code did not match.', 'Enter the code shown in the helper settings.', 'settings:pairing-code'],
+] as const) test('C5 pairing repair uses the observed protocol refusal: ' + target, async t => {
+  const e = env(t); const calls: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => { calls.push(url); return url.endsWith('/pair') ? Response.json({ error }, { status: 403 }) : Response.json({ status: 'ready' }); } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperOrigin: 'http://127.0.0.1:43120', readPosition: async () => undefined });
+  t.after(() => api.destroy()); api.select(anchor()); await api.drain(); button(e.root, 'Pair helper').click();
+  const code = e.root.querySelector('[aria-label="Pairing code"]')!; code.value = '000000'; code.fire('input');
+  button(e.root, 'Pair').click(); await api.drain();
+  assert.equal(e.root.querySelector('.m-pairing-repair')!.textContent, sentence);
+  assert.equal(e.document.activeElement.dataset.focusKey, target);
+  assert.equal(calls.filter(url => url.endsWith('/pair')).length, 1);
+  assert.equal(calls.some(url => url.includes('pairing-code') || url.includes('/jobs')), false);
+  assert.throws(() => api.connection(), /Pair in the browser-owned margin/);
+  assert.equal(await localPersistence(e.namespace).read('pairing'), undefined);
+});
+
+test('C5 trusted transition waits for the exact draft to be saved and exposes local repair after failure', async t => {
+  const e = env(t); let transitions = 0;
+  const controls = e.document.createElement('section'), trusted = e.document.createElement('button'); trusted.id = 'trusted-open';
+  trusted.addEventListener('click', () => { transitions++; }); controls.append(trusted);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false, settingsContent: asHost(controls), readPosition: async () => undefined });
+  t.after(() => api.destroy()); await api.selectionAction('simulate', anchor()); await api.drain();
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  e.onWrite(async key => { if (key.startsWith('question:draft:')) throw new Error('Controlled draft save failure'); });
+  input.value = 'Keep these latest words'; input.fire('input'); await api.drain();
+  button(form, 'Open browser margin').click();
+  assert.equal(transitions, 0); assert.equal(e.document.activeElement.textContent, 'Retry saving');
+  assert.match(form.textContent, /Save this passage and question to continue/);
+  e.onWrite(async () => {}); button(e.root, 'Retry saving').click(); await api.drain();
+  assert.equal(drafts(e, 'question:draft:')[0].question, 'Keep these latest words');
+  assert.equal(transitions, 0, 'saving itself never replays the transition or request');
+  button(e.root.querySelector('.m-asking-draft')!, 'Open browser margin').click();
+  assert.equal(transitions, 1, 'a new explicit click can transition after durable saving');
+  api.destroy(); await api.drain();
+});
+
+
+test('C5 queued sync repair focuses the available control without syncing or replaying', async t => {
+  let cleanup: (() => Promise<void>) | undefined; t.after(async () => { await cleanup?.(); });
+  const e = env(t); pair(e); const h = await realReview(t, e);
+  cleanup = async () => { h.api.destroy(); await h.api.drain(); };
+  await h.api.selectionAction('simulate', anchor()); await h.api.drain();
+  const flow = h.getFlow()!; assert.equal(flow.getState().phase, 'consent');
+  const thread = h.journal.state.threads[0];
+  await h.journal.change({ id: crypto.randomUUID(), kind: 'thread-state', threadId: thread.id, state: 'parked', expectedRevision: thread.revision });
+  assert.equal(h.journal.unsaved, false); assert.equal(h.journal.state.pending.length, 1);
+  flow.editQuestion(); await flow.ask('simulate', 'Simulate this passage.'); await h.api.drain();
+  assert.equal(flow.getState().blocker, 'unsaved-context');
+  const before = h.requests.slice(), prepared = h.prepared.length;
+  button(e.root, 'Review saving').click(); await h.api.drain();
+  assert.ok(e.root.querySelector('[data-focus-key="settings:save-queued-changes"]'));
+  assert.equal(e.root.querySelector('[data-focus-key="settings:retry-saving"]'), null);
+  assert.equal(e.document.activeElement.textContent, 'Save queued changes');
+  assert.deepEqual(h.requests, before); assert.equal(h.prepared.length, prepared);
+  assert.equal(h.journal.state.pending.length, 1, 'focus leaves the queued mutation pending');
+  h.api.destroy(); await h.api.drain();
+});
+
+for (const [failure, expected] of [
+  ['Controlled local save failure', 'Retry saving'],
+  ['Local storage changed elsewhere. Controlled conflict.', 'Recover unsaved changes'],
+] as const) test('C5 saving repair prioritizes ' + expected + ' over queued synchronization', async t => {
+  let cleanup: (() => Promise<void>) | undefined; t.after(async () => { await cleanup?.(); });
+  const e = env(t); pair(e); const h = await realReview(t, e);
+  cleanup = async () => { h.api.destroy(); await h.api.drain(); };
+  await h.api.selectionAction('simulate', anchor()); await h.api.drain();
+  const flow = h.getFlow()!, thread = h.journal.state.threads[0];
+  e.onWrite(async key => { if (key === 'journal') throw new Error(failure); });
+  await assert.rejects(h.journal.change({ id: crypto.randomUUID(), kind: 'thread-state', threadId: thread.id, state: 'parked', expectedRevision: thread.revision }));
+  assert.equal(h.journal.unsaved, true);
+  button(e.root, 'Settings').click(); await h.api.drain();
+  button(e.root, 'Retry saving').click(); await h.api.drain();
+  flow.editQuestion(); await flow.ask('simulate', 'Simulate this passage.'); await h.api.drain();
+  assert.equal(flow.getState().blocker, 'unsaved-context');
+  const before = h.requests.slice(), prepared = h.prepared.length;
+  button(e.root, 'Review saving').click(); await h.api.drain();
+  assert.equal(e.document.activeElement.textContent, expected);
+  assert.ok(e.root.querySelector('[data-focus-key="settings:save-queued-changes"]'));
+  assert.deepEqual(h.requests, before); assert.equal(h.prepared.length, prepared);
+  assert.equal(h.journal.unsaved, true); assert.equal(h.journal.state.pending.length, 1);
+  h.api.destroy(); await h.api.drain();
 });

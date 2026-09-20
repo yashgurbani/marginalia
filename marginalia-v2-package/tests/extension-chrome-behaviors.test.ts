@@ -158,7 +158,8 @@ test('exclude then allow clears earlier queued intent instead of resurrecting it
 function panelHarness(action: actions.PanelAction, stale = false) {
   class Element { hidden = false; textContent = ''; addEventListener() {} replaceChildren() {} }
   const nodes = Object.fromEntries(['connection', 'exclude', 'controls', 'helper-status', 'margin', 'connect', 'disconnect', 'trusted-open'].map(id => [id, new Element()]));
-  const s = sourceSnapshot(), calls: string[] = [], delivered: unknown[] = [];
+  const s = sourceSnapshot(), calls: string[] = [], delivered: unknown[] = [], opened: string[] = [];
+  let marginOptions: any;
   let pending: actions.ActionRequest | null = { id: 'one', action, browserDocument: 'browser-document', snapshot: structuredClone(s), expires: Date.now() + 30_000 };
   if (stale) pending.snapshot.revision++;
   let tick: () => void = () => {};
@@ -170,16 +171,16 @@ function panelHarness(action: actions.PanelAction, stale = false) {
     '../../../ui/forget/client.ts': { ForgetClient: class {} }, '../../lib/panel-instant.ts': { panelInstantTransport: () => ({}) }, '../../lib/panel-controls.ts': { connectionControls: () => {} }, '../../lib/library-link.ts': {},
     '../../lib/protocol.ts': protocol, '../../lib/respond.ts': { readReply: (value: unknown) => value }, '../../lib/selection-actions.ts': actions,
     '../../lib/helper-origin.ts': { DEFAULT_HELPER_ORIGIN: 'http://127.0.0.1:43120', helperOrigin: async () => undefined },
-    '../../../ui/margin.ts': { mountMargin: async () => surface },
-    'wxt/browser': { browser: { runtime: { id: 'fixture', onMessage: { addListener() {} }, sendMessage: async (m: any) => {
+    '../../../ui/margin.ts': { mountMargin: async (_root: unknown, options: unknown) => { marginOptions = options; return surface; } },
+    'wxt/browser': { browser: { runtime: { id: 'fixture', getURL: (path: string) => 'chrome-extension://fixture' + path, onMessage: { addListener() {} }, sendMessage: async (m: any) => {
       calls.push(m.action); if (m.action === 'read') return structuredClone(s);
       if (m.action === 'take-selection-action') { const once = pending; pending = null; return once; }
       if (m.action === 'helper-status') return { enabled: false }; return null;
-    } }, tabs: {} } },
+    } }, tabs: { create: async ({ url }: { url: string }) => { opened.push(url); } } } },
   };
   const output = ts.transpileModule(readFileSync(new URL('../extension/entrypoints/panel/main.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-  vm.runInNewContext(output, { exports: {}, require: (name: string) => { if (name.endsWith('.css')) return {}; assert.ok(name in dependencies, name); return dependencies[name]; }, URLSearchParams, AbortController, Promise, Error, structuredClone, document, window, location: { hash: '' }, setInterval: (fn: () => void) => { tick = fn; return 1; }, clearInterval() {} });
-  return { delivered, calls, tick: () => tick() };
+  vm.runInNewContext(output, { exports: {}, require: (name: string) => { if (name.endsWith('.css')) return {}; assert.ok(name in dependencies, name); return dependencies[name]; }, URL, URLSearchParams, AbortController, Promise, Error, structuredClone, document, window, location: { hash: '' }, setInterval: (fn: () => void) => { tick = fn; return 1; }, clearInterval() {} });
+  return { delivered, calls, opened, repairSite: () => marginOptions.onReviewSiteSetting(), tick: () => tick() };
 }
 test('panel dispatches the frozen UI API once and never retries a blocked false result', async () => {
   for (const action of ['note', 'ask', 'simulate', 'read-later'] as const) {
@@ -710,4 +711,11 @@ test('DOM API source-bound feedback refuses focus moving into a closed embedded 
   h.setFocus('IFRAME', 1, true, true);
   const result = await h.message({ type: 'command-result', version: 1, request: request.request, document: captured.document, revision: captured.revision, status: 'Kept' });
   assert.equal(result.value, false); assert.equal(h.statuses.includes('Kept'), false); assert.equal(h.forbiddenReads(), 0);
+});
+
+test('C5 panel exclusion repair derives its destination from the mounted source and sends no request', async () => {
+  const h = panelHarness('ask'); await flush(); const before = h.calls.slice();
+  await h.repairSite();
+  assert.deepEqual(h.opened, ['chrome-extension://fixture/options.html#site=example.org']);
+  assert.deepEqual(h.calls, before);
 });

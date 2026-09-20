@@ -101,6 +101,11 @@ async function refresh() {
         signal: mountAbort.signal,
         instantHelp: panelInstantTransport(boundSend),
         settingsContent: controls,
+        onReviewSiteSetting: () => {
+          if (!valid() || embedded || current?.document !== next.document || current.capture.url !== next.capture.url) return;
+          const hostname = new URL(next.capture.url).hostname;
+          return browser.tabs.create({ url: browser.runtime.getURL('/options.html') + '#site=' + hostname }).then(() => {});
+        },
         forget: {
           transport: new ForgetClient({ request: async (_path, body, signal) => { signal?.throwIfAborted(); return boundSend('instant-forget', { pageId: (body as { pageId: string }).pageId }); } }),
           getPageId: async signal => { signal?.throwIfAborted(); return ((await boundSend('instant-status')) as InstantPage | null)?.pageId; },
@@ -115,7 +120,7 @@ async function refresh() {
         },
         authorizeHelperSend: async sourceUrl => {
           const result = await boundSend('authorize-helper-send', { sourceUrl });
-          if ((result as { allowed?: boolean })?.allowed !== true) throw new Error('This site is excluded. Allow it in extension options before saving to the local helper.');
+          if ((result as { allowed?: boolean })?.allowed !== true) throw Object.assign(new Error('This site is excluded. Allow it in extension options before saving to the local helper.'), { name: 'ExcludedSite' });
         },
         onSource: anchor => { void boundSend('scroll', { document: next.document, anchor }).catch(error => { status.textContent = String(error); }); },
         onHighlight: anchor => { void boundSend('highlight', { document: next.document, anchor }).catch(() => {}); },

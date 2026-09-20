@@ -1,4 +1,6 @@
 import { mountAskingDraft } from './asking/mount.ts';
+import { blockerActions, blockerMessages } from './asking/flow.ts';
+import type { AskingBlocker } from './asking/types.ts';
 import { createAskingHost } from './asking/helper-adapter.ts';
 import { rankEligibleSuggestions, suggestionBlock, suggestionPage, suggestionOffer, SUGGESTION_ORDER } from './suggestion-policy.ts';
 import type { Intent } from '../contracts/reply.ts';
@@ -9,7 +11,7 @@ import { el, button } from './dom.ts';
 import { localPersistence, documentJournal, documentDraft, documentQuestion, unsavedDrafts, unsavedQuestions, sourceBoundJournal, retryDraftMutation, draftAfterResolution, keepDeviceConflict, resolveHelperConflict, replySaveLifecycle, replyIsRemoved, SUGGESTION_POLICY_VERSION, type SuggestionExposureResolution, type MarginDraft, type CachedReply } from './persistence.ts';
 import { anchorAt, readingAnchorAt, orderedThreads, outgoingPreview, sourceLocation, pageDefinition, displayPosition, egressRecord } from './margin-model.ts';
 import type { JobSnapshot } from '../contracts/jobs.ts';
-import { HelperClient, attachmentTextHash, documentHelper, forgetPairingIfCurrent } from './helper.ts';
+import { HelperClient, HelperTransportError, HelperHttpError, attachmentTextHash, documentHelper, forgetPairingIfCurrent } from './helper.ts';
 import { mountHelperManagement } from './helper-management.ts';
 import { mountNoteEditor } from './note-editor.ts';
 import { retainedCopiesSection } from './retained-copies.ts';
@@ -54,6 +56,8 @@ export type MarginOptions = {
   helperManagement?: boolean;
   /** Existing host-owned controls to place inside the reader's Settings surface. */
   settingsContent?: HTMLElement;
+  /** Host-owned navigation to the current source site's existing exclusion entry. */
+  onReviewSiteSetting?: () => void | Promise<void>;
   /** Canonical library snapshot, not an inserted journal record. */
   savedThread?: Thread;
   draftScope?: string;
@@ -237,7 +241,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }) : undefined;
   let suspended = false, readingPosition = 0, hydrationFinished = false, editorGeneration = 0;
   let alignedReadingPosition = -1;
-  let pairingDraft = '', questionDraft: QuestionDraft | undefined, retainedRequests: RetainedRequest[] = [];
+  let pairingDraft = '', pairingFailure: 'expired' | 'mismatch' | undefined, questionDraft: QuestionDraft | undefined, retainedRequests: RetainedRequest[] = [];
   const updateManagement = () => { if (!suspended && !setup.hidden && !shell.classList.contains('is-collapsed')) management?.open(); else management?.close(); };
   let sectionIndex = 0, held = false, draft: Draft | undefined, selected: QuoteAnchor | undefined;
   let replacementSelection: { anchor: QuoteAnchor; target: 'note' | 'question' } | undefined;
@@ -414,6 +418,72 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   rail.append(openButton);
   const collapse = button('Collapse', closePanel);
   const openSettings = () => { setup.hidden = false; updateManagement(); void refreshDiagnostics(); setup.querySelector<HTMLElement>('input,button')?.focus(); };
+  const repairButtons = new WeakMap<HTMLElement, HTMLButtonElement>();
+  function clearRepair(message: HTMLElement) { repairButtons.get(message)?.remove(); repairButtons.delete(message); }
+  function showRepair(message: HTMLElement, blocker: AskingBlocker) {
+    clearRepair(message); message.textContent = blockerMessages[blocker];
+    const action = button(blockerActions[blocker], () => {
+      if (questionBuffer.unsaved()) {
+        showRepair(message, 'unsaved-context'); focusSavingRepair(); return;
+      }
+      try { void Promise.resolve(repairRequest(blocker)).catch(() => { if (alive()) message.textContent = 'The repair view could not be opened; your request is retained.'; }); }
+      catch { message.textContent = 'The repair view could not be opened; your request is retained.'; }
+    });
+    action.className = 'm-asking-repair'; message.parentElement?.append(action); repairButtons.set(message, action);
+  }
+  function focusSetting(key: string) {
+    setup.hidden = false; renderSettings(); updateManagement();
+    const target = settingsBody.querySelector<HTMLElement>(`[data-focus-key="${key}"]`);
+    target?.focus(); target?.scrollIntoView({ block: 'nearest' });
+  }
+  function focusSavingRepair() {
+    setup.hidden = false; renderSettings(); updateManagement();
+    // Local durability/conflict recovery comes before helper synchronization.
+    // Inspect the rendered controls: a durable outbox has no Retry saving button.
+    const target = ['settings:recover-unsaved-changes', 'settings:retry-saving', 'settings:save-queued-changes']
+      .map(key => settingsBody.querySelector<HTMLElement>(`[data-focus-key="${key}"]`)).find(Boolean);
+    target?.focus(); target?.scrollIntoView({ block: 'nearest' });
+  }
+  function repairInstructions(title: string, text: string) {
+    setup.hidden = false; updateManagement();
+    let target = setup.querySelector<HTMLElement>('.m-repair-instructions');
+    if (!target) { target = el('section', undefined, 'm-repair-instructions'); setup.prepend(target); }
+    target.replaceChildren(el('h3', title), el('p', text)); target.tabIndex = -1;
+    target.focus(); target.scrollIntoView({ block: 'nearest' });
+  }
+  function repairRequest(blocker: AskingBlocker) {
+    if (!alive()) return;
+    if (questionBuffer.unsaved() || blocker === 'unsaved-context') {
+      focusSavingRepair(); return;
+    }
+    // A page-controlled presentation has exactly one privileged transition.
+    // Invoking its existing host button preserves the initiating user gesture.
+    if (options.allowHelper === false) {
+      const transition = options.settingsContent?.querySelector<HTMLButtonElement>('#trusted-open');
+      if (transition && !transition.disabled) transition.click();
+      else repairInstructions('Open browser margin', 'Open Marginalia from the browser toolbar on this page to continue your retained request.');
+      return;
+    }
+    if (blocker === 'unpaired') { focusSetting('settings:pairing-code'); return; }
+    if (blocker === 'excluded') {
+      if (denied) { focusSetting('settings:question-preview'); return; }
+      return options.onReviewSiteSetting?.();
+    }
+    if (blocker === 'disconnected') { focusSetting('settings:check-how-things-are'); return; }
+    if (blocker === 'signed-out') {
+      repairInstructions('Codex sign-in', 'Open Codex on this computer and complete sign-in, then return to the retained request and choose Continue. For a separate configured Codex home, sign in using that home and executable.'); return;
+    }
+    if (blocker === 'runtime-unavailable' || blocker === 'helper-off') {
+      repairInstructions('Local setup', blocker === 'helper-off'
+        ? 'In the Marginalia source package folder, run npm start to start the installed local helper, then return to your retained request.'
+        : 'Open Codex on this computer and check that it starts and is signed in. Use Node 24 and the installed Codex executable; for a separate configured home, check both configured paths. Return to your retained request after setup.'); return;
+    }
+    if (blocker === 'unsupported') {
+      repairInstructions('Retained request', 'Your question and captured passage are retained. Open a supported HTTP or HTTPS page, select the intended passage, and review the attachment before continuing.'); return;
+    }
+    if (blocker === 'expired-preview' && questionDraft) { showQuestion(questionDraft); return; }
+    repairInstructions('Response status', 'The response could not be confirmed. Keep this retained request and use its recorded status control when available before reviewing another request.');
+  }
   const settingsButton = button('Settings', () => { if (setup.hidden) openSettings(); else setup.hidden = true; });
   const barActions: HTMLElement[] = [];
   const libraryButton = button('Library', () => {
@@ -796,9 +866,13 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   /** Why Ask cannot run right now, in the owner's words. Empty string means Ask is available. */
   function askBlockedReason() {
-    if (denied) return 'Asking is off on this site. Keep and Note work here.';
-    if (options.allowHelper === false || !helper?.token) return 'Pair this browser in Settings to ask. Keep and Note work now.';
-    return '';
+    const blocker = initialAskBlocker(); return blocker ? blockerMessages[blocker] : '';
+  }
+  function initialAskBlocker(): AskingBlocker | undefined {
+    if (options.allowHelper === false) return 'browser-owned-required';
+    if (denied) return 'excluded';
+    if (!['http:', 'https:'].includes(new URL(capture.url).protocol)) return 'unsupported';
+    if (!helper?.token) return 'unpaired';
   }
   function renderSelectionActions(anchor: QuoteAnchor) {
     const instantGeneration = ++instantSelectionGeneration;
@@ -840,7 +914,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       const sentence = el('p', blocked); sentence.id = instance + '-ask-blocked';
       blockedBlock.append(sentence);
       // Pairing in this surface cannot grant send authority, so it offers no route there.
-      if (!denied && options.allowHelper !== false) blockedBlock.append(button('Open Settings', () => openSettings()));
+      showRepair(sentence, initialAskBlocker()!);
       // No aria-disabled: Ask still opens the local question draft, and marking a
       // working control disabled would mislead a screen reader.
       askButton.setAttribute('aria-describedby', sentence.id);
@@ -1085,6 +1159,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   }
   function showQuestion(value: AskingSelection) {
     questionDraft = structuredClone(value); questionArea.hidden = false; askingHost.hidden = true; questionForm.hidden = false;
+    const selectionBlocker = selectionCard.querySelector<HTMLElement>('.m-blocked'); if (selectionBlocker) selectionBlocker.hidden = true;
     askingMount?.setVisible(false); showPanel(); hold(sectionFor(displayPosition(value.anchor, capture) ?? readingPosition));
     draftMount?.destroy();
     const message = el('p', undefined, 'm-meta'), reviewButton = button('Ask', () => {});
@@ -1126,12 +1201,17 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         onClose: () => closeQuestion(), onKeep: () => { void keep(current.anchor); }, onPark: () => { void keep(current.anchor, true); },
       });
       draftMount.message.className = 'm-meta';
+      const initialBlocker = initialAskBlocker();
+      if (initialBlocker) showRepair(draftMount.message, initialBlocker);
       if (current.question.trim() && !askBlockedReason()) draftMount.submit.textContent = current.intent === 'simulate' ? 'Continue simulation' : 'Continue Ask';
       const quote = el('blockquote', current.anchor.kind === 'whole-page' ? 'Whole page' : current.anchor.exact);
       quote.hidden = !!selected && canonicalReplyData(selected) === canonicalReplyData(current.anchor);
       questionForm.prepend(quote);
       if (current.answeredNote) questionForm.prepend(el('p', current.answeredNote.text, 'm-note'));
-      if (questionAttachmentSaveFailed) draftMount.message.textContent = 'This question attachment is not saved yet. Retry saving in Settings; your text is retained.';
+      if (questionAttachmentSaveFailed) {
+        showRepair(draftMount.message, 'unsaved-context');
+        draftMount.message.textContent = 'This question attachment is not saved yet.';
+      }
       placeItems();
     })).catch(fail);
     placeItems();
@@ -1141,6 +1221,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     if (!alive()) return;
     resolveSuggestionExposure(resolution); activeSuggestionExposure = undefined;
     ++questionRequest; ++draftGeneration; questionArea.hidden = true; draftMount?.destroy(); draftMount = undefined; askingMount?.destroy(); askingMount = undefined;
+    const selectionBlocker = selectionCard.querySelector<HTMLElement>('.m-blocked'); if (selectionBlocker) selectionBlocker.hidden = false;
     if (lastOpener?.isConnected) lastOpener.focus({ preventScroll: true }); else readingTitle.focus({ preventScroll: true });
   }
   function archiveQuestion() {
@@ -1205,30 +1286,41 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   async function openQuestionWithHelper(message: HTMLElement, button: HTMLButtonElement) {
     if (!questionDraft || questionSaving || !alive()) return;
     const request = ++questionRequest; questionSaving = true; button.disabled = true;
+    let blocker: AskingBlocker | undefined = initialAskBlocker();
+    clearRepair(message);
     message.textContent = 'Preparing request.';
     try {
-      if (denied) throw new Error('Question previews are blocked on this device for this site. Change that preference in Settings.');
+      if (blocker) throw new Error(blockerMessages[blocker]);
       // A blocked request is a question draft, not an empty saved thread.
       // Check the live connection here too: selection-card state can be stale.
       const client = trustedHelper(), connection = client.connectionVersion;
       const selected = structuredClone(questionDraft), generation = draftGeneration;
       const assertCurrent = () => {
         if (!alive() || request !== questionRequest || generation !== draftGeneration || denied || trustedHelper() !== client || client.connectionVersion !== connection
-          || questionDraft?.question !== selected.question || questionDraft.context !== selected.context || questionDraft.intent !== selected.intent)
+          || questionDraft?.question !== selected.question || questionDraft.context !== selected.context || questionDraft.intent !== selected.intent) {
+          blocker = undefined;
           throw new Error('The request context changed. Your question is retained for review.');
+        }
       };
       if (!selected.threadId) {
+        blocker = 'unsaved-context';
         await saveQuestion(selected); assertCurrent();
+        blocker = 'disconnected';
         await options.authorizeHelperSend?.(selected.capture.url); assertCurrent();
         // Reuse the authenticated read and its response validation. A token alone
         // does not establish helper or runtime availability. The review checks again.
+        blocker = 'invalid-response';
         const availability = await createAskingHost({
           request: (path, body) => client.request(path, body, signal),
           get: path => client.request(path, undefined, signal),
           replies: id => client.replies(id),
         }).availability(signal);
         assertCurrent();
-        if (!availability.configured || !availability.available) throw new Error('Finish the Codex setup on this computer to continue.');
+        if (!availability.configured || !availability.available) {
+          blocker = diagnosticsEpoch === client.connectionVersion && diagnostics.snapshot?.codex.login === 'signed-out' ? 'signed-out' : 'runtime-unavailable';
+          throw new Error(blockerMessages[blocker]);
+        }
+        blocker = 'unsaved-context';
         selected.keepMutation ??= { id: id(), kind: 'keep', threadId: id(), capture: selected.capture, anchor: selected.anchor };
         await saveQuestion(selected); assertCurrent(); await change(selected.keepMutation); assertCurrent();
         selected.threadId = selected.keepMutation.threadId; await saveQuestion(selected);
@@ -1242,6 +1334,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       await saveQuestion(selected);
       assertCurrent();
       askingMount ??= (options.asking ?? createT08Mount())(askingHost, {
+        repair: repairRequest,
         helper: trustedHelper, signal,
         surface: options.allowHelper === false ? 'floating' : trustedHelper().origin === location.origin ? 'localhost' : 'native-panel',
         access: () => ({ excluded: denied, supported: ['http:', 'https:'].includes(new URL(capture.url).protocol) }),
@@ -1280,11 +1373,20 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       draftMount?.setVisible(false); questionForm.hidden = true; askingMount.setVisible(!suspended && !questionArea.hidden);
       renderQuestionContinuation();
       const opening = askingMount;
+      blocker = undefined;
       activityJobId = selected.resumeJobId;
       await opening.open(selected);
       if (!alive() || request !== questionRequest) opening.setVisible(false);
     } catch (error) {
-      if (alive() && request === questionRequest) { askingMount?.setVisible(false); questionForm.hidden = false; draftMount?.setVisible(true); (draftMount?.message ?? message).textContent = error instanceof Error ? error.message : 'The review could not be opened. The draft is retained; request outcome is unconfirmed.'; }
+      if (alive() && request === questionRequest) {
+        askingMount?.setVisible(false); questionForm.hidden = false; draftMount?.setVisible(true);
+        const target = draftMount?.message ?? message;
+        if (error instanceof HelperTransportError) blocker = error.kind === 'response-unknown' ? 'invalid-response' : 'disconnected';
+        if (error instanceof HelperHttpError && error.status === 401) blocker = 'unpaired';
+        if (error instanceof Error && error.name === 'ExcludedSite') blocker = 'excluded';
+        if (blocker) showRepair(target, blocker);
+        else target.textContent = error instanceof Error ? error.message : 'The review could not be opened. The draft is retained; request outcome is unconfirmed.';
+      }
     } finally { questionSaving = false; button.disabled = false; if (alive()) renderQuestionContinuation(); }
   }
 
@@ -1949,17 +2051,35 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       if (questionWasAttachmentFailed && questionDraft && !questionArea.hidden) { showQuestion(questionDraft); announce('Question draft attachment saved on this device. The question remains a draft.'); }
       await persistence.suggestions.retry(suggestionScope);
       draftSaveFailed = false;
+      if (!questionWasAttachmentFailed && questionDraft && !questionArea.hidden && !questionForm.hidden) showQuestion(questionDraft);
       changed(); renderThreads(); renderCompose(); renderSettings();
     })));
     if (options.allowHelper === false) settingsBody.append(el('p', 'Open the browser-owned margin or localhost page to connect the local helper.', 'm-meta'));
     else {
-      const code = el('input'); code.type = 'text'; code.inputMode = 'numeric'; code.autocomplete = 'one-time-code'; code.maxLength = 16; code.setAttribute('aria-label', 'Pairing code'); code.placeholder = 'Six-digit helper code'; code.value = pairingDraft;
+      const code = el('input'); code.dataset.focusKey = 'settings:pairing-code'; code.type = 'text'; code.inputMode = 'numeric'; code.autocomplete = 'one-time-code'; code.maxLength = 16; code.setAttribute('aria-label', 'Pairing code'); code.placeholder = 'Six-digit helper code'; code.value = pairingDraft;
+      if (pairingFailure) settingsBody.append(el('p', pairingFailure === 'expired'
+        ? 'Get a fresh code from the helper to continue.' : 'Enter the code shown in the helper settings.', 'm-pairing-repair'));
+      if (helper) {
+        const helperSettings = el('a', 'Open helper settings'); helperSettings.dataset.focusKey = 'settings:helper-page'; helperSettings.href = helper.origin + '/#pair-helper'; helperSettings.target = '_blank'; helperSettings.rel = 'noopener noreferrer';
+        settingsBody.append(helperSettings);
+      }
       code.addEventListener('input', () => { pairingDraft = code.value; });
       settingsBody.append(el('p', 'Reading and notes work without an account. Pairing does not establish model login, readiness or permission to send.', 'm-meta'), label('Pairing code', code), actions(
         actionButton('settings:' + 'pair', 'Pair', () => safely(async () => {
           const client = helper; if (!client) throw new Error('The trusted helper connection is unavailable.');
           const previousToken = client.token;
-          await client.pair(code.value, signal); const epoch = client.connectionVersion;
+          try { await client.pair(code.value, signal); }
+          catch (error) {
+            // These two exact existing protocol errors are the only evidence for
+            // expiry/exhaustion versus mismatch. Transport failures stay unknown.
+            if (error instanceof HelperHttpError && error.status === 403 &&
+                ['Pairing expired. Request a new code from the local helper.', 'Pairing code did not match.'].includes(error.message)) {
+              pairingFailure = error.message.startsWith('Pairing expired.') ? 'expired' : 'mismatch';
+              focusSetting(pairingFailure === 'expired' ? 'settings:helper-page' : 'settings:pairing-code'); return;
+            }
+            throw error;
+          }
+          const epoch = client.connectionVersion;
           try { await locked(async () => { if (!alive() || client !== helper || client.connectionVersion !== epoch || !client.token) throw new Error('Pairing changed before local saving.'); await persistence.write('pairing', { origin: client.origin, token: client.token }); }); }
           catch {
             // A failed atomic local write must not leave an unsaved new token
@@ -1968,7 +2088,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
             throw new Error('The new pairing was not saved on this device. The earlier local pairing is retained. The helper may still list the new pairing; inspect its paired browsers before retrying.');
           }
           if (!alive() || client !== helper || client.connectionVersion !== epoch) return;
-          pairingDraft = ''; code.value = ''; channel?.postMessage('pairing-changed'); renderSettings();
+          pairingDraft = ''; pairingFailure = undefined; code.value = ''; channel?.postMessage('pairing-changed'); renderSettings();
           // Pairing only restores the draft. Its explicit Continue action opens review.
           if (questionDraft && !questionSaving) { setup.hidden = true; showQuestion(questionDraft); }
           renderQuestionContinuation(); announce('Paired with the local helper. No queued work or model request was sent.');
@@ -2131,6 +2251,9 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   } catch { announce('Local storage could not be restored. Current drafts remain in this document only; export before closing.', true); }
   if (!alive()) return api;
   hydrationFinished = true; renderCompose(); renderThreads(); renderSettings(); renderRetainedRequests();
+  if (options.helperManagement && document.location.hash === '#pair-helper' && managementHost.querySelector('button')) {
+    setup.hidden = false; updateManagement(); managementHost.querySelector<HTMLButtonElement>('button')?.focus();
+  }
   renderQuestionContinuation();
   // Exposure history is independent of reader hydration. Read at most 64 entries
   // per page and yield between pages; preserve malformed rows for inspection.

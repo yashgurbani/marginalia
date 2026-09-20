@@ -11,18 +11,25 @@ const retryable = new Set<JobSnapshot['state']>(['failed', 'cancelled', 'timed_o
 const activeOrder: Partial<Record<JobSnapshot['state'], number>> = { queued: 0, preparing: 1, sending: 2, running: 3, validating: 4, cancel_requested: 5 };
 const intents = new Set<Intent>(['define', 'simulate', 'instantiate', 'derive', 'diagram', 'evidence', 'explore', 'unsure']);
 const inactive = () => new Error('This review changed or closed. Review the current request again.');
-const messages: Record<AskingBlocker, string> = {
-  excluded: 'This site is excluded. Reading and local notes remain available.',
-  unsupported: 'Asking is unavailable for this page. Your saved work remains available.',
-  'browser-owned-required': 'Open the browser-owned margin to review and approve a request.',
-  unpaired: 'Pair with the local helper before asking. Your passage and note remain here.',
-  'helper-off': 'The local helper is off. Reading and local saving do not require it.',
-  disconnected: 'The local helper connection is unavailable. Reading and local notes remain here.',
-  'signed-out': 'Codex is signed out in the dedicated local setup. Reading and local notes remain available.',
-  'runtime-unavailable': 'Codex execution is not ready. Pairing alone does not make it available. Nothing was asked.',
-  'invalid-response': 'The response was unavailable or did not match this request. Review it again; nothing was asked.',
-  'unsaved-context': 'This exact passage and note could not be confirmed saved. Nothing was asked. Your note remains unchanged.',
-  'expired-preview': 'This preview expired or changed. Review a new request; nothing was asked.',
+export const blockerMessages: Record<AskingBlocker, string> = {
+  excluded: 'Review this site’s setting to continue your request.',
+  unsupported: 'Choose a supported web page for this request.',
+  'browser-owned-required': 'Open the browser margin to continue this request.',
+  unpaired: 'Pair this browser with the local helper to continue.',
+  'helper-off': 'Start the local helper to continue this request.',
+  disconnected: 'Restore the helper connection to continue this request.',
+  'signed-out': 'Sign in to Codex on this computer to continue.',
+  'runtime-unavailable': 'Finish the Codex setup on this computer to continue.',
+  'invalid-response': 'Review the response status before continuing.',
+  'unsaved-context': 'Save this passage and question to continue.',
+  'expired-preview': 'Review the current request to continue.',
+};
+export const blockerActions: Record<AskingBlocker, string> = {
+  excluded: 'Review site setting', unsupported: 'Open saved request',
+  'browser-owned-required': 'Open browser margin', unpaired: 'Pair helper',
+  'helper-off': 'Open setup', disconnected: 'Check connection',
+  'signed-out': 'Open sign-in steps', 'runtime-unavailable': 'Open setup',
+  'invalid-response': 'Check status', 'unsaved-context': 'Review saving', 'expired-preview': 'Review request',
 };
 type Operation = {
   abort: AbortController; access: AskingAccess; mode: 'send' | 'read'; id: string;
@@ -58,9 +65,9 @@ export function createAskingFlow(options: AskingOptions) {
 
   function accessBlocker(a: AskingAccess, mode: 'send' | 'read'): AskingBlocker | undefined {
     if (mode === 'send') {
+      if (!a.canAuthorize || a.surface === 'floating') return 'browser-owned-required';
       if (a.excluded) return 'excluded';
       if (!a.supported) return 'unsupported';
-      if (!a.canAuthorize || a.surface === 'floating') return 'browser-owned-required';
     }
     if (a.helper === 'off') return 'helper-off';
     if (a.helper !== 'connected') return 'disconnected';
@@ -104,7 +111,7 @@ export function createAskingFlow(options: AskingOptions) {
     }
   }
   function blocked(blocker: AskingBlocker) {
-    publish({ phase: blocker === 'excluded' ? 'excluded' : 'unavailable', blocker, message: messages[blocker], preparation: undefined });
+    publish({ phase: blocker === 'excluded' ? 'excluded' : 'unavailable', blocker, message: blockerMessages[blocker], preparation: undefined });
   }
   function invalidate() {
     if (closed || invalidated) return;
@@ -191,10 +198,10 @@ export function createAskingFlow(options: AskingOptions) {
         const copy = hostCopy(prepared); assertPreparation(copy, expected, binding, now());
         op.preparation = copy;
         const phase = copy.preview.state === 'ready' ? 'consent' : copy.preview.state;
-        publish({ phase, blocker: undefined, preparation: copy, message: phase === 'consent'
+        publish({ phase, blocker: phase === 'excluded' ? 'excluded' : undefined, preparation: copy, message: phase === 'consent'
           ? (kind === 'note-followup' ? 'Review a new request in this thread. It includes the original note version and a saved-parent excerpt; it does not resume the old provider session.'
             : 'Review the exact outgoing text, recipient, and permission before asking.')
-          : phase === 'denied' ? 'Sending is denied for this site. Change the decision in Settings before asking again.' : messages.excluded });
+          : phase === 'denied' ? 'Sending is denied for this site. Change the decision in Settings before asking again.' : blockerMessages.excluded });
       } catch {
         if (current(op) && state.blocker !== 'runtime-unavailable') blocked(stage);
       } finally { op.preparing = undefined; if (current(op)) publish({}); }
@@ -334,7 +341,7 @@ export function createAskingFlow(options: AskingOptions) {
       publish({ phase: 'committed', blocker: undefined, message: 'Ready. Saved in this thread.', provisional: undefined, result });
     } catch {
       if (current(op) && receiveEpoch === op.receiveEpoch) publish({ phase: 'reply-unavailable', blocker: 'invalid-response',
-        message: 'This work completed, but its matching saved reply could not be opened. Check again without asking twice.' });
+        message: 'The completed reply could not be opened; check its saved status before continuing.' });
     }
   }
   function refresh(): Promise<void> {

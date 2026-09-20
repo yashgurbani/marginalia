@@ -802,7 +802,7 @@ test('stock runtime disclosure reaches the sheet and a refreshed version never g
   const unavailable = harness();
   unavailable.host.availability = async () => ({ configured: false, available: false, unverified: ['settings'], disclosureVersion: 'stock-v1' });
   await unavailable.flow.ask('define', 'Explain');
-  assert.equal(unavailable.flow.getState().message, 'Codex execution is not ready. Pairing alone does not make it available. Nothing was asked.');
+  assert.equal(unavailable.flow.getState().message, 'Finish the Codex setup on this computer to continue.');
   assert.equal(unavailable.count('prepare'), 0);
 });
 

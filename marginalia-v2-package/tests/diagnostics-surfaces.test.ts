@@ -69,3 +69,19 @@ test('options uses extension read transport, drops late address results, and sup
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.length, before); assert.equal(document.querySelector('#diagnostics')!.textContent, '');
 });
+
+for (const [fragment, expected, excludedHosts = ['example.org'], focusHost = 'example.org'] of [['#site=example.org', true], ['#site=example%2eorg', false], ['#site=other.org', false], ['#site=EXAMPLE.org', false], ['#site=example.org&code=123456', false], ['#site=sub.example.org', true], ['#site=notexample.org', false], ['#site=example.org.other', false], ['#site=deep.sub.example.org', true, ['example.org', 'sub.example.org'], 'sub.example.org'], ['#site=sub.example.org', true, ['sub.example.org', 'example.org'], 'sub.example.org']] as const) test('C5 options focuses only a literal matching exclusion: ' + fragment, async t => {
+  const { document, root } = dom(t); storage(t); document.location.hash = fragment;
+  for (const [tag, id] of [['ul', 'sites'], ['form', 'add'], ['input', 'site-input'], ['p', 'status'], ['input', 'helper-origin'], ['p', 'helper-origin-status'], ['section', 'diagnostics'], ['form', 'helper-origin-form']]) {
+    const node = document.createElement(tag); node.id = id; root.append(node);
+  }
+  const mockWindow = window as any; mockWindow.top = mockWindow; const writes: unknown[] = [];
+  replaceGlobals(t, { __c5Browser: { storage: { local: { get: async () => ({ excludedHosts, helperOrigin: origin }), set: async (value: unknown) => { writes.push(value); } }, onChanged: { addListener() {} } }, runtime: { sendMessage: async (value: unknown) => { writes.push(value); } } }, fetch: async () => { throw new Error('offline'); } });
+  const browserModule = 'c5:browser:' + encodeURIComponent(fragment + JSON.stringify(excludedHosts));
+  const hook = registerHooks({ resolve(specifier, context, next) { return specifier === 'wxt/browser' ? { url: browserModule, shortCircuit: true } : next(specifier, context); }, load(url, context, next) { return url === browserModule ? { format: 'module', source: 'export const browser = globalThis.__c5Browser;', shortCircuit: true } : next(url, context); } });
+  t.after(() => { mockWindow.fire('pagehide'); hook.deregister(); });
+  await import('../extension/entrypoints/options/main.ts?c5=' + encodeURIComponent(fragment + JSON.stringify(excludedHosts)));
+  await until(() => root.querySelectorAll('button').some(node => node.textContent === 'Stop excluding'));
+  assert.equal(document.activeElement.getAttribute('aria-label') === 'Stop excluding ' + focusHost, expected);
+  assert.deepEqual(writes, []);
+});

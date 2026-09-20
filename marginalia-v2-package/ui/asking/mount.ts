@@ -1,5 +1,6 @@
 import type { Intent } from '../../contracts/reply.ts';
-import type { AskingFlow } from './flow.ts';
+import { blockerActions, type AskingFlow } from './flow.ts';
+import type { AskingBlocker } from './types.ts';
 import type { AskingExposure, AskingState, AskingSuggestion, CompletionTrace } from './types.ts';
 import { connectAskingSurfaces, type AskingSurfaces } from './surfaces.ts';
 import { SUGGESTION_LABELS } from '../suggestion-policy.ts';
@@ -21,6 +22,8 @@ export type AskingCardOptions = Omit<AskingSurfaces, 'consentRoot' | 'replyRoot'
   /** Prior binding is invalidated before this callback. Remount only with the newly confirmed binding. */
   onChange?(): void | Promise<void>;
   onOpenBrowserMargin?(): void | Promise<void>;
+  /** Navigation only; the host retains all repair authority. */
+  onRepair?(blocker: AskingBlocker): void | Promise<void>;
   onHoldReading?(): void;
   onCommitted?: AskingSurfaces['onCommitted'];
 };
@@ -108,6 +111,17 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
   const close = action('Dismiss', () => destroy());
   actions.append(keep, ask, park, source, change, handoff, close);
   const cancel = action('Cancel', () => flow.cancel()), check = action('Check status', () => flow.refresh()), retry = action('Review retry', () => flow.retry());
+  const repair = make('button'); repair.type = 'button'; repair.hidden = true;
+  repair.className = 'm-asking-repair';
+  repair.addEventListener('click', () => {
+    const state = flow.getState();
+    if (destroyed || repair.disabled || !state.blocker || !['unavailable', 'excluded', 'reply-unavailable'].includes(state.phase)) return;
+    if (state.blocker === 'invalid-response' && state.canCheck) { void flow.refresh(); return; }
+    // Keep the existing browser transition in the initiating user gesture.
+    try { void Promise.resolve(options.onRepair?.(state.blocker)).catch(() => { if (!destroyed) localStatus.textContent = 'The repair view could not be opened; your request is retained.'; }); }
+    catch { localStatus.textContent = 'The repair view could not be opened; your request is retained.'; }
+  }, { signal: abort.signal });
+  root.append(repair);
   workActions.append(cancel, check, retry);
   let intent: Intent = binding.answeredNote ? 'unsure' : 'define';
   const offered = hostCopy(options.suggestions ?? [{ id: 'context', label: binding.answeredNote ? 'Ask about my note' : 'Define in context', intent,
@@ -161,6 +175,9 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
     definition.hidden = !state.definition; noDefinition.hidden = !!state.definition || state.phase !== 'local';
     const definitionText = state.definition?.text ?? ''; if (quote.textContent !== definitionText) quote.textContent = definitionText;
     if (status.textContent !== state.message) status.textContent = state.message;
+    const repairing = !!state.blocker && ['unavailable', 'excluded', 'reply-unavailable'].includes(state.phase);
+    repair.hidden = !repairing || !options.onRepair;
+    if (repairing) repair.textContent = blockerActions[state.blocker!];
     reviewEdit.hidden = !(editing && state.phase === 'suggestions') && !flow.canEditQuestion?.();
     reviewInput.readOnly = !editing && !flow.canEditQuestion?.();
     if (!editing && state.phase === 'consent') reviewInput.value = state.question ?? '';
@@ -198,12 +215,12 @@ export function mountAskingCard(host: HTMLElement, options: AskingCardOptions) {
     ask.disabled = !state.canAsk || busyButtons.has(ask);
     cancel.hidden = !state.canCancel && !['cancel_requested', 'submitting', 'sending', 'working', 'provisional', 'unknown'].includes(state.phase);
     cancel.disabled = !state.canCancel || busyButtons.has(cancel);
-    check.hidden = !state.canCheck; check.disabled = !state.canCheck || busyButtons.has(check);
+    check.hidden = !state.canCheck || repairing; check.disabled = !state.canCheck || busyButtons.has(check);
     retry.hidden = !state.canRetry; retry.disabled = !state.canRetry || busyButtons.has(retry);
     const stale = state.phase === 'stale' || state.phase === 'closed';
     for (const button of [keep, park, source, change]) button.disabled = stale || busyButtons.has(button);
     close.disabled = busyButtons.has(close);
-    handoff.hidden = !options.onOpenBrowserMargin || state.blocker !== 'browser-owned-required'; handoff.disabled = stale || busyButtons.has(handoff);
+    handoff.hidden = !!options.onRepair || !options.onOpenBrowserMargin || state.blocker !== 'browser-owned-required'; handoff.disabled = stale || busyButtons.has(handoff);
     trace.hidden = !state.result;
   }
   const unsubscribe = flow.subscribe(update);
