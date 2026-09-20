@@ -198,5 +198,20 @@
     "diagram": 0,
     "explore": 5,
     "unsure": 0
+  },
+  "readerPolicy": {
+    "version": "marginalia.suggestions.reader.v3",
+    "scoreVersion": "marginalia.suggestions.score.v3",
+    "baseScoreVersion": "marginalia.suggestions.score.v1",
+    "maxTextChars": 4000,
+    "maxFeedback": 64,
+    "maxVocabulary": 64,
+    "maxTermChars": 80,
+    "maxOffers": 3,
+    "familiarDefinePenalty": 3,
+    "difficultDefineBoost": 3,
+    "difficultExampleBoost": 2,
+    "readerBaseScoreMin": -4,
+    "readerBaseScoreMax": 4
   }
 }

@@ -79,3 +79,112 @@ export function suggestionOffer(intent: Intent) {
   return { id: intent, intent, label: SUGGESTION_LABELS[intent], question: intent === 'simulate' ? 'Simulate this passage.' : SUGGESTION_LABELS[intent] + ' in this passage.',
     time: intent === 'define' ? 'quick' as const : 'longer' as const };
 }
+
+/** The reader policy is opt-in until the caller and exposure store migrate together. The v1
+ * functions above preserve historical scoring; their arrays are not explicit reader evidence. */
+export const READER_SUGGESTION_POLICY_VERSION = weights.readerPolicy.version;
+export const READER_SUGGESTION_SCORE_VERSION = weights.readerPolicy.scoreVersion;
+export type ReaderSuggestionFeedback =
+  | { kind: 'reply-marked-useful' | 'offer-dismissed'; intent: Intent }
+  | { kind: 'question-closed' | 'reply-retained' | 'reply-reopened' | 'reply-followed-up'; intent?: Intent };
+export type ReaderSuggestionInput = {
+  text: string;
+  target: 'word' | 'passage' | 'page';
+  page: SuggestionPage;
+  posture: ReadingPosture;
+  preferredIntent?: Intent;
+  note?: string;
+  /** D102: reader-set tuner scores only. Missing/invalid entries are neutral. */
+  readerBaseScores?: Readonly<Partial<Record<Intent, number>>>;
+  /** Host supplies a bounded, current, source-scoped set of explicit events.
+   * Neither legacy dismissals nor retained replies may be relabelled as events. */
+  feedback?: readonly ReaderSuggestionFeedback[];
+  /** Reader-entered state in the current sense/domain, never inferred from use. */
+  vocabulary?: readonly { term: string; state: 'familiar' | 'difficult' }[];
+};
+export type ReaderSuggestionScore = {
+  intent: Intent;
+  score: number;
+  terms: SuggestionScore['terms'] & { explicitVocabulary: number; readerBaseScore: number };
+};
+
+/** Literal bounded token matching; this establishes neither meaning nor mastery. */
+function vocabularyTerms(input: ReaderSuggestionInput) {
+  const tokens = (value: string) => value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const selected = tokens(input.text.slice(0, weights.readerPolicy.maxTextChars));
+  let familiar = false, difficult = false;
+  for (const entry of (input.vocabulary ?? []).slice(0, weights.readerPolicy.maxVocabulary)) {
+    if (!entry.term || entry.term.length > weights.readerPolicy.maxTermChars) continue;
+    const term = tokens(entry.term);
+    if (!term.length) continue;
+    const matches = selected.some((_, index) => term.every((word, offset) => selected[index + offset] === word));
+    if (matches && entry.state === 'familiar') familiar = true;
+    if (matches && entry.state === 'difficult') difficult = true;
+  }
+  // A stated difficulty wins over familiarity; repetition never stacks a boost.
+  return { familiar: familiar && !difficult, difficult };
+}
+
+/** Local reader ranker. Eligibility remains host-owned. Word is a host target class,
+ * not the classifier's short-text heuristic, and always offers Define only. */
+export function rankReaderSuggestions(input: ReaderSuggestionInput, eligible: readonly Intent[]): ReaderSuggestionScore[] {
+  const feedback = (input.feedback ?? []).slice(0, weights.readerPolicy.maxFeedback);
+  const vocabulary = vocabularyTerms(input);
+  const ranked = rankEligibleSuggestions({
+    block: suggestionBlock(input.text.slice(0, weights.readerPolicy.maxTextChars), input.target === 'page'),
+    page: input.page, posture: input.posture, preferredIntent: input.preferredIntent,
+    note: (input.note ?? '').slice(0, weights.readerPolicy.maxTextChars),
+    usefulNearby: feedback.filter(event => event.kind === 'reply-marked-useful').map(event => event.intent!),
+    dismissed: feedback.filter(event => event.kind === 'offer-dismissed').map(event => event.intent!),
+  }, input.target === 'word' ? eligible.filter(intent => intent === 'define') : eligible);
+  return ranked.map(value => {
+    const explicitVocabulary = value.intent === 'define'
+      ? vocabulary.difficult ? weights.readerPolicy.difficultDefineBoost : vocabulary.familiar ? -weights.readerPolicy.familiarDefinePenalty : 0
+      : value.intent === 'instantiate' && vocabulary.difficult ? weights.readerPolicy.difficultExampleBoost : 0;
+    const rawBaseScore = input.readerBaseScores && Object.hasOwn(input.readerBaseScores, value.intent) ? input.readerBaseScores[value.intent] : undefined;
+    const readerBaseScore = typeof rawBaseScore === 'number' && Number.isFinite(rawBaseScore) &&
+      rawBaseScore >= weights.readerPolicy.readerBaseScoreMin && rawBaseScore <= weights.readerPolicy.readerBaseScoreMax ? rawBaseScore : 0;
+    return { intent: value.intent, score: value.score + explicitVocabulary + readerBaseScore, terms: { ...value.terms, explicitVocabulary, readerBaseScore } };
+  }).sort((a, b) => b.score - a.score || SUGGESTION_ORDER.indexOf(a.intent) - SUGGESTION_ORDER.indexOf(b.intent));
+}
+
+/** All ranking-affecting changes (target, eligibility, posture, tuner scores, note, vocabulary,
+ * feedback) must advance generation, even when the saved note revision is equal. */
+export type ReaderSuggestionRevision = {
+  sourceVersion: string;
+  targetKey: string;
+  noteRevision: number;
+  generation: number;
+};
+export type ReaderSuggestionSnapshot = Readonly<{
+  policyVersion: string;
+  scoreVersion: string;
+  revision: Readonly<ReaderSuggestionRevision>;
+  eligible: readonly Intent[];
+  shown: readonly Readonly<{ intent: Intent; position: number; score: number; terms: Readonly<ReaderSuggestionScore['terms']> }>[];
+}>;
+
+/** Capture once when exposing offers; keep this object while pointer/focus holds
+ * the display. This is an in-memory API, not the persisted v1 exposure schema. */
+export function snapshotReaderSuggestions(input: ReaderSuggestionInput, eligible: readonly Intent[], revision: ReaderSuggestionRevision): ReaderSuggestionSnapshot {
+  if (!revision.sourceVersion || revision.sourceVersion.length > 256 || !revision.targetKey || revision.targetKey.length > 256 ||
+      !Number.isSafeInteger(revision.noteRevision) || revision.noteRevision < 0 || !Number.isSafeInteger(revision.generation) || revision.generation < 0) {
+    throw new Error('Invalid suggestion revision.');
+  }
+  const ranked = rankReaderSuggestions(input, eligible);
+  return Object.freeze({
+    policyVersion: READER_SUGGESTION_POLICY_VERSION, scoreVersion: READER_SUGGESTION_SCORE_VERSION,
+    revision: Object.freeze({ sourceVersion: revision.sourceVersion, targetKey: revision.targetKey, noteRevision: revision.noteRevision, generation: revision.generation }),
+    eligible: Object.freeze(ranked.map(value => value.intent)),
+    shown: Object.freeze(ranked.slice(0, weights.readerPolicy.maxOffers).map((value, index) => Object.freeze({
+      intent: value.intent, position: index + 1, score: value.score, terms: Object.freeze({ ...value.terms }),
+    }))),
+  });
+}
+
+/** A host must check immediately before mounting or choosing a computed offer. */
+export function readerSuggestionsAreCurrent(snapshot: ReaderSuggestionSnapshot, current: ReaderSuggestionRevision) {
+  return snapshot.policyVersion === READER_SUGGESTION_POLICY_VERSION && snapshot.scoreVersion === READER_SUGGESTION_SCORE_VERSION &&
+    snapshot.revision.sourceVersion === current.sourceVersion && snapshot.revision.targetKey === current.targetKey &&
+    snapshot.revision.noteRevision === current.noteRevision && snapshot.revision.generation === current.generation;
+}
