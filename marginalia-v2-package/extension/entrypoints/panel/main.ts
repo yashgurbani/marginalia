@@ -24,6 +24,7 @@ const helperStatus = document.querySelector<HTMLElement>('#helper-status')!;
 const root = document.querySelector<HTMLElement>('#margin')!;
 let sourceEpoch = 0, autoPending: number | undefined, autoIdentity = '';
 let mountAbort: AbortController | undefined;
+let retryButton: HTMLButtonElement | undefined;
 const closingMounts = new Set<AbortController>();
 root.hidden = true;
 async function refreshAutoAssist() {
@@ -48,7 +49,13 @@ root.addEventListener('click', event => {
   if (candidateId) void send('auto-assist-open', { candidateId }).then(() => refreshAutoAssist()).catch(() => {});
 });
 let mounted: Awaited<ReturnType<typeof mountMargin>> | undefined, current: Snapshot | undefined, pending: number | undefined, stopped = false;
-const send = async (action: string, extra: Record<string, unknown> = {}) => readReply(await browser.runtime.sendMessage({ type: 'surface', version: 1, action, capability, workspace, ...extra }));
+const send = async (action: string, extra: Record<string, unknown> = {}) => {
+  const message = { type: 'surface', version: 1, action, capability, workspace, ...extra };
+  if (embedded || workspace) return readReply(await browser.runtime.sendMessage(message));
+  const ownWindow = await browser.windows.getCurrent();
+  if (!Number.isInteger(ownWindow.id) || ownWindow.id! < 0 || ownWindow.type !== 'normal' || ownWindow.incognito !== false) throw new Error('The margin could not open for this page.');
+  return readReply(await browser.runtime.sendMessage({ ...message, panelWindowId: ownWindow.id }));
+};
 let savedMarks: SavedMark[] = [], markSends: Promise<unknown> = Promise.resolve();
 function paintSavedMarks(snapshot: Snapshot, marks: SavedMark[]) {
   const packet = { document: snapshot.document, url: snapshot.capture.url, revision: snapshot.revision, marks: structuredClone(marks) };
@@ -76,7 +83,8 @@ function neutralize(preservePosition = false) {
   } else { previousAbort?.abort(); previous?.destroy(); }
   root.replaceChildren(); root.hidden = true; controls.hidden = true;
   savedMarks = []; autoIdentity = ''; helperStatus.textContent = '';
-  status.textContent = 'Checking this page.';
+  // Polling a persistent failure must not remove a keyboard-focused Retry.
+  if (!retryButton?.isConnected) status.textContent = 'Checking this page.';
 }
 async function refresh() {
   if (pending === sourceEpoch || stopped || document.visibilityState === 'hidden') return;
@@ -152,7 +160,12 @@ async function refresh() {
     if (!valid()) return;
     // Invalidate callbacks as well as removing the old private surface.
     neutralize();
-    status.textContent = error instanceof Error ? error.message : 'The page is unavailable. Reopen the margin.';
+    if (!retryButton?.isConnected) {
+      status.textContent = 'The margin could not open for this page.';
+      retryButton = document.createElement('button'); retryButton.type = 'button'; retryButton.textContent = 'Retry';
+      retryButton.addEventListener('click', () => { void refresh(); });
+      status.append(retryButton);
+    }
   } finally { if (pending === epoch) pending = undefined; }
 }
 exclude.addEventListener('click', () => { void send('exclude').then(() => { neutralize(); status.textContent = 'This site is excluded. Manage exclusions in the extension options.'; }).catch(error => { status.textContent = String(error); }); });

@@ -72,12 +72,12 @@ export function createSelectionBar(onAction: (action: SelectionAction) => Promis
         void request.then(accepted => {
           if (generation !== epoch || !status) return;
           if (accepted && action !== 'keep') { hide(); return; }
-          status.textContent = accepted ? 'Kept' : 'Try again'; status.hidden = false;
+          status.textContent = accepted ? 'Kept' : 'The action did not finish; please try again.'; status.hidden = false;
           buttons.forEach(control => { control.disabled = false; control.hidden = accepted; }); pending = false;
           position(); if (accepted) expiry = setTimeout(hide, 1800);
         }).catch(() => {
           if (generation !== epoch || !status) return;
-          pending = false; status.textContent = 'Try again'; status.hidden = false; buttons.forEach(control => { control.disabled = false; }); position();
+          pending = false; status.textContent = 'The action did not finish; please try again.'; status.hidden = false; buttons.forEach(control => { control.disabled = false; }); position();
         });
       });
       buttons.push(button); row.append(button);

@@ -6,6 +6,7 @@ const listeners: Record<string, Function> = {}, session = new Map<string, unknow
 let background: (() => void) | undefined, reconnects = 0;
 const event = (name: string) => ({ addListener(fn: Function) { listeners[name] = fn; } });
 const browser = {
+  windows: { get: async (id: number) => ({ id, type: 'normal', incognito: false }) },
   commands: { onCommand: event('command') },
   alarms: { onAlarm: event('alarm') }, action: { onClicked: event('clicked') }, sidePanel: {},
   runtime: { id: 'extension-id', getURL: (path: string) => 'chrome-extension://extension-id' + path, onMessage: event('message'), getContexts: async () => [], sendMessage: async () => {} },
@@ -67,7 +68,7 @@ test('saved-mark relay validates sender, exclusion, capture identity and bounds 
   const snapshot = { document, revision: 1, anchor, position: 0, sections: [{ title: 'Text', start: 0, end: 4 }], capture: { url, title: 'Text', pageType: 'article', text: 'Text', extractionVersion: 'dom-safe-text-v1', capturedAt: '2026-09-18T00:00:00Z' } };
   let excludedHosts: string[] = [], frameDocument = 'browser-document';
   const sent: any[] = [];
-  t.mock.method(browser.runtime, 'getContexts', async () => [{ documentId: 'panel-document', documentUrl: panel, windowId: 1 }]);
+  t.mock.method(browser.runtime, 'getContexts', async () => [{ contextType: 'SIDE_PANEL', tabId: -1, incognito: false, documentId: 'panel-document', documentUrl: panel, windowId: 1 }]);
   t.mock.method(browser.tabs, 'query', async () => [{ id: 7, url }]);
   t.mock.method(browser.tabs, 'get', async () => ({ id: 7, url }));
   t.mock.method(browser.storage.local, 'get', async () => ({ excludedHosts }));
@@ -76,8 +77,8 @@ test('saved-mark relay validates sender, exclusion, capture identity and bounds 
     if (args[1].type === 'snapshot') return { ok: true, value: snapshot };
     sent.push(args); return { ok: true, value: true };
   });
-  const sender = { id: 'extension-id', url: panel, documentId: 'panel-document' };
-  const packet = { type: 'surface', version: 1, action: 'saved-marks', document, url, revision: 1, marks: [{ anchor: { ...anchor, privateNote: 'do not forward' }, highlighted: true, note: 'do not forward' }] };
+  const sender = { id: 'extension-id', origin: 'chrome-extension://extension-id', url: panel, documentId: 'panel-document' };
+  const packet = { type: 'surface', version: 1, action: 'saved-marks', panelWindowId: 1, document, url, revision: 1, marks: [{ anchor: { ...anchor, privateNote: 'do not forward' }, highlighted: true, note: 'do not forward' }] };
   const send = (value = packet, from = sender) => new Promise<any>(resolve => listeners.message(value, from, resolve));
   assert.equal((await send()).ok, true); assert.equal(sent.length, 1);
   assert.deepEqual(sent[0][2], { documentId: 'browser-document', frameId: 0 });

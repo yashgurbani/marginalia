@@ -25,6 +25,7 @@ function harness(sharedSession = new Map<string, unknown>()) {
   const locks = new Map<string, Promise<unknown>>();
   const navigator = { locks: { request<T>(key: string, operation: () => Promise<T>) { const work = (locks.get(key) ?? Promise.resolve()).then(operation); locks.set(key, work.catch(() => {})); return work; } } };
   const browser = {
+    windows: { get: async (id: number) => ({ id, type: 'normal', incognito: false }) },
     commands: { onCommand: event('command') },
     alarms: { onAlarm: event('alarm') }, action: { onClicked: event('toolbar') },
     contextMenus: { onClicked: event('menu'), removeAll: async () => { menus.length = 0; }, create: (item: unknown, callback: () => void) => { menus.push(item); callback(); } },
@@ -64,7 +65,7 @@ function harness(sharedSession = new Map<string, unknown>()) {
   const output = ts.transpileModule(readFileSync(new URL('../extension/entrypoints/background.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
   vm.runInNewContext(output, { exports: {}, require: (name: string) => { assert.ok(name in dependencies, name); return dependencies[name]; }, URL, URLSearchParams, Promise, Error, crypto, structuredClone, navigator, console, TextEncoder });
   const choose = (action: string, extra = {}, target = tab) => listeners.menu({ menuItemId: 'marginalia:' + action, frameId: 0, selectionText: 'passage', ...extra }, target);
-  const surface = (action: string) => new Promise<any>(resolve => listeners.message({ type: 'surface', version: 1, action }, { id: 'fixture', url: 'chrome-extension://fixture/panel.html', documentId: 'panel' }, resolve));
+  const surface = (action: string) => new Promise<any>(resolve => listeners.message({ type: 'surface', version: 1, action, panelWindowId: 8 }, { id: 'fixture', origin: 'chrome-extension://fixture', url: 'chrome-extension://fixture/panel.html', documentId: 'panel' }, resolve));
   const gesture = (action: actions.SelectionAction, operation: string = crypto.randomUUID()) => {
     const request: actions.ContentActionRequest = { type: 'selection-action', version: 1, action, gesture: crypto.randomUUID(), operation, document: snapshot.document, revision: snapshot.revision };
     claims.set(request.gesture, request); return structuredClone(request);
@@ -77,7 +78,7 @@ function harness(sharedSession = new Map<string, unknown>()) {
     await journal.sync(async change => { sent.push(change.id); }, async () => remote);
     return sent;
   });
-  return { listeners, opens, messages, menus, tab, choose, surface, sharedSession, gesture, content, saves, setSaveFailure: (failure: typeof saveFailure) => { saveFailure = failure; },
+  return { browser, listeners, opens, messages, menus, tab, choose, surface, sharedSession, gesture, content, saves, setSaveFailure: (failure: typeof saveFailure) => { saveFailure = failure; },
     syncJournal,
     command: (name: string, target: unknown = tab) => listeners.command(name, target),
     setCommandReply: (fn: typeof commandReply) => { commandReply = fn; }, commandCaptures: () => commandCaptures,
@@ -172,7 +173,7 @@ function panelHarness(action: actions.PanelAction, stale = false) {
     '../../lib/protocol.ts': protocol, '../../lib/respond.ts': { readReply: (value: unknown) => value }, '../../lib/selection-actions.ts': actions,
     '../../lib/helper-origin.ts': { DEFAULT_HELPER_ORIGIN: 'http://127.0.0.1:43120', helperOrigin: async () => undefined },
     '../../../ui/margin.ts': { mountMargin: async (_root: unknown, options: unknown) => { marginOptions = options; return surface; } },
-    'wxt/browser': { browser: { runtime: { id: 'fixture', getURL: (path: string) => 'chrome-extension://fixture' + path, onMessage: { addListener() {} }, sendMessage: async (m: any) => {
+    'wxt/browser': { browser: { windows: { getCurrent: async () => ({ id: 8, type: 'normal', incognito: false }) }, runtime: { id: 'fixture', getURL: (path: string) => 'chrome-extension://fixture' + path, onMessage: { addListener() {} }, sendMessage: async (m: any) => {
       calls.push(m.action); if (m.action === 'read') return structuredClone(s);
       if (m.action === 'take-selection-action') { const once = pending; pending = null; return once; }
       if (m.action === 'helper-status') return { enabled: false }; return null;
@@ -232,6 +233,7 @@ test('authenticated panel focus dismisses only the page bar and preserves pendin
 });
 
 function contentHarness() {
+  const eventOptions = new Map<string, any>();
   const events = new Map<string, (event?: any) => void>(), sent: any[] = [], actionGate = deferred<unknown>();
   let now = Date.now(); class Clock extends Date { static now() { return now; } }
   let incoming: (...args: any[]) => unknown = () => {}, allowed = true, capturable = true, visible = false, focused = false, shows = 0, sourceChange: () => void = () => {};
@@ -278,9 +280,9 @@ function contentHarness() {
     document, window, HTMLElement: FocusElement, ShadowRoot: FocusRoot, location: { href: sourceSnapshot().capture.url }, getSelection: () => selection, innerHeight: 640, CSS: {},
     MutationObserver: class { constructor(callback: (changes: unknown[]) => void) { sourceChange = () => callback([{ target: document.body }]); } observe() {} disconnect() {} },
     setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {} });
-  exports.default.main({ addEventListener: (target: unknown, type: string, handler: (event?: any) => void) => events.set((target === window ? 'window:' : 'document:') + type, handler), onInvalidated() {} });
+  exports.default.main({ addEventListener: (target: unknown, type: string, handler: (event?: any) => void, options?: any) => { const key = (target === window ? 'window:' : 'document:') + type; events.set(key, handler); eventOptions.set(key, options); }, onInvalidated() {} });
   const message = (m: unknown, sender = { id: 'fixture' }) => new Promise<any>(resolve => incoming(m, sender, resolve));
-  return { sent, events, selection, bar, sourceChange, message, actionGate, advance: (ms: number) => { now += ms; }, action: (action: actions.SelectionAction) => onAction(action),
+  return { sent, events, eventOptions, selection, bar, sourceChange, message, actionGate, advance: (ms: number) => { now += ms; }, action: (action: actions.SelectionAction) => onAction(action),
     statuses, focusReads, forbiddenReads: () => forbiddenReads,
     setSource: (value: protocol.Snapshot) => { current = value; }, setEditable: () => { const focus = new FocusElement('DIV'); focus.editable = true; document.activeElement = focus; },
     setFocus: (tag: string, depth = 0, containsSelection = false, closed = false, pageRoot?: 'BODY' | 'HTML') => {
@@ -718,4 +720,115 @@ test('C5 panel exclusion repair derives its destination from the mounted source 
   await h.repairSite();
   assert.deepEqual(h.opened, ['chrome-extension://fixture/options.html#site=example.org']);
   assert.deepEqual(h.calls, before);
+});
+
+const nativeSender = { id: 'fixture', origin: 'chrome-extension://fixture', url: 'chrome-extension://fixture/panel.html', documentId: 'panel' };
+function nativeRead(h: ReturnType<typeof harness>, sender: Record<string, unknown> = nativeSender, extra: Record<string, unknown> = {}) {
+  return new Promise<any>(resolve => h.listeners.message({ type: 'surface', version: 1, action: 'read', panelWindowId: 8, windowId: 999, ...extra }, sender, resolve));
+}
+for (const suffix of ['#selection', '?source=page', '?source=page#selection']) test('native panel accepts its exact origin/path with suffix ' + suffix, async () => {
+  const h = harness();
+  h.browser.runtime.getContexts = async () => [{ contextType: 'SIDE_PANEL', documentId: 'panel', documentUrl: nativeSender.url + suffix, windowId: 8, tabId: -1, incognito: false }];
+  const reply = await nativeRead(h, { ...nativeSender, url: nativeSender.url + suffix });
+  assert.equal(reply.ok, true, JSON.stringify(reply)); assert.equal(reply.value.capture.url, h.tab.url);
+});
+for (const kind of ['negative', 'empty', 'missing-window']) test('native panel resolves ' + kind + ' context window only from unambiguous browser windows', async () => {
+  const h = harness(); let queries: any[] = [], windowsRead = 0;
+  const contexts = await h.browser.runtime.getContexts();
+  h.browser.runtime.getContexts = async () => kind === 'empty' ? [] : [{ ...contexts[0], windowId: kind === 'negative' ? -1 : undefined as any }];
+  (h.browser as any).windows = { get: async (id: number) => { windowsRead++; return { id, type: 'normal', incognito: false }; } };
+  h.browser.tabs.query = async (query?: any) => { queries.push(query); return [h.tab]; };
+  const reply = await nativeRead(h);
+  assert.equal(reply.ok, true, JSON.stringify(reply)); assert.equal(windowsRead, 1);
+  assert.equal(queries[0].windowId, 8, 'message windowId is never authority');
+});
+test('native panel refuses private, absent, mismatched and invalid browser windows', async () => {
+  for (const window of [undefined, { id: 8, type: 'normal', incognito: true }, { id: 9, type: 'normal', incognito: false }, { id: -1, type: 'normal', incognito: false }, { id: 8, type: 'popup', incognito: false }]) {
+    const h = harness(); h.browser.runtime.getContexts = async () => [];
+    (h.browser as any).windows = { get: async () => window };
+    assert.equal((await nativeRead(h)).ok, false);
+  }
+});
+test('native panel refuses hostile identity and context instead of using window fallback', async () => {
+  for (const sender of [{ ...nativeSender, id: undefined }, { ...nativeSender, id: 'other' }, { ...nativeSender, origin: undefined }, { ...nativeSender, documentId: '' }, { ...nativeSender, tab: {} }, { ...nativeSender, tab: { id: 42, incognito: true } }, { ...nativeSender, url: 'https://fixture/panel.html' }, { ...nativeSender, url: 'chrome-extension://other/panel.html' }, { ...nativeSender, url: nativeSender.url + '/extra' }, { ...nativeSender, origin: 'https://evil.example' }]) {
+    const h = harness(); let fallback = 0;
+    (h.browser as any).windows = { get: async () => { fallback++; return { id: 8, type: 'normal', incognito: false }; } };
+    const reply = await nativeRead(h, sender);
+    assert.notEqual(reply.value?.capture, sourceSnapshot().capture); assert.equal(reply.value?.capture, undefined, JSON.stringify(sender)); assert.equal(fallback, 0);
+  }
+  for (const change of [{ incognito: true }, { documentUrl: 'chrome-extension://other/panel.html' }, { documentUrl: nativeSender.url + '/other' }, { contextType: 'TAB' }, { tabId: 42 }, { documentId: 'other' }]) {
+    const h = harness(), contexts = await h.browser.runtime.getContexts();
+    h.browser.runtime.getContexts = async () => [{ ...contexts[0], ...change }];
+    // Browser window validity cannot override contradictory context evidence.
+    assert.equal((await nativeRead(h)).ok, false, JSON.stringify(change));
+  }
+});
+test('selection release reaches the content listener when a page stops bubbling', async () => {
+  const h = contentHarness();
+  // A page listener below document stops the bubble phase. Only a capture listener runs.
+  if (h.eventOptions.get('document:pointerup')?.capture === true) h.select();
+  await flush(); assert.equal(h.shown(), 1); assert.equal(h.sent.some(m => m.type === 'open'), false);
+});
+
+test('native fallback never turns unavailable browser authority into an allow', async () => {
+  for (const kind of ['missing-api', 'throws', 'missing-private-state']) {
+    const h = harness(); h.browser.runtime.getContexts = async () => [];
+    if (kind === 'missing-api') (h.browser as any).windows = undefined;
+    else (h.browser as any).windows = { get: async () => { if (kind === 'throws') throw new Error('Browser unavailable'); return { id: 8, type: 'normal' }; } };
+    assert.equal((await nativeRead(h)).ok, false);
+    assert.equal(h.messages.some(message => message.type === 'snapshot'), false);
+  }
+});
+test('native read still refuses an incognito active tab after browser window resolution', async () => {
+  const h = harness(); h.browser.runtime.getContexts = async () => [];
+  (h.browser as any).windows = { get: async () => ({ id: 8, type: 'normal', incognito: false }) };
+  h.tab.incognito = true; assert.equal((await nativeRead(h)).ok, false);
+  assert.equal(h.messages.some(message => message.type === 'snapshot'), false);
+});
+
+test('content gesture opens the neutral native shell before the runtime listener returns', async () => {
+  for (const action of ['note', 'ask', 'simulate'] as const) {
+    const h = harness(), gate = deferred<void>(); h.setStorageGate(gate.promise);
+    const result = h.content(h.gesture(action));
+    assert.equal(h.opens.length, 1, action + ' loses native gesture if deferred to a microtask');
+    assert.equal(h.sharedSession.size, 0); assert.equal(h.messages.some(m => m.type === 'claim-selection-action'), false);
+    gate.resolve(); assert.equal((await result).value.queued, true);
+  }
+});
+
+test('native sender without documentId uses its own live window with two panel contexts and focus elsewhere', async () => {
+  const h = harness(), known = (await h.browser.runtime.getContexts())[0], queries: number[] = [];
+  h.browser.runtime.getContexts = async () => [{ ...known, windowId: -1 }, { ...known, documentId: 'other-panel', windowId: 9 }];
+  h.browser.tabs.query = async (query?: any) => { queries.push(query.windowId); return [{ ...h.tab, windowId: query.windowId }]; };
+  assert.equal((await nativeRead(h, { ...nativeSender, documentId: undefined })).ok, true);
+  assert.equal((await nativeRead(h, { ...nativeSender, documentId: undefined }, { panelWindowId: 9 })).ok, true);
+  assert.deepEqual(queries, [8, 9]);
+});
+test('native window metadata cannot be missing, negative, fractional, string or contradicted by its context', async () => {
+  for (const panelWindowId of [undefined, -1, 1.5, '8', NaN, 9]) {
+    const h = harness(); assert.equal((await nativeRead(h, nativeSender, { panelWindowId })).ok, false);
+    assert.equal(h.messages.some(m => m.type === 'snapshot'), false);
+  }
+});
+test('missing native document ID does not turn context errors or malformed evidence into an allow', async () => {
+  const valid = (await harness().browser.runtime.getContexts())[0];
+  for (const value of [null, {}, 'invalid', [null], [{ contextType: 'TAB' }], [{ ...valid, documentId: 42 }], [{ ...valid, documentId: {} }]]) {
+    const h = harness(); h.browser.runtime.getContexts = async () => value as any;
+    assert.equal((await nativeRead(h, { ...nativeSender, documentId: undefined })).ok, false);
+  }
+  const h = harness(); h.browser.runtime.getContexts = async () => { throw new Error('Browser unavailable'); };
+  assert.equal((await nativeRead(h, { ...nativeSender, documentId: undefined })).ok, false);
+});
+test('known native document context rejects duplicates, malformed window IDs and mismatched documents', async () => {
+  for (const mode of ['duplicate', 'fraction', 'negative', 'document']) {
+    const h = harness(), context = (await h.browser.runtime.getContexts())[0];
+    h.browser.runtime.getContexts = async () => mode === 'duplicate' ? [context, context] : [{ ...context, ...(mode === 'document' ? { documentId: 'other' } : { windowId: mode === 'fraction' ? 1.5 : -2 }) }];
+    assert.equal((await nativeRead(h)).ok, false);
+  }
+});
+test('content and embedded senders cannot select a native source with panel window metadata', async () => {
+  for (const sender of [{ ...nativeSender, tab: { id: 42 }, frameId: 0, url: 'https://example.org/article' }, { ...nativeSender, tab: { id: 42 }, frameId: 2 }, { ...nativeSender, tab: {} }]) {
+    const h = harness(); let windowReads = 0; h.browser.windows.get = async id => { windowReads++; return { id, type: 'normal', incognito: false }; };
+    const reply = await nativeRead(h, sender, { panelWindowId: 9 }); assert.equal(reply.value?.capture, undefined); assert.equal(windowReads, 0);
+  }
 });

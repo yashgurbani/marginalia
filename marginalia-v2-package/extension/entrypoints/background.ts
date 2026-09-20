@@ -22,6 +22,13 @@ export default defineBackground(() => {
     browser.storage.session.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' }),
   ]);
   const panelUrl = browser.runtime.getURL('/panel.html');
+  const isPanelUrl = (value: string | undefined) => {
+    try {
+      const actual = new URL(value ?? ''), expected = new URL(panelUrl);
+      // Compare the extension origin explicitly: URL.origin is opaque in some runtimes.
+      return actual.protocol === expected.protocol && actual.host === expected.host && actual.pathname === expected.pathname && !actual.username && !actual.password;
+    } catch { return false; }
+  };
   const workspaceUrl = browser.runtime.getURL('/workspace.html');
   const extensionOrigin = browser.runtime.getURL('').replace(/\/$/, '');
   const readerStorage = 'marginalia-extension-reader';
@@ -217,13 +224,18 @@ export default defineBackground(() => {
     const delivered = readReply(await browser.tabs.sendMessage(tabId, { type: 'scroll', version: 1, document: snapshot.document, anchor }, { documentId: snapshot.browserDocument, frameId: 0 })) === true;
     return { consumed: true, resumed: delivered };
   }
-  browser.runtime.onMessage.addListener((message, sender, respond) => respondAsync(() => {
+  browser.runtime.onMessage.addListener((message, sender, respond) => {
+    const fromContent = sender.id === browser.runtime.id && sender.tab?.id !== undefined && sender.frameId === 0 && typeof sender.documentId === 'string' && !!sender.url && allowedPage(sender.url) && !sender.tab.incognito;
+    // Chrome's gesture ends before respondAsync's microtask. Open only the
+    // neutral shell here; policy, live document and one-use claim still gate work.
+    const contentOpening = fromContent && validContentAction(message) && message.action !== 'keep'
+      ? openNative(sender.tab!.id!, sender.url!, sender.tab?.incognito) : Promise.resolve(false);
+    return respondAsync(() => {
     if (sender.id !== browser.runtime.id) return;
     if (sender.url === browser.runtime.getURL('/options.html') && !sender.tab?.incognito && isMessage(message, 'instant-exclusion') && typeof message.host === 'string' && typeof message.excluded === 'boolean') return instant.changeExclusion(message.host, message.excluded);
-    const fromContent = sender.tab?.id !== undefined && sender.frameId === 0 && typeof sender.documentId === 'string' && !!sender.url && allowedPage(sender.url) && !sender.tab.incognito;
     if (fromContent && validContentAction(message)) {
       const tabId = sender.tab!.id!, epoch = exclusionEpoch;
-      const opening = message.action === 'keep' ? Promise.resolve(false) : openNative(tabId, sender.url!, sender.tab?.incognito);
+      const opening = contentOpening;
       return (async () => {
         if (!await permitted(sender.url!, sender.tab?.incognito) || epoch !== exclusionEpoch) return { accepted: false };
         const frame = await browser.webNavigation.getFrame({ tabId, frameId: 0 });
@@ -291,7 +303,7 @@ export default defineBackground(() => {
       })();
     }
     const senderPath = sender.url?.split(/[?#]/)[0];
-    const trustedPanel = senderPath === panelUrl || senderPath === workspaceUrl;
+    const trustedPanel = isPanelUrl(sender.url) || senderPath === workspaceUrl;
     if (!trustedPanel || !isMessage(message, 'surface')) return;
     return (async () => {
       let tabId!: number;
@@ -338,11 +350,28 @@ export default defineBackground(() => {
           if (!latest.frameDocument) await browser.storage.session.set({ [key]: { ...latest, frameDocument: sender.documentId } });
         });
       } else {
-        if (!sender.documentId) throw new Error('Open the native margin.');
-        const contexts = await browser.runtime.getContexts({ contextTypes: ['SIDE_PANEL'], documentIds: [sender.documentId] });
-        const context = contexts.find(c => c.documentId === sender.documentId && c.documentUrl === panelUrl && c.windowId >= 0);
-        if (!context || context.incognito) throw new Error('Open the native margin.');
-        const [tab] = await browser.tabs.query({ active: true, windowId: context.windowId });
+        // Native authority is our own extension code: exact sender ID/origin/panel
+        // path and no tab. Chrome can omit sender.documentId and report window -1.
+        // The panel reads its own window on every request; verify that browser
+        // window still exists, is normal and nonprivate. Never guess focus.
+        // Contexts establish panel class and corroborate attributable identity,
+        // not instance ownership when Chrome omits it. A closed-window message
+        // refuses; another tabless own-extension panel has only panel authority.
+        // Embedded frames retain their separate capability-bound path above.
+        if (sender.tab || !isPanelUrl(sender.url) || sender.origin !== extensionOrigin ||
+          (sender.documentId !== undefined && (typeof sender.documentId !== 'string' || !sender.documentId)) ||
+          !Number.isInteger(message.panelWindowId) || (message.panelWindowId as number) < 0) throw new Error('Open the native margin.');
+        const windowId = message.panelWindowId as number;
+        const panelWindow = await browser.windows.get(windowId);
+        if (panelWindow.id !== windowId || panelWindow.type !== 'normal' || panelWindow.incognito !== false) throw new Error('Open the native margin.');
+        const contexts = await browser.runtime.getContexts({ contextTypes: ['SIDE_PANEL'], ...(sender.documentId ? { documentIds: [sender.documentId] } : {}) });
+        if (!Array.isArray(contexts) || contexts.some(c => !c || c.contextType !== 'SIDE_PANEL' || !isPanelUrl(c.documentUrl) || c.incognito !== false || c.tabId !== -1 || typeof c.documentId !== 'string' || !c.documentId ||
+          (sender.documentId && c.documentId !== sender.documentId) ||
+          (c.windowId !== undefined && c.windowId !== -1 && (!Number.isInteger(c.windowId) || c.windowId < 0)))) throw new Error('Open the native margin.');
+        // Other native panels can belong to other windows. Without a sender
+        // document ID, at least one context must support (or not know) this window.
+        if ((sender.documentId && contexts.length > 1) || (contexts.length > 0 && !contexts.some(c => c.windowId === undefined || c.windowId === -1 || c.windowId === windowId))) throw new Error('Open the native margin.');
+        const [tab] = await browser.tabs.query({ active: true, windowId });
         if (tab?.id === undefined || !tab.url || !await permitted(tab.url, tab.incognito)) throw new Error('Choose a supported page.');
         tabId = tab.id;
       }
@@ -415,7 +444,8 @@ export default defineBackground(() => {
       }
       throw new Error('Unsupported margin request.');
     })();
-  }, respond));
+    }, respond);
+  });
   browser.action.onClicked.addListener(tab => {
     if (tab.id === undefined || tab.incognito || !allowedPage(tab.url)) return;
     const tabId = tab.id;

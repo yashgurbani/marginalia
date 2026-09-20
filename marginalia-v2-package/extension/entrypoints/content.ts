@@ -239,7 +239,7 @@ export default defineContentScript({
         if (candidate) { void open(); void instantMessage('auto-assist-open', { candidateId: candidate.candidateId }).catch(() => {}); return; }
       }
       void select();
-    });
+    }, { capture: true });
     ctx.addEventListener(document, 'keyup', event => { if (event.isTrusted && !selectionBar.owns(event) && (event.key === 'Shift' || event.key.startsWith('Arrow'))) void select(); });
     function rememberPositionNodes() { const projection = projectPage(); positionNodes = snapshot && projection.text === snapshot.capture.text ? projection.nodes : []; }
     function readingPosition() { if (snapshot) snapshot.position = readingPositionAt(positionNodes, sectionMarkers, innerHeight); }

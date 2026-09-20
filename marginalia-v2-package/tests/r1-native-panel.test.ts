@@ -73,34 +73,38 @@ test('known excluded, incognito and privileged URLs cannot open the native shell
 });
 
 class Node {
-  hidden = false; textContent = ''; handlers: Record<string, () => void> = {};
+  hidden = false; private text = ''; type = ''; isConnected = true; children: Node[] = []; handlers: Record<string, () => void> = {};
+  get textContent() { return this.text; }
+  set textContent(value: string) { this.text = value; this.children.forEach(child => { child.isConnected = false; }); this.children = []; }
   addEventListener(type: string, fn: () => void) { this.handlers[type] = fn; }
-  replaceChildren() { this.textContent = ''; }
+  replaceChildren(...nodes: Node[]) { this.textContent = ''; this.children = nodes; }
+  append(...nodes: Node[]) { nodes.forEach(node => { node.isConnected = true; }); this.children.push(...nodes); }
 }
 const snapshot = (document = 'old') => ({ document, revision: 1, position: 0, sections: [], capture: { url: 'https://example.org/' + document, text: document } });
-function panel() {
+function panel(mode: 'native' | 'embedded' | 'workspace' = 'native') {
   const nodes = Object.fromEntries(['connection', 'exclude', 'controls', 'helper-status', 'margin', 'connect', 'disconnect', 'trusted-open'].map(id => [id, new Node()]));
-  const handlers: Record<string, () => void> = {}, calls: string[] = [], mounts: any[] = [];
+  const handlers: Record<string, () => void> = {}, calls: string[] = [], packets: any[] = [], mounts: any[] = [];
+  let ownWindow = { id: 8, type: 'normal', incognito: false }, windowReads = 0;
   let listener: (message: unknown, sender: unknown) => void = () => {};
   let read: () => Promise<unknown> = async () => snapshot();
   let origin: () => Promise<string> = async () => 'http://127.0.0.1:43120';
   let hydrate: () => Promise<void> = async () => {};
-  const document = { visibilityState: 'visible', querySelector: (id: string) => nodes[id.slice(1)], getElementById: (id: string) => nodes[id],
+  const document = { createElement: () => Object.assign(new Node(), { isConnected: false }), visibilityState: 'visible', querySelector: (id: string) => nodes[id.slice(1)], getElementById: (id: string) => nodes[id],
     addEventListener: (type: string, fn: () => void) => { handlers[type] = fn; } };
-  const window: any = { addEventListener: (type: string, fn: () => void) => { handlers[type] = fn; } }; window.top = window;
+  const window: any = { addEventListener: (type: string, fn: () => void) => { handlers[type] = fn; } }; window.top = mode === 'embedded' ? {} : window;
   compile('extension/entrypoints/panel/main.ts', {
     '../../../ui/forget/client.ts': { ForgetClient: class {} }, '../../lib/panel-instant.ts': { panelInstantTransport: () => ({}) },
     '../../lib/panel-controls.ts': { connectionControls: () => {} }, '../../lib/library-link.ts': {},
-    'wxt/browser': { browser: { runtime: { id: 'fixture', onMessage: { addListener: (fn: typeof listener) => { listener = fn; } },
-      sendMessage: async (m: any) => { calls.push(m.action); if (m.action === 'read') return read(); if (m.action === 'auto-assist-status') return null; return {}; } }, tabs: {} } },
+    'wxt/browser': { browser: { windows: { getCurrent: async () => { windowReads++; return ownWindow; } }, runtime: { id: 'fixture', onMessage: { addListener: (fn: typeof listener) => { listener = fn; } },
+      sendMessage: async (m: any) => { packets.push(m); calls.push(m.action); if (m.action === 'read') return read(); if (m.action === 'auto-assist-status') return null; return {}; } }, tabs: {} } },
     '../../../ui/margin.ts': { mountMargin: async (root: Node, options: any) => {
       const mount = { options, destroyed: false, restoredPosition: false, flushes: 0, async flushReadingPosition() { this.flushes++; }, destroy() { this.destroyed = true; }, select() {}, setReadingPosition() {}, clearAutoAssist() {} };
       mounts.push(mount); root.textContent = options.capture.text; await hydrate(); return mount;
     } }, '../../lib/protocol.ts': { validSnapshot: (s: any) => !!s?.document, validSavedMarks: () => true },
     '../../lib/respond.ts': { readReply: (v: unknown) => v }, '../../lib/helper-origin.ts': { DEFAULT_HELPER_ORIGIN: 'http://127.0.0.1:43120', helperOrigin: () => origin() },
     '../../lib/selection-actions.ts': selectionActions,
-  }, { document, window, location: { hash: '' }, setInterval: () => 1, clearInterval: () => {} });
-  return { nodes, calls, mounts, document, handlers, setRead: (fn: typeof read) => { read = fn; }, setOrigin: (fn: typeof origin) => { origin = fn; },
+  }, { document, window, location: { hash: mode === 'workspace' ? '#workspace=fixture' : mode === 'embedded' ? '#capability=fixture' : '' }, setInterval: () => 1, clearInterval: () => {} });
+  return { nodes, calls, packets, windowReads: () => windowReads, setWindow: (value: typeof ownWindow) => { ownWindow = value; }, mounts, document, handlers, setRead: (fn: typeof read) => { read = fn; }, setOrigin: (fn: typeof origin) => { origin = fn; },
     setHydrate: (fn: typeof hydrate) => { hydrate = fn; }, invalidate: () => listener({ type: 'panel-source-pending', version: 1 }, { id: 'fixture' }) };
 }
 
@@ -108,7 +112,7 @@ test('reused native panel clears prior private DOM while policy read is pending 
   const h = panel(); await settle(); assert.equal(h.nodes.margin.hidden, false); assert.equal(h.nodes.margin.textContent, 'old');
   const gate = deferred<unknown>(); h.setRead(() => gate.promise); h.calls.length = 0; h.invalidate();
   assert.equal(h.nodes.margin.hidden, true); assert.equal(h.nodes.margin.textContent, ''); assert.equal(h.mounts[0].options.signal.aborted, true);
-  assert.deepEqual(h.calls, ['read']); gate.reject(new Error('This page is excluded.')); await settle();
+  await settle(); assert.deepEqual(h.calls, ['read']); gate.reject(new Error('This page is excluded.')); await settle();
   assert.equal(h.mounts.length, 1); assert.equal(h.mounts[0].flushes, 0); assert.equal(h.nodes.margin.hidden, true); assert.deepEqual(h.calls, ['read']);
 });
 test('visibility hide clears retained content synchronously and reveal reauthorizes', async () => {
@@ -191,4 +195,35 @@ test('policy invalidation also aborts a previous benign close position flush', a
   assert.equal(previous.options.signal.aborted, false);
   h.invalidate(); assert.equal(previous.options.signal.aborted, true);
   gate.resolve(); await settle(); assert.equal(previous.destroyed, true); assert.equal(previous.flushes, 1);
+});
+
+test('panel replaces internal failure with one plain sentence and a working Retry', async () => {
+  const h = panel(); await settle();
+  h.setRead(async () => { throw new Error('Open the native margin.'); }); h.invalidate(); await settle();
+  assert.equal(h.nodes.margin.hidden, true);
+  assert.equal(h.nodes.connection.textContent, 'The margin could not open for this page.');
+  const retry = h.nodes.connection.children.find(node => node.textContent === 'Retry');
+  assert.ok(retry); assert.equal(retry.type, 'button');
+  h.invalidate(); await settle();
+  assert.equal(h.nodes.connection.children[0], retry, 'a repeated failure keeps the same focusable control');
+  assert.equal(retry.isConnected, true);
+  h.setRead(async () => snapshot('recovered')); retry.handlers.click(); await settle();
+  assert.equal(h.nodes.margin.hidden, false); assert.equal(h.nodes.margin.textContent, 'recovered');
+});
+
+test('native panel reads its own browser window for every request and never substitutes focus', async () => {
+  const h = panel(); await settle();
+  assert.ok(h.packets.length > 0); assert.equal(h.windowReads(), h.packets.length);
+  assert.ok(h.packets.every(packet => packet.panelWindowId === 8));
+  h.packets.length = 0; h.setWindow({ id: 9, type: 'normal', incognito: false }); h.invalidate(); await settle();
+  assert.ok(h.packets.length > 0); assert.ok(h.packets.every(packet => packet.panelWindowId === 9));
+  h.packets.length = 0; h.setWindow({ id: 9, type: 'normal', incognito: true }); h.invalidate(); await settle();
+  assert.equal(h.packets.length, 0); assert.equal(h.nodes.margin.hidden, true);
+});
+
+test('embedded and workspace panel adapters never supply native window authority', async () => {
+  for (const mode of ['embedded', 'workspace'] as const) {
+    const h = panel(mode); await settle(); assert.ok(h.packets.length > 0);
+    assert.equal(h.windowReads(), 0); assert.ok(h.packets.every(packet => !('panelWindowId' in packet)));
+  }
 });

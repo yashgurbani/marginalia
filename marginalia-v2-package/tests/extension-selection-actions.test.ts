@@ -112,7 +112,7 @@ test('bar ignores stale completion after dismissal and keeps a refused action re
   bar.hide();
   const refused = createSelectionBar(async () => false); t.after(refused.hide); refused.show(e.range);
   const controls = e.get(); controls.buttons[0].emit('click', { isTrusted: true }); await settle();
-  assert.equal(controls.status.textContent, 'Try again'); assert.ok(controls.buttons.every(b => !b.disabled && !b.hidden));
+  assert.equal(controls.status.textContent, 'The action did not finish; please try again.'); assert.ok(controls.buttons.every(b => !b.disabled && !b.hidden));
 });
 
 test('command status uses the existing quiet region without invoking an action', t => {
@@ -122,4 +122,12 @@ test('command status uses the existing quiet region without invoking an action',
   assert.equal(e.get().status.textContent, 'Kept'); assert.equal(e.get().status.attrs.get('aria-live'), 'polite');
   assert.ok(e.get().buttons.every(button => button.hidden)); assert.equal(calls, 0);
   bar.hide(); bar.commandStatus('Try again'); assert.equal(calls, 0);
+});
+
+test('bar reports a rejected action with a sentence and leaves the four controls retryable', async t => {
+  const e = barDom(t);
+  const bar = createSelectionBar(async () => { throw new Error('Connection failed'); }); t.after(bar.hide); bar.show(e.range);
+  const controls = e.get(); controls.buttons[2].emit('click', { isTrusted: true }); await settle();
+  assert.equal(controls.status.textContent, 'The action did not finish; please try again.');
+  assert.equal(controls.status.hidden, false); assert.ok(controls.buttons.every(b => !b.disabled && !b.hidden));
 });
