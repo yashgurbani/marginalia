@@ -86,8 +86,11 @@ test('related margin reads saved overlaps locally, opens saved sources and refre
   button(e.root, 'Save page').click(); await fallback.drain();
   assert.equal(fallbackFooter.querySelector('.m-related-excerpt'), preview);
   assert.equal(e.document.activeElement, close); assert.equal(requests.length, previewReads);
-  button(fallbackFooter, 'Open in Library').click(); assert.equal(e.root.querySelector('.m-local-library')!.hidden, false);
-  button(e.root, 'Close Library').click(); close.click(); assert.equal(fallbackFooter.querySelector('h3'), null); assert.equal(e.document.activeElement, fallbackOpen);
+  button(fallbackFooter, 'Open in Library').click();
+  const localLibrary = e.root.querySelector('.m-local-library')!;
+  assert.equal(localLibrary.hidden, false);
+  assert.equal(e.document.activeElement, button(localLibrary, 'Close Library'));
+  button(localLibrary, 'Close Library').click(); close.click(); assert.equal(fallbackFooter.querySelector('h3'), null); assert.equal(e.document.activeElement, fallbackOpen);
   fallback.destroy(); await fallback.drain();
 });
 
@@ -259,6 +262,21 @@ test('narrow margin stays open through hydration and Escape returns focus to its
   assert.equal(e.document.activeElement, button(e.root, 'Collapse'));
   e.root.fire('keydown', { key: 'Escape' });
   assert.equal(e.document.activeElement, railDot);
+  api.destroy(); await api.drain();
+});
+
+test('local Library skips a hidden history action when opening and returns focus', async t => {
+  const e = env(t);
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: false });
+  const hiddenHistory = e.root.querySelector('.m-footer-history button')!;
+  assert.equal(hiddenHistory.hidden, true);
+  const opener = button(e.root, 'Library'); opener.focus(); opener.click();
+  const localLibrary = e.root.querySelector('.m-local-library')!;
+  assert.equal(localLibrary.hidden, false);
+  assert.equal(e.document.activeElement, button(localLibrary, 'Close Library'));
+  assert.notEqual(e.document.activeElement, hiddenHistory);
+  button(localLibrary, 'Close Library').click();
+  assert.equal(e.document.activeElement, opener);
   api.destroy(); await api.drain();
 });
 

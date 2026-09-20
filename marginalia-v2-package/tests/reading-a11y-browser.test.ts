@@ -28,6 +28,56 @@ async function focusReceipt(page: RealBrowserPage) {
       overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 };
   })()`);
 }
+async function cancelledQuestionReceipt(page: RealBrowserPage) {
+  return page.evaluate<{
+    draftFormCount: number;
+    visibleDraftFormCount: number;
+    draftQuestion: { visible: boolean; interactable: boolean };
+    draftSubmit: { visible: boolean; interactable: boolean };
+    reviewFormCount: number;
+    reviewForms: { hidden: boolean; rendered: boolean; focusWithin: boolean; focusableControls: number; interactableControls: number }[];
+  }>(`(() => {
+    const rendered = (element) => {
+      const node = element, rect = node.getBoundingClientRect(), style = getComputedStyle(node);
+      return !node.hidden && !node.closest('[hidden]') && !node.closest('[aria-hidden="true"]') &&
+        style.display !== 'none' && style.visibility !== 'hidden' && style.pointerEvents !== 'none' &&
+        rect.width > 0 && rect.height > 0;
+    };
+    const interactable = (element) => {
+      if (!element) return false;
+      const node = element;
+      return rendered(node) && !node.disabled && !node.readOnly && node.tabIndex >= 0;
+    };
+    const drafts = [...document.querySelectorAll('.m-question form.m-asking-draft')];
+    const visibleDrafts = drafts.filter(form => {
+      const question = form.querySelector('[aria-label="Your question"]');
+      const submit = form.querySelector('button[type="submit"]');
+      return rendered(form) && interactable(question) && interactable(submit);
+    });
+    const reviews = [...document.querySelectorAll('.m-question form:not(.m-asking-draft)')];
+    const reviewForms = reviews.map(form => {
+      const controls = [...form.querySelectorAll('textarea,button')];
+      return {
+        hidden: form.hidden,
+        rendered: rendered(form),
+        focusWithin: form.contains(document.activeElement),
+        focusableControls: controls.filter(control => interactable(control)).length,
+        interactableControls: controls.filter(control => rendered(control) && !control.disabled && !control.readOnly).length,
+      };
+    });
+    const draft = drafts[0];
+    const question = draft?.querySelector('[aria-label="Your question"]');
+    const submit = draft?.querySelector('button[type="submit"]');
+    return {
+      draftFormCount: drafts.length,
+      visibleDraftFormCount: visibleDrafts.length,
+      draftQuestion: { visible: !!question && rendered(question), interactable: interactable(question) },
+      draftSubmit: { visible: !!submit && rendered(submit), interactable: interactable(submit) },
+      reviewFormCount: reviews.length,
+      reviewForms,
+    };
+  })()`);
+}
 for (const scenario of [
   { name: 'desktop', width: 1000, height: 900, zoom: 1 as const, reduced: false },
   { name: 'zoom-200', width: 1000, height: 900, zoom: 2 as const, reduced: false },
@@ -72,11 +122,17 @@ for (const scenario of [
     await page.screenshot(resolve(directory, 'journey-review.png'), false);
     await activate('Cancel');
     const cancelled = await focusReceipt(page); stops.push(cancelled); assert.equal(cancelled.focused && cancelled.visible, true, 'Cancel restores visible focus');
-    assert.equal(await page.evaluate<number>("document.querySelectorAll('.m-question form').length"), 1, 'Cancel restores the single draft form');
+    const questionReceipt = await cancelledQuestionReceipt(page);
+    assert.equal(questionReceipt.draftFormCount, 1, 'Cancel retains one draft form');
+    assert.equal(questionReceipt.visibleDraftFormCount, 1, 'Cancel restores exactly one visible/interactable draft form');
+    assert.deepEqual(questionReceipt.draftQuestion, { visible: true, interactable: true }, 'Retained draft question is visible and interactable');
+    assert.deepEqual(questionReceipt.draftSubmit, { visible: true, interactable: true }, 'Retained draft submit control is visible and interactable');
+    assert.equal(questionReceipt.reviewFormCount, 1, 'Cancel retains one hidden review form for the asking flow');
+    assert.deepEqual(questionReceipt.reviewForms, [{ hidden: true, rendered: false, focusWithin: false, focusableControls: 0, interactableControls: 0 }], 'Hidden review form is not rendered or interactive');
     assert.match(await page.evaluate<string>("document.querySelector('.m-question input').value"), /Explain the mechanism in my note/);
     await activate('Library');
     const libraryEntry = await focusReceipt(page); stops.push(libraryEntry); assert.equal(libraryEntry.focused && libraryEntry.visible, true, 'Library opens with visible focus');
-    await activate('Close library');
+    await activate('Close Library');
     const returned = await focusReceipt(page); stops.push(returned); assert.equal(returned.focused && returned.visible, true, 'Library returns visible focus');
     assert.equal(await page.evaluate<boolean>('p17Journey.sourceUnchanged()'), true);
     const requests = await page.evaluate<string[]>('p17Journey.requests');

@@ -217,6 +217,11 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   localLibrary.append(el('h2', 'Work on this page'), footerSlots.history, footerSlots.requests, footerSlots.retained);
   if (options.onLibrary) localLibrary.append(button('Open Library', () => options.onLibrary?.()));
   localLibrary.append(button('Close Library', () => { localLibrary.hidden = true; libraryButton.focus({ preventScroll: true }); }));
+  const focusLocalLibraryAction = () => {
+    const target = [...localLibrary.querySelectorAll<HTMLButtonElement>('button')].find(control =>
+      !control.disabled && control.tabIndex >= 0 && !control.hidden && !control.closest('[hidden]') && !control.closest('[aria-hidden="true"]'));
+    target?.focus();
+  };
   const status = el('p', '', 'm-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
   const notice = el('div', undefined, 'm-notice'); notice.hidden = true; notice.tabIndex = 0;
   footer.prepend(notice);
@@ -488,7 +493,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   const barActions: HTMLElement[] = [];
   const libraryButton = button('Library', () => {
     if (options.onLibrary && earlierDrafts.hidden && !footerSlots.requests.children.length && !footerSlots.retained.children.length) options.onLibrary();
-    else { localLibrary.hidden = !localLibrary.hidden; if (!localLibrary.hidden) localLibrary.querySelector<HTMLElement>('button')?.focus(); }
+    else { localLibrary.hidden = !localLibrary.hidden; if (!localLibrary.hidden) focusLocalLibraryAction(); }
   });
   barActions.push(libraryButton, settingsButton);
   collapse.className = 'm-head-toggle'; headline.append(collapse);
@@ -637,7 +642,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
                 const savedSource = el('section', undefined, 'm-library-source');
                 savedSource.append(el('h3', bundle.source.title ?? result.sourceTitle), el('pre', bundle.source.text));
                 localLibrary.prepend(savedSource); localLibrary.hidden = false;
-                localLibrary.querySelector<HTMLElement>('button')?.focus();
+                focusLocalLibraryAction();
               });
               preview.replaceChildren(el('h3', bundle.source.title ?? result.sourceTitle), text, actions(library, close)); close.focus();
             } catch { if (current()) preview.replaceChildren(el('p', 'This saved source is unavailable.', 'm-meta')); }
