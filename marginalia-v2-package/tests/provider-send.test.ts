@@ -5,7 +5,7 @@ import { setImmediate as tick } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import { AppServerRunner } from '../daemon/providers/app-server.ts';
 import { McpServerRunner } from '../daemon/providers/mcp-server.ts';
-import { createStdioTransport, RpcNotSentError, RpcRequestUsedError } from '../daemon/providers/stdio.ts';
+import { createStdioTransport, RpcNotSentError, RpcRequestUsedError, type RpcTransport } from '../daemon/providers/stdio.ts';
 import { validateProviderSend } from '../daemon/providers/send-binding.ts';
 import { sendProviderRequest } from '../daemon/providers/send.ts';
 import { formatMcpPrompt } from '../daemon/providers/prompt.ts';
@@ -32,14 +32,33 @@ rl.on('line',line=>{
   return respond(r,{turn:{id:'turn-'+count,status:'inProgress'},echo:r.params});
  }
  respond(r,{echo:r.params});
-});`;
-function transport(protocol: 'app-server' | 'jsonrpc' = 'app-server') {
-  return createStdioTransport({ executable: process.execPath, args: ['-e', peer], cwd: process.cwd(), env: {}, protocol, timeoutMs: 2_000 });
+});
+process.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'test/fixture-ready'})+'\n');`;
+function transport(protocol: 'app-server' | 'jsonrpc' = 'app-server', startupDelayMs = 0) {
+  return createStdioTransport({ executable: process.execPath, args: ['-e', `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${startupDelayMs});\n${peer}`], cwd: process.cwd(), env: {}, protocol, timeoutMs: 2_000 });
 }
+// Fixture startup has its own bounded budget; operation deadlines stay unchanged.
+// Subscribe immediately after spawn, before yielding to child stdout/exit events.
+function peerReady(rpc: RpcTransport, timeoutMs = 10_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false, offReady = () => {}, offExit = () => {};
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); offReady(); offExit();
+      if (error) reject(error); else resolve();
+    };
+    const timer = setTimeout(() => finish(new Error('Synthetic peer startup readiness timed out.')), timeoutMs);
+    offReady = rpc.onNotification(method => { if (method === 'test/fixture-ready') finish(); });
+    offExit = rpc.onDisconnect(() => finish(new Error('Synthetic peer exited before readiness.')));
+    // onDisconnect may invoke synchronously for an already disconnected transport.
+    if (settled) { offReady(); offExit(); }
+  });
+}
+
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; }
 
 for (const protocol of ['app-server', 'jsonrpc'] as const) {
-  test(`${protocol}: immutable bytes and one synchronous finalize/write pair precede every microtask`, { timeout: 5_000 }, async t => {
+  test(`${protocol}: immutable bytes and one synchronous finalize/write pair precede every microtask`, { timeout: 15_000 }, async t => {
     const trace: string[] = [], write = Socket.prototype.write;
     t.mock.method(Socket.prototype, 'write', function(this: Socket, ...args: any[]) {
       if (Buffer.isBuffer(args[0]) && args[0].includes('T06_EXACT_BYTES')) trace.push('write');
@@ -47,6 +66,7 @@ for (const protocol of ['app-server', 'jsonrpc'] as const) {
     });
     const rpc = transport(protocol);
     try {
+      await peerReady(rpc);
       const params = { prompt: 'T06_EXACT_BYTES', nested: { n: 7 } }, prepared = rpc.prepareRequest('turn/start', params);
       params.prompt = 'changed'; params.nested.n = 99;
       let finalized = 0;
@@ -301,3 +321,36 @@ test('MCP reuse requires the live exact completed attempt, not a stale handle or
     f.rpc.close(); assert.equal(f.runner.canResume(completed), false);
   } finally { f.rpc.close(); }
 });
+
+for (const protocol of ['app-server', 'jsonrpc'] as const) {
+  test(`${protocol}: delayed fixture startup consumes the old RPC deadline but not a ready peer's deadline`, { timeout: 15_000 }, async () => {
+    const rpc = transport(protocol, 2_500);
+    const ready = peerReady(rpc); void ready.catch(() => {});
+    try {
+      let finalizations = 0;
+      const beforeReady = rpc.prepareRequest('turn/start', { prompt: 'startup-control' });
+      await assert.rejects(beforeReady.send(() => { finalizations++; }), /turn\/start request timed out after 2000 ms/);
+      await ready;
+      assert.equal((await rpc.request('test/count')).count, 1, 'the timed-out request reached the real peer exactly once');
+      assert.equal(finalizations, 1);
+      assert.throws(() => beforeReady.send(() => {}), RpcRequestUsedError);
+      const params = { prompt: 'ready-operation', nested: { n: 7 } };
+      const afterReady = rpc.prepareRequest('turn/start', params);
+      params.nested.n = 99;
+      assert.deepEqual((await afterReady.send(() => { finalizations++; })).echo, { prompt: 'ready-operation', nested: { n: 7 } });
+      assert.equal(finalizations, 2);
+      assert.equal((await rpc.request('test/count')).count, 2, 'readiness never retries an operation');
+    } finally { rpc.close(); }
+  });
+}
+
+for (const [name, source, expected] of [
+  ['early exit', 'process.exit(7)', /exited before readiness/],
+  ['missing ready', 'setInterval(() => {}, 1000)', /startup readiness timed out/],
+] as const) {
+  test(`send fixture readiness rejects ${name} and closes its owned transport`, { timeout: 15_000 }, async () => {
+    const rpc = createStdioTransport({ executable: process.execPath, args: ['-e', source], cwd: process.cwd(), env: {}, timeoutMs: 2_000 });
+    try { await assert.rejects(peerReady(rpc, name === 'early exit' ? 10_000 : 100), expected); }
+    finally { rpc.close(); }
+  });
+}

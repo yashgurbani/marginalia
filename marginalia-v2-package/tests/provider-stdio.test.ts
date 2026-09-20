@@ -5,10 +5,28 @@ import { createStdioTransport, type RpcTransport } from '../daemon/providers/std
 function transportFor(source: string, options: { protocol?: 'app-server' | 'jsonrpc'; timeoutMs?: number; maxMessageBytes?: number } = {}): RpcTransport {
   return createStdioTransport({
     executable: process.execPath,
-    args: ['--input-type=module', '--eval', source],
+    args: ['--input-type=module', '--eval', source + `\nprocess.stdout.write(JSON.stringify({jsonrpc:'2.0',method:'test/fixture-ready'})+'\\n');`],
     cwd: process.cwd(),
     env: { ...process.env },
     ...options,
+  });
+}
+
+// Fixture startup has its own bounded budget; operation deadlines stay unchanged.
+// Subscribe immediately after spawn, before yielding to child stdout/exit events.
+function peerReady(rpc: RpcTransport, timeoutMs = 10_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false, offReady = () => {}, offExit = () => {};
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); offReady(); offExit();
+      if (error) reject(error); else resolve();
+    };
+    const timer = setTimeout(() => finish(new Error('Synthetic peer startup readiness timed out.')), timeoutMs);
+    offReady = rpc.onNotification(method => { if (method === 'test/fixture-ready') finish(); });
+    offExit = rpc.onDisconnect(() => finish(new Error('Synthetic peer exited before readiness.')));
+    // onDisconnect may invoke synchronously for an already disconnected transport.
+    if (settled) { offReady(); offExit(); }
   });
 }
 
@@ -27,7 +45,7 @@ function nextNotification(transport: RpcTransport, method: string): Promise<any>
   });
 }
 
-test('stdio transport exchanges requests and notifications with a JSON-lines child', async () => {
+test('stdio transport exchanges requests and notifications with a JSON-lines child', { timeout: 15_000 }, async () => {
   const transport = transportFor(`
     import readline from 'node:readline';
     const lines = readline.createInterface({ input: process.stdin });
@@ -42,6 +60,7 @@ test('stdio transport exchanges requests and notifications with a JSON-lines chi
     });
   `);
   try {
+    await peerReady(transport);
     const observed = nextNotification(transport, 'server/observed');
     const progress = nextNotification(transport, 'server/progress');
     transport.notify('client/ready', { version: 1 });
@@ -54,18 +73,23 @@ test('stdio transport exchanges requests and notifications with a JSON-lines chi
   }
 });
 
-test('stdio transport rejects every inbound request instead of authorizing approval or tool work', async () => {
+test('stdio transport rejects every inbound request instead of authorizing approval or tool work', { timeout: 15_000 }, async () => {
   const transport = transportFor(`
     import readline from 'node:readline';
     const lines = readline.createInterface({ input: process.stdin });
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 'approval-1', method: 'item/commandExecution/requestApproval', params: { command: 'secret' } }) + '\\n');
-    lines.once('line', line => {
-      const response = JSON.parse(line);
-      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'server/denial-observed', params: response }) + '\\n');
+    lines.once('line', () => {
+      lines.once('line', line => {
+        const response = JSON.parse(line);
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'server/denial-observed', params: response }) + '\\n');
+      });
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 'approval-1', method: 'item/commandExecution/requestApproval', params: { command: 'secret' } }) + '\\n');
     });
   `);
   try {
-    const response = await nextNotification(transport, 'server/denial-observed');
+    await peerReady(transport);
+    const denied = nextNotification(transport, 'server/denial-observed');
+    transport.notify('test/request-approval');
+    const response = await denied;
     assert.deepEqual(response, {
       jsonrpc: '2.0',
       id: 'approval-1',
@@ -76,7 +100,7 @@ test('stdio transport rejects every inbound request instead of authorizing appro
   }
 });
 
-test('app-server mode exchanges versionless messages and returns a versionless denial', async () => {
+test('app-server mode exchanges versionless messages and returns a versionless denial', { timeout: 15_000 }, async () => {
   const transport = transportFor(`
     import readline from 'node:readline';
     const lines = readline.createInterface({ input: process.stdin });
@@ -98,6 +122,7 @@ test('app-server mode exchanges versionless messages and returns a versionless d
     });
   `, { protocol: 'app-server' });
   try {
+    await peerReady(transport);
     const observed = nextNotification(transport, 'server/observed');
     const denied = nextNotification(transport, 'server/denial-observed');
     transport.notify('client/ready', { version: 1 });
@@ -161,3 +186,37 @@ test('stdio transport disconnects when a child exceeds the input line limit', as
     transport.close();
   }
 });
+
+test('delayed fixture startup consumes the old notification deadline but not a ready peer deadline', { timeout: 15_000 }, async () => {
+  const transport = transportFor(`
+    import readline from 'node:readline';
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2500);
+    const lines = readline.createInterface({ input: process.stdin });
+    let count = 0;
+    lines.on('line', line => {
+      const message = JSON.parse(line);
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'server/' + message.params, params: { count: ++count, value: message.params } }) + '\\n');
+    });
+  `);
+  const ready = peerReady(transport); void ready.catch(() => {});
+  try {
+    const beforeReady = nextNotification(transport, 'server/before');
+    transport.notify('probe', 'before');
+    await assert.rejects(beforeReady, /Notification server\/before was not received/);
+    await ready;
+    const afterReady = nextNotification(transport, 'server/after');
+    transport.notify('probe', 'after');
+    assert.deepEqual(await afterReady, { count: 2, value: 'after' });
+  } finally { transport.close(); }
+});
+
+for (const [name, source, expected] of [
+  ['early exit', 'process.exit(7)', /exited before readiness/],
+  ['missing ready', 'await new Promise(() => { setInterval(() => {}, 1000); })', /startup readiness timed out/],
+] as const) {
+  test(`stdio fixture readiness rejects ${name} and closes its owned transport`, { timeout: 15_000 }, async () => {
+    const transport = transportFor(source);
+    try { await assert.rejects(peerReady(transport, name === 'early exit' ? 10_000 : 100), expected); }
+    finally { transport.close(); }
+  });
+}
