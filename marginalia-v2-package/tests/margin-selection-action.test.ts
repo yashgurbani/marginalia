@@ -114,6 +114,7 @@ async function remountPaired(t: import('node:test').TestContext, e: ReturnType<t
   const journal = documentJournal(e.namespace, localPersistence(e.namespace).journal);
   replaceGlobals(t, { fetch: async (url: string) => {
     const path = new URL(url).pathname; requests.push(path);
+    if (path === '/api/read/jobs') return Response.json({ configured: true, available: true, unverified: [], disclosureVersion: null });
     if (path === '/api/change') return Response.json({});
     if (path === '/api/read/threads') return Response.json({ threads: journal.state.threads.map(thread => ({ ...thread, sourceVersionId: 'verified-source' })) });
     throw new Error('Unexpected request ' + path);
@@ -143,7 +144,7 @@ test('a restored simulation submitted unchanged reaches review as a simulation',
   form.fire('submit'); await api.drain();
   assert.equal(opened.length, 1);
   assert.equal(opened[0].intent, 'simulate', 'the action the request was saved with survives the pause');
-  assert.equal(requests.some(path => path.includes('/jobs')), false, 'review is reached, nothing is sent');
+  assert.equal(requests.some(path => path.startsWith('/api/jobs') || path === '/api/consent/decision'), false, 'review is reached, nothing is sent');
   api.destroy(); await api.drain();
 });
 
@@ -155,7 +156,7 @@ test('a deliberate action chosen after a restore carries its own intent', async 
   offered.click(); await api.drain();
   assert.equal(opened.length, 1);
   assert.equal(opened[0].intent, chosen, 'choosing an action deliberately decides the action');
-  assert.equal(requests.some(path => path.includes('/jobs')), false);
+  assert.equal(requests.some(path => path.startsWith('/api/jobs') || path === '/api/consent/decision'), false);
   api.destroy(); await api.drain();
 });
 
@@ -166,7 +167,7 @@ test('edited words submitted plainly are a plain question again', async t => {
   assert.equal(opened.length, 1);
   assert.equal(opened[0].question, 'What did the second passage change?');
   assert.equal(opened[0].intent, 'unsure', 'the words are no longer the simulation that was saved');
-  assert.equal(requests.some(path => path.includes('/jobs')), false);
+  assert.equal(requests.some(path => path.startsWith('/api/jobs') || path === '/api/consent/decision'), false);
   api.destroy(); await api.drain();
 });
 
@@ -321,4 +322,291 @@ test('failed persistence releases the button and retry preserves the original Ke
   const state = e.data(e.namespace).get('journal') as JournalState;
   assert.equal(state.threads.length, 1);
   assert.deepEqual(state.pending, [mutation]);
+});
+
+for (const action of ['ask', 'simulate'] as const) test(`two unpaired ${action} submissions preserve one durable request without creating a thread`, async t => {
+  const e = env(t), requests: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => { requests.push(String(url)); throw new Error('Unexpected outbound request'); } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: true, readPosition: async () => undefined });
+  await api.drain();
+  assert.equal(await api.selectionAction(action, anchor()), false);
+  const form = e.root.querySelector('.m-asking-draft')!;
+  if (action === 'ask') { const input = form.querySelector('input')!; input.value = 'Why does this passage matter?'; input.fire('input'); await api.drain(); }
+  for (let i = 0; i < 2; i++) { form.fire('submit'); await api.drain(); }
+  const retained = drafts(e, 'question:draft:');
+  const state = e.data(e.namespace).get('journal') as JournalState | undefined;
+  api.destroy(); await api.drain();
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0].question, action === 'ask' ? 'Why does this passage matter?' : 'Simulate this passage.');
+  assert.equal(retained[0].intent, action === 'ask' ? 'unsure' : 'simulate');
+  assert.deepEqual(retained[0].anchor, anchor());
+  assert.deepEqual(retained[0].capture, capture);
+  assert.deepEqual(requests, []);
+  assert.equal(state?.threads.length ?? 0, 0, 'blocked review must not create an empty thread');
+  assert.equal(state?.pending.length ?? 0, 0);
+  assert.equal(retained[0].keepMutation, undefined);
+  assert.equal(retained[0].threadId, undefined);
+});
+
+// Copy only durable storage into a new namespace. This bypasses documentQuestion,
+// journal and helper caches, so remount cannot pass on memory-only draft state.
+function reloadStorage(e: ReturnType<typeof env>) {
+  const saved = structuredClone([...e.data(e.namespace)]);
+  e.namespace = crypto.randomUUID();
+  for (const [key, value] of saved) e.data(e.namespace).set(key, value);
+}
+
+async function realReview(t: import('node:test').TestContext, e: ReturnType<typeof env>) {
+  const peerModule = await import('../ui/asking/index.ts');
+  const { createT08Mount } = await import('../ui/asking-host.ts');
+  const { mountConsentSheet } = await import('../ui/consent.ts');
+  replaceGlobals(t, { cancelAnimationFrame: clearImmediate });
+  const journal = documentJournal(e.namespace, localPersistence(e.namespace).journal);
+  const requests: string[] = [], prepared: any[] = [];
+  let binding: any, flow: ReturnType<typeof peerModule.createAskingFlow> | undefined;
+  const source = { id: 'verified-source', sourceId: 'source', hash: 'a'.repeat(64), text: capture.text, title: capture.title,
+    pageType: capture.pageType, capturedAt: capture.capturedAt, extractionVersion: capture.extractionVersion, metadataStatus: 'provided' };
+  replaceGlobals(t, { fetch: async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname; requests.push(path);
+    if (path === '/health') return Response.json({ status: 'ready' });
+    if (path === '/pair') return Response.json({ token: 'p'.repeat(43) });
+    if (path === '/api/change') return Response.json({});
+    if (path === '/api/read/threads') return Response.json({ threads: journal.state.threads.map(thread => ({ ...thread, sourceVersionId: source.id })) });
+    if (path === '/api/read/export') return Response.json({ thread: journal.state.threads[0], source, replies: [], replyViews: [] });
+    if (path === '/api/read/jobs') return Response.json({ configured: true, available: true, unverified: [], disclosureVersion: null });
+    if (path !== '/api/jobs/prepare') throw new Error('Unexpected controlled transport: ' + path);
+    const body = JSON.parse(String(init?.body)); prepared.push(body);
+    const capabilities = body.intent === 'simulate' ? ['samples', 'solver'] : [];
+    const packet = { schema: 'marginalia.job-packet.v1', intent: body.intent, question: body.question,
+      source: { url: binding.sourceUrl, title: binding.sourceTitle, pageType: binding.sourcePageType, capturedAt: binding.sourceCapturedAt,
+        sourceHash: binding.sourceHash, sourceVersionId: binding.sourceVersionId },
+      selection: { ...binding.anchor, originalEnd: binding.anchor.end, omittedCharacters: 0 },
+      adjacentContext: { before: '', after: '', basis: 'bounded-character-context' }, availableCapabilities: capabilities, omissions: [] };
+    return Response.json({ unverified: [], disclosureVersion: null,
+      job: { ...body, provider: 'app-server', model: 'host-selected', mode: 'structured-final', policyKey: 'b'.repeat(64), preparedPayloadDigest: 'c'.repeat(64), capabilities },
+      preview: { id: 'preview-' + body.id, revision: 1, requestId: body.id, site: new URL(capture.url).origin,
+        scope: 'cloud-inference', scopeLabel: 'Host scope', recipient: 'openai-codex', recipientLabel: 'OpenAI Codex',
+        provider: 'app-server', policyKey: 'b'.repeat(64), outgoing: [
+          { label: 'Bounded reading packet', text: JSON.stringify(packet), sha256: 'a'.repeat(64) },
+          { label: 'Adapter prompt', text: 'Exact controlled prompt', sha256: 'b'.repeat(64) }],
+        payloadDigest: 'a'.repeat(64), bindingDigest: 'c'.repeat(64), expiresAt: '2026-09-17T00:10:00Z', state: 'ready' } });
+  } });
+  const peer = { ...peerModule,
+    createAskingFlow(options: any) { binding = options.binding; return flow = peerModule.createAskingFlow({ ...options, now: () => Date.parse(capture.capturedAt) }); },
+    // t05-harness substitutes the host's consent import. Explicitly restore the
+    // production consent renderer here, so reaching review is not just a spy call.
+    mountAskingCard(host: HTMLElement, options: any) { return peerModule.mountAskingCard(host, { ...options, mountConsent: mountConsentSheet }); },
+  };
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: true, readPosition: async () => undefined,
+    asking: createT08Mount(async () => peer as any) });
+  t.after(async () => { api.destroy(); await api.drain(); });
+  await api.drain();
+  return { api, requests, prepared, journal, getFlow: () => flow };
+}
+
+for (const action of ['ask', 'simulate'] as const) test(`durable blocked ${action} survives reload, pairing sends nothing, one Continue reaches real review once`, async t => {
+  const e = env(t), first = await mount(e.root, e.namespace); await first.drain();
+  await first.selectionAction(action, anchor()); await first.drain();
+  const form = e.root.querySelector('.m-asking-draft')!;
+  if (action === 'ask') { const input = form.querySelector('input')!; input.value = 'Why does this passage matter?'; input.fire('input'); await first.drain(); }
+  form.fire('submit'); await first.drain(); form.fire('submit'); await first.drain();
+  const saved = structuredClone(drafts(e, 'question:draft:')[0]);
+  first.destroy(); await first.drain(); reloadStorage(e);
+  const { api, requests, prepared, journal, getFlow } = await realReview(t, e);
+  assert.deepEqual(drafts(e, 'question:draft:')[0], saved);
+  assert.equal(journal.state.threads.length, 0);
+  button(e.root, 'Settings').click(); await api.drain();
+  const code = e.root.querySelector('[aria-label="Pairing code"]')!; code.value = '123456'; code.fire('input');
+  button(e.root, 'Pair').click(); await api.drain();
+  assert.equal(prepared.length, 0, 'successful pairing never prepares or resumes a model request');
+  assert.equal(getFlow(), undefined);
+  assert.equal(journal.state.threads.length, 0);
+  assert.equal((e.data(e.namespace).get('pairing') as any).token, 'p'.repeat(43));
+  assert.equal(e.root.querySelector('.m-question')!.hidden, false, 'pairing returns to the retained draft');
+  const continued = button(e.root, action === 'simulate' ? 'Continue simulation' : 'Continue Ask');
+  continued.click(); continued.click(); await api.drain();
+  assert.equal(prepared.length, 1);
+  assert.equal(getFlow()!.getState().phase, 'consent');
+  assert.equal(e.root.querySelectorAll('.m-consent').length, 1);
+  assert.equal(prepared[0].question, saved.question); assert.equal(prepared[0].intent, saved.intent);
+  assert.deepEqual(drafts(e, 'question:draft:')[0].anchor, saved.anchor);
+  assert.deepEqual(drafts(e, 'question:draft:')[0].capture, saved.capture);
+  assert.equal(journal.state.threads.length, 1);
+  assert.equal(requests.some(path => path === '/api/jobs' || path === '/api/consent/decision' || /\/(retry|followups)$/.test(path)), false);
+});
+
+
+for (const action of ['ask', 'simulate'] as const) test(`a paired reload continues the exact ${action} draft in one action without pairing replay`, async t => {
+  const e = env(t), first = await mount(e.root, e.namespace); await first.drain();
+  await first.selectionAction(action, anchor()); await first.drain();
+  const form = e.root.querySelector('.m-asking-draft')!;
+  if (action === 'ask') { const input = form.querySelector('input')!; input.value = 'Explain the first passage'; input.fire('input'); await first.drain(); }
+  form.fire('submit'); await first.drain();
+  const saved = structuredClone(drafts(e, 'question:draft:')[0]);
+  first.destroy(); await first.drain(); pair(e); reloadStorage(e);
+  const { api, requests, prepared, getFlow } = await realReview(t, e);
+  assert.equal(prepared.length, 0); assert.equal(getFlow(), undefined);
+  const continued = button(e.root, action === 'simulate' ? 'Continue simulation' : 'Continue Ask');
+  continued.click(); continued.click(); await api.drain();
+  assert.equal(prepared.length, 1); assert.equal(getFlow()!.getState().phase, 'consent');
+  assert.equal(prepared[0].intent, saved.intent); assert.equal(prepared[0].question, saved.question);
+  assert.equal(requests.includes('/pair'), false);
+  assert.equal(requests.includes('/api/jobs'), false); assert.equal(requests.includes('/api/consent/decision'), false);
+});
+
+test('editing a blocked simulation persists plain-question intent across a storage-only reload', async t => {
+  const e = env(t), first = await mount(e.root, e.namespace); await first.drain();
+  await first.selectionAction('simulate', anchor()); await first.drain();
+  const input = e.root.querySelector('.m-asking-draft')!.querySelector('input')!;
+  input.value = 'Explain this passage instead'; input.fire('input'); await first.drain();
+  assert.equal(drafts(e, 'question:draft:')[0].intent, 'unsure');
+  input.value = 'Simulate this passage.'; input.fire('input'); await first.drain();
+  assert.equal(drafts(e, 'question:draft:')[0].intent, 'simulate');
+  input.value = 'Explain this passage instead'; input.fire('input'); await first.drain();
+  first.destroy(); await first.drain(); pair(e); reloadStorage(e);
+  const { api, prepared } = await realReview(t, e);
+  button(e.root, 'Continue Ask').click(); await api.drain();
+  assert.equal(prepared.length, 1); assert.equal(prepared[0].intent, 'unsure');
+  assert.equal(prepared[0].question, 'Explain this passage instead');
+});
+
+test('failed question persistence never creates a thread and an explicit retry keeps the question', async t => {
+  const e = env(t), api = await mount(e.root, e.namespace); await api.drain();
+  t.after(async () => { api.destroy(); await api.drain(); });
+  await api.selectionAction('ask', anchor()); await api.drain();
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  e.onWrite(async key => { if (key.startsWith('question:draft:')) throw new Error('Controlled write failure'); });
+  input.value = 'Retain my unsaved question'; input.fire('input'); await api.drain();
+  form.fire('submit'); await api.drain();
+  assert.equal((e.data(e.namespace).get('journal') as JournalState | undefined)?.threads.length ?? 0, 0);
+  assert.equal(input.value, 'Retain my unsaved question');
+  assert.notEqual(drafts(e, 'question:draft:')[0].question, input.value, 'failed save is not passed off as durable');
+  e.onWrite(async () => {}); form.fire('submit'); await api.drain();
+  assert.equal(drafts(e, 'question:draft:')[0].question, input.value);
+  assert.equal((e.data(e.namespace).get('journal') as JournalState | undefined)?.threads.length ?? 0, 0);
+});
+
+test('failed pairing persistence leaves the draft unpaired and opens no review', async t => {
+  const e = env(t), { api, prepared, getFlow, journal } = await realReview(t, e);
+  await api.selectionAction('simulate', anchor()); await api.drain();
+  e.onWrite(async key => { if (key === 'pairing') throw new Error('Controlled pairing save failure'); });
+  button(e.root, 'Settings').click(); await api.drain();
+  const code = e.root.querySelector('[aria-label="Pairing code"]')!; code.value = '123456'; code.fire('input');
+  button(e.root, 'Pair').click(); await api.drain();
+  assert.equal(e.data(e.namespace).get('pairing'), undefined); assert.throws(() => api.connection());
+  assert.equal(prepared.length, 0); assert.equal(getFlow(), undefined); assert.equal(journal.state.threads.length, 0);
+  assert.equal(drafts(e, 'question:draft:')[0].intent, 'simulate');
+  assert.match(e.root.textContent, /new pairing was not saved/);
+});
+
+test('a stale Continue rechecks revoked pairing before creating a thread', async t => {
+  const e = env(t), first = await mount(e.root, e.namespace); await first.drain();
+  await first.selectionAction('simulate', anchor()); await first.drain(); first.destroy(); await first.drain();
+  pair(e); reloadStorage(e);
+  const { api, prepared, journal } = await realReview(t, e);
+  const continued = button(e.root, 'Continue simulation');
+  api.connection().token = '';
+  continued.click(); await api.drain();
+  assert.equal(journal.state.threads.length, 0); assert.equal(prepared.length, 0);
+  assert.equal(drafts(e, 'question:draft:')[0].keepMutation, undefined);
+});
+
+test('closing the source while a question reservation is saving creates no thread or review', async t => {
+  const { deferred, until } = await import('./t05-dom.ts');
+  const e = env(t), first = await mount(e.root, e.namespace); await first.drain();
+  await first.selectionAction('simulate', anchor()); await first.drain(); first.destroy(); await first.drain();
+  pair(e); reloadStorage(e);
+  const { api, prepared, journal } = await realReview(t, e);
+  const held = deferred(); let waiting = false;
+  e.onWrite(async (key, value: any) => { if (key.startsWith('question:draft:') && value?.keepMutation) { waiting = true; await held.promise; } });
+  button(e.root, 'Continue simulation').click(); await until(() => waiting);
+  api.destroy(); held.resolve(); await api.drain();
+  assert.equal(journal.state.threads.length, 0); assert.equal(prepared.length, 0);
+  assert.equal(drafts(e, 'question:draft:')[0].question, 'Simulate this passage.');
+});
+
+for (const failure of ['unavailable', 'unconfigured', 'rejected', 'offline', 'invalid'] as const) test(`two ${failure} availability checks preserve one draft with zero threads`, async t => {
+  const e = env(t); pair(e);
+  const requests: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => {
+    const path = new URL(url).pathname; requests.push(path);
+    assert.equal(path, '/api/read/jobs');
+    if (failure === 'offline') throw new Error('Controlled offline helper');
+    if (failure === 'rejected') return Response.json({ error: 'Pairing was revoked' }, { status: 401 });
+    if (failure === 'invalid') return Response.json({ available: true });
+    return Response.json({ configured: failure !== 'unconfigured', available: false, unverified: [], disclosureVersion: null });
+  } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: true, readPosition: async () => undefined });
+  t.after(async () => { api.destroy(); await api.drain(); }); await api.drain();
+  await api.selectionAction('ask', anchor()); await api.drain();
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  input.value = 'Retain this until the helper is ready'; input.fire('input'); await api.drain();
+  for (let i = 0; i < 2; i++) { form.fire('submit'); await api.drain(); }
+  assert.deepEqual(requests, ['/api/read/jobs', '/api/read/jobs']);
+  const saved = drafts(e, 'question:draft:');
+  assert.equal(saved.length, 1); assert.equal(saved[0].question, input.value); assert.equal(saved[0].intent, 'unsure');
+  assert.equal(saved[0].keepMutation, undefined); assert.equal(saved[0].threadId, undefined);
+  assert.equal((e.data(e.namespace).get('journal') as JournalState | undefined)?.threads.length ?? 0, 0);
+});
+
+for (const invalidation of ['closed', 'revoked', 'cancelled'] as const) test(`a ${invalidation} source while availability is pending creates no thread`, async t => {
+  const { deferred, until } = await import('./t05-dom.ts');
+  const e = env(t); pair(e);
+  const held = deferred<Response>(); const requests: string[] = [];
+  replaceGlobals(t, { fetch: async (url: string) => { requests.push(new URL(url).pathname); return held.promise; } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: true, readPosition: async () => undefined });
+  t.after(async () => { api.destroy(); await api.drain(); }); await api.drain();
+  await api.selectionAction('ask', anchor()); await api.drain();
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  input.value = 'Keep this question'; input.fire('input'); await api.drain(); form.fire('submit');
+  await until(() => requests.length > 0);
+  if (invalidation === 'closed') api.destroy();
+  else if (invalidation === 'revoked') api.connection().token = '';
+  else e.root.querySelector('.m-question')!.fire('keydown', { key: 'Escape' });
+  held.resolve(Response.json({ configured: true, available: true, unverified: [], disclosureVersion: null })); await api.drain();
+  assert.deepEqual(requests, ['/api/read/jobs']);
+  assert.equal((e.data(e.namespace).get('journal') as JournalState | undefined)?.threads.length ?? 0, 0);
+  const saved = drafts(e, 'question:draft:')[0]; assert.equal(saved.question, input.value); assert.equal(saved.keepMutation, undefined);
+});
+
+
+test('editing while availability is pending keeps the new words and creates no thread', async t => {
+  const { deferred, until } = await import('./t05-dom.ts');
+  const e = env(t); pair(e);
+  const held = deferred<Response>(); let reads = 0;
+  replaceGlobals(t, { fetch: async () => { reads++; return held.promise; } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: true, readPosition: async () => undefined });
+  t.after(async () => { api.destroy(); await api.drain(); }); await api.drain();
+  await api.selectionAction('ask', anchor()); await api.drain();
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  input.value = 'The earlier question'; input.fire('input'); await api.drain(); form.fire('submit');
+  await until(() => reads > 0); input.value = 'Keep these newer words'; input.fire('input');
+  held.resolve(Response.json({ configured: true, available: true, unverified: [], disclosureVersion: null })); await api.drain();
+  assert.equal(reads, 1); assert.equal(drafts(e, 'question:draft:')[0].question, 'Keep these newer words');
+  assert.equal((e.data(e.namespace).get('journal') as JournalState | undefined)?.threads.length ?? 0, 0);
+  assert.match(form.textContent, /request context changed/);
+});
+
+test('editing during context synchronization preserves the newer durable draft and opens no stale review', async t => {
+  const { deferred, until } = await import('./t05-dom.ts');
+  const e = env(t); pair(e);
+  const held = deferred<Response>(); let syncing = false, opens = 0;
+  const journal = documentJournal(e.namespace, localPersistence(e.namespace).journal);
+  replaceGlobals(t, { fetch: async (url: string) => {
+    const path = new URL(url).pathname;
+    if (path === '/api/read/jobs') return Response.json({ configured: true, available: true, unverified: [], disclosureVersion: null });
+    if (path === '/api/change') { syncing = true; return held.promise; }
+    if (path === '/api/read/threads') return Response.json({ threads: journal.state.threads.map(thread => ({ ...thread, sourceVersionId: 'verified-source' })) });
+    throw new Error('Unexpected route: ' + path);
+  } });
+  const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, allowHelper: true, readPosition: async () => undefined,
+    asking: () => ({ open() { opens++; }, setVisible() {}, destroy() {} }) });
+  t.after(async () => { api.destroy(); await api.drain(); }); await api.drain();
+  await api.selectionAction('ask', anchor()); await api.drain();
+  const form = e.root.querySelector('.m-asking-draft')!, input = form.querySelector('input')!;
+  input.value = 'Earlier question'; input.fire('input'); await api.drain(); form.fire('submit');
+  await until(() => syncing); input.value = 'These newer words must survive'; input.fire('input');
+  held.resolve(Response.json({})); await api.drain();
+  assert.equal(opens, 0); assert.equal(drafts(e, 'question:draft:')[0].question, 'These newer words must survive');
+  assert.equal(journal.state.threads.length, 1, 'context creation had already been admitted, but no stale question reaches review');
 });

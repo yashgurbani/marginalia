@@ -1,4 +1,5 @@
 import { mountAskingDraft } from './asking/mount.ts';
+import { createAskingHost } from './asking/helper-adapter.ts';
 import { rankEligibleSuggestions, suggestionBlock, suggestionPage, suggestionOffer, SUGGESTION_ORDER } from './suggestion-policy.ts';
 import type { Intent } from '../contracts/reply.ts';
 import { followupQuestion } from './asking/surfaces.ts';
@@ -954,6 +955,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     questionDraft = structuredClone(value);
     return track(questionBuffer.save(questionDraft)).then(value => {
       if (!questionBuffer.unsaved()) questionAttachmentSaveFailed = false;
+      if (alive()) renderQuestionContinuation();
       return value;
     }, error => { questionAttachmentSaveFailed = true; throw error; });
   }
@@ -1088,6 +1090,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     const message = el('p', undefined, 'm-meta'), reviewButton = button('Ask', () => {});
     questionForm.replaceChildren(message);
     const current = questionDraft, generation = ++draftGeneration;
+    const retainedIntent = current.intent, retainedQuestion = current.question;
     message.textContent = 'Preparing ideas.';
     void track((activeSuggestionExposure ? Promise.resolve(activeSuggestionExposure.offers) : rankedOffers(current)).then(offers => {
       if (!alive() || generation !== draftGeneration || questionDraft?.anchor.exact !== current.anchor.exact || questionArea.hidden) return;
@@ -1097,7 +1100,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         // A restored request keeps the action it was saved with when the reader
         // submits it unchanged. Edited words, or a deliberate offer, decide for themselves.
         ...(current.intent ? { retained: { intent: current.intent, question: current.question } } : {}),
-        onEdit: (question, context) => { if (questionDraft) { questionDraft.question = question; questionDraft.context = context; void saveQuestion(questionDraft).catch(fail); } },
+        onEdit: (question, context) => { if (questionDraft) { questionDraft.question = question; questionDraft.context = context; questionDraft.intent = question === retainedQuestion ? retainedIntent : 'unsure'; void saveQuestion(questionDraft).catch(fail); } },
         readerSkills: () => trustedHelper().readerSkills(),
         onChoose: (intent, question, context, readerSkill?: ReaderSkillSelection) => track((async () => {
           const chosen = questionDraft, chosenMount = draftMount, request = questionRequest, generation = draftGeneration;
@@ -1123,6 +1126,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         onClose: () => closeQuestion(), onKeep: () => { void keep(current.anchor); }, onPark: () => { void keep(current.anchor, true); },
       });
       draftMount.message.className = 'm-meta';
+      if (current.question.trim() && !askBlockedReason()) draftMount.submit.textContent = current.intent === 'simulate' ? 'Continue simulation' : 'Continue Ask';
       const quote = el('blockquote', current.anchor.kind === 'whole-page' ? 'Whole page' : current.anchor.exact);
       quote.hidden = !!selected && canonicalReplyData(selected) === canonicalReplyData(current.anchor);
       questionForm.prepend(quote);
@@ -1147,7 +1151,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         closeQuestion('replaced'); // Snapshot the peer before preserving and clearing this draft.
         const retained = structuredClone(questionDraft);
         await persistence.write('question-history:' + draftKey + ':' + id(), retained); earlierDrafts.hidden = false;
-        await questionBuffer.save(undefined); questionDraft = undefined;
+        await questionBuffer.save(undefined); questionDraft = undefined; renderQuestionContinuation();
         announce('Question draft retained in history and export. Choose a passage or note for another question.');
       } finally { questionSaving = false; }
     });
@@ -1185,24 +1189,58 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
     }
     footerSlots.requests.append(section);
   }
+  const returnQuestion = button('Return to retained question', () => { if (questionDraft && !questionSaving) showQuestion(questionDraft); });
+  const continueQuestion = button('Continue Ask', () => { void safely(async () => {
+    if (!questionDraft || questionSaving || !questionArea.hidden && questionForm.hidden) return;
+    const controls = showQuestion(questionDraft);
+    await openQuestionWithHelper(controls.message, continueQuestion);
+  }); });
+  function renderQuestionContinuation() {
+    if (!questionDraft) { footerSlots.retained.replaceChildren(); return; }
+    if (returnQuestion.parentElement !== footerSlots.retained) footerSlots.retained.append(returnQuestion);
+    continueQuestion.textContent = questionDraft.intent === 'simulate' ? 'Continue simulation' : 'Continue Ask';
+    if (!questionDraft.question.trim() || askBlockedReason() || !questionArea.hidden && questionForm.hidden) continueQuestion.remove();
+    else if (continueQuestion.parentElement !== footerSlots.retained) footerSlots.retained.append(continueQuestion);
+  }
   async function openQuestionWithHelper(message: HTMLElement, button: HTMLButtonElement) {
     if (!questionDraft || questionSaving || !alive()) return;
     const request = ++questionRequest; questionSaving = true; button.disabled = true;
     message.textContent = 'Preparing request.';
     try {
       if (denied) throw new Error('Question previews are blocked on this device for this site. Change that preference in Settings.');
-      const selected = structuredClone(questionDraft);
+      // A blocked request is a question draft, not an empty saved thread.
+      // Check the live connection here too: selection-card state can be stale.
+      const client = trustedHelper(), connection = client.connectionVersion;
+      const selected = structuredClone(questionDraft), generation = draftGeneration;
+      const assertCurrent = () => {
+        if (!alive() || request !== questionRequest || generation !== draftGeneration || denied || trustedHelper() !== client || client.connectionVersion !== connection
+          || questionDraft?.question !== selected.question || questionDraft.context !== selected.context || questionDraft.intent !== selected.intent)
+          throw new Error('The request context changed. Your question is retained for review.');
+      };
       if (!selected.threadId) {
+        await saveQuestion(selected); assertCurrent();
+        await options.authorizeHelperSend?.(selected.capture.url); assertCurrent();
+        // Reuse the authenticated read and its response validation. A token alone
+        // does not establish helper or runtime availability. The review checks again.
+        const availability = await createAskingHost({
+          request: (path, body) => client.request(path, body, signal),
+          get: path => client.request(path, undefined, signal),
+          replies: id => client.replies(id),
+        }).availability(signal);
+        assertCurrent();
+        if (!availability.configured || !availability.available) throw new Error('Finish the Codex setup on this computer to continue.');
         selected.keepMutation ??= { id: id(), kind: 'keep', threadId: id(), capture: selected.capture, anchor: selected.anchor };
-        await saveQuestion(selected); await change(selected.keepMutation);
+        await saveQuestion(selected); assertCurrent(); await change(selected.keepMutation); assertCurrent();
         selected.threadId = selected.keepMutation.threadId; await saveQuestion(selected);
       }
+      assertCurrent();
       if (journal.unsaved || journal.state.pending.some(m => m.threadId === selected.threadId)) await sync();
+      assertCurrent();
       const thread = currentThread(selected.threadId);
       if (!thread || !thread.sourceVersionId || thread.deletedAt) throw new Error('This passage could not be saved for review. Your question is retained.');
       selected.sourceVersionId = thread.sourceVersionId;
       await saveQuestion(selected);
-      if (!alive() || request !== questionRequest) return;
+      assertCurrent();
       askingMount ??= (options.asking ?? createT08Mount())(askingHost, {
         helper: trustedHelper, signal,
         surface: options.allowHelper === false ? 'floating' : trustedHelper().origin === location.origin ? 'localhost' : 'native-panel',
@@ -1227,7 +1265,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
           if ((key === 'request' || key === 'completion') && typeof record?.jobId === 'string') activityJobId = record.jobId;
         },
         retainedQuestion: value => { if (value.resumeJobId) activityJobId = value.resumeJobId; void saveQuestion(value).catch(fail); },
-        onClosed: () => { if (alive()) { askingHost.hidden = true; questionForm.hidden = false; draftMount?.setVisible(true); draftMount?.focus(); } },
+        onClosed: () => { if (alive()) { askingHost.hidden = true; questionForm.hidden = false; draftMount?.setVisible(true); draftMount?.focus(); renderQuestionContinuation(); } },
         highlight: (binding, original) => highlight(binding ? bindingAnchor(binding, original) ?? null : null),
         returnToSource: anchor => { if (alive()) sourceAction(anchor); },
         navigate: (binding, original) => { const anchor = bindingAnchor(binding, original); if (anchor) sourceAction(anchor); else announce('This original source passage is uncertain on the current page; no navigation was attempted.'); },
@@ -1240,13 +1278,14 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
       openSettings,
       });
       draftMount?.setVisible(false); questionForm.hidden = true; askingMount.setVisible(!suspended && !questionArea.hidden);
+      renderQuestionContinuation();
       const opening = askingMount;
       activityJobId = selected.resumeJobId;
       await opening.open(selected);
       if (!alive() || request !== questionRequest) opening.setVisible(false);
     } catch (error) {
-      if (alive() && request === questionRequest) { askingMount?.setVisible(false); questionForm.hidden = false; draftMount?.setVisible(true); message.textContent = error instanceof Error ? error.message : 'The review could not be opened. The draft is retained; request outcome is unconfirmed.'; }
-    } finally { questionSaving = false; button.disabled = false; }
+      if (alive() && request === questionRequest) { askingMount?.setVisible(false); questionForm.hidden = false; draftMount?.setVisible(true); (draftMount?.message ?? message).textContent = error instanceof Error ? error.message : 'The review could not be opened. The draft is retained; request outcome is unconfirmed.'; }
+    } finally { questionSaving = false; button.disabled = false; if (alive()) renderQuestionContinuation(); }
   }
 
   function renderThreads() {
@@ -1929,7 +1968,10 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
             throw new Error('The new pairing was not saved on this device. The earlier local pairing is retained. The helper may still list the new pairing; inspect its paired browsers before retrying.');
           }
           if (!alive() || client !== helper || client.connectionVersion !== epoch) return;
-          pairingDraft = ''; code.value = ''; channel?.postMessage('pairing-changed'); renderSettings(); announce('Paired with the local helper. No queued work or model request was sent.');
+          pairingDraft = ''; code.value = ''; channel?.postMessage('pairing-changed'); renderSettings();
+          // Pairing only restores the draft. Its explicit Continue action opens review.
+          if (questionDraft && !questionSaving) { setup.hidden = true; showQuestion(questionDraft); }
+          renderQuestionContinuation(); announce('Paired with the local helper. No queued work or model request was sent.');
         })),
         actionButton('settings:' + 'save-queued-changes', 'Save queued changes', () => safely(sync)),
         actionButton('settings:' + 'disconnect', 'Disconnect', () => safely(async () => {
@@ -2089,7 +2131,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
   } catch { announce('Local storage could not be restored. Current drafts remain in this document only; export before closing.', true); }
   if (!alive()) return api;
   hydrationFinished = true; renderCompose(); renderThreads(); renderSettings(); renderRetainedRequests();
-  if (questionDraft) footerSlots.retained.append(button('Return to retained question', () => { if (questionDraft) showQuestion(questionDraft); }));
+  renderQuestionContinuation();
   // Exposure history is independent of reader hydration. Read at most 64 entries
   // per page and yield between pages; preserve malformed rows for inspection.
   void track((async () => {
@@ -2114,7 +2156,7 @@ export async function mountMargin(root: HTMLElement, options: MarginOptions = {}
         const pairing = await persistence.read<{ origin: string; token: string }>('pairing');
         if (!alive() || client !== helper || epoch !== client.connectionVersion) return;
         const token = pairing?.origin === client.origin ? pairing.token : ''; if (client.token !== token) client.token = token;
-      }); renderSettings(); announce('Pairing changed in another margin. Earlier outcomes may be unconfirmed; nothing was automatically retried.'); });
+      }); renderSettings(); renderQuestionContinuation(); announce('Pairing changed in another margin. Earlier outcomes may be unconfirmed; nothing was automatically retried.'); });
       return;
     }
     void safely(async () => { await locked(() => journal.load()); draftMount?.changed(); renderThreads(); renderSettings(); announce(journal.unsaved ? 'Another margin saved work; your unsaved changes remain here.' : 'Saved work updated. Your note and question drafts are unchanged.'); });

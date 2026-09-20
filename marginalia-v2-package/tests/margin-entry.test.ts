@@ -510,17 +510,19 @@ test('Keep device version calls real T07 without sending or discarding the corre
   assert.equal(journal.state.resolutions![0].resolution, 'kept-device'); assert.equal(field.value, mutation.text); assert.equal(field.readOnly, false); assert.match(e.root.textContent, /Nothing was uploaded/);
   api.destroy(); await api.drain();
 });
-test('selection and typing send nothing; choosing saves context once and a closed draft stays in history', async t => {
+test('selection and typing send nothing; unpaired choices stay drafts and a closed draft stays in history', async t => {
   const e = env(t); let opens = 0;
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, asking: () => ({ open() { opens++; }, setVisible() {}, destroy() {} }) });
   api.select(anchor()); button(e.root, 'Ask').click(); await api.drain();
   const q = e.root.querySelector('[aria-label="Your question"]')!; q.value = 'My question'; q.fire('input'); await api.drain();
   assert.equal(opens, 0); assert.equal((e.data(e.namespace).get('journal') as JournalState | undefined)?.pending.length ?? 0, 0);
   button(e.root, 'Define it here').click(); await api.drain();
-  let journal = e.data(e.namespace).get('journal') as JournalState;
-  assert.equal(journal.threads[0].anchor.start, 0); assert.equal(journal.pending.length, 1); assert.equal(opens, 0);
+  let journal = e.data(e.namespace).get('journal') as JournalState | undefined;
+  assert.equal(journal?.threads.length ?? 0, 0); assert.equal(journal?.pending.length ?? 0, 0); assert.equal(opens, 0);
   button(e.root, 'Define it here').click(); await api.drain();
-  journal = e.data(e.namespace).get('journal') as JournalState; assert.equal(journal.pending.length, 1);
+  journal = e.data(e.namespace).get('journal') as JournalState | undefined; assert.equal(journal?.threads.length ?? 0, 0); assert.equal(journal?.pending.length ?? 0, 0);
+  const retained = [...e.data(e.namespace)].filter(([key]) => key.startsWith('question:draft:'));
+  assert.equal(retained.length, 1); assert.equal((retained[0][1] as any).anchor.start, 0); assert.equal((retained[0][1] as any).question, 'Define it here in this passage.');
   e.root.querySelector('.m-question')!.fire('keydown', { key: 'Escape' });
   button(e.root.querySelector('.m-selection')!, 'Ask').click(); await api.drain();
   const history = [...e.data(e.namespace)].filter(([key]) => key.startsWith('question-history:'));

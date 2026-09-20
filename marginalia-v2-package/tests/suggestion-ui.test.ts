@@ -363,6 +363,7 @@ test('fresh selection reaches the review host in one choice after real awaited c
   e.data(e.namespace).set('pairing', { origin: helper.origin, token });
   const requests: string[] = []; let opened = 0;
   replaceGlobals(t, { fetch: async (url: string, init: RequestInit) => {
+    if (new URL(url).pathname === '/api/read/jobs') { requests.push('/api/read/jobs'); return Response.json({ configured: true, available: true, unverified: [], disclosureVersion: null }); }
     requests.push(new URL(url).pathname); return nativeHttpFetch(url, { ...init, headers: { ...init.headers, Origin: origin } });
   } });
   const api = await mountMargin(asHost(e.root), { capture, storageName: e.namespace, helperOrigin: helper.origin, readPosition: async () => undefined,
