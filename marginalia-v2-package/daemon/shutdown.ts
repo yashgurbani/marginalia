@@ -1,7 +1,14 @@
 import { mkdirSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
 
 export function ensurePrivateDataDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
+}
+
+/** Initialize before deriving workspace paths or constructing policy-bearing services. */
+export async function preparePrivateDataDirectory(path: string): Promise<string> {
+  ensurePrivateDataDirectory(path);
+  return realpath(path);
 }
 
 export function shutdownSignals(platform: NodeJS.Platform): NodeJS.Signals[] {

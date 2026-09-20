@@ -1,6 +1,6 @@
 import { dedicatedRuntimeIdentity } from './runtime-identity.ts';
 import { createRuntimePolicy } from './runtime-policy.ts';
-import { mkdirSync, realpathSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { startServer } from './server.ts';
@@ -12,7 +12,7 @@ import { createDedicatedHostEvidenceSource } from './consent/evidence-host.ts';
 import { launchProvider } from './providers/runtime.ts';
 import { inspectAppServer } from './providers/preflight.ts';
 import { createLazySolverTransport } from './solver/index.ts';
-import { ensurePrivateDataDirectory, runShutdown, shutdownSignals } from './shutdown.ts';
+import { preparePrivateDataDirectory, runShutdown, shutdownSignals } from './shutdown.ts';
 import { ReaderMigrationError } from './store.ts';
 
 const userDataRoot = process.platform === 'win32' ? process.env.LOCALAPPDATA
@@ -20,8 +20,7 @@ const userDataRoot = process.platform === 'win32' ? process.env.LOCALAPPDATA
     : process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
 const dataDir = process.env.MARGINALIA_DATA_DIR ?? (userDataRoot && isAbsolute(userDataRoot) ? join(userDataRoot, 'Marginalia') : join(homedir(), '.marginalia'));
 if (!isAbsolute(dataDir)) throw new Error('MARGINALIA_DATA_DIR must be absolute.');
-ensurePrivateDataDirectory(dataDir);
-const canonicalDataDir = realpathSync(dataDir);
+const canonicalDataDir = await preparePrivateDataDirectory(dataDir);
 const solverProbeRoot = join(canonicalDataDir, 'confinement-probes');
 mkdirSync(solverProbeRoot, { recursive: true, mode: 0o700 });
 const port = Number(process.env.MARGINALIA_PORT ?? 43120);

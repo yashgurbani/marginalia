@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ensurePrivateDataDirectory, runShutdown, shutdownSignals } from '../daemon/shutdown.ts';
+import { ensurePrivateDataDirectory, preparePrivateDataDirectory, runShutdown, shutdownSignals } from '../daemon/shutdown.ts';
 
 test('shutdown signals match the host platform lifecycle', () => {
   assert.deepEqual(shutdownSignals('win32'), ['SIGINT', 'SIGBREAK', 'SIGHUP']);
@@ -52,4 +52,26 @@ test('new data directories are private on POSIX', { skip: process.platform === '
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+for (const existing of [false, true]) {
+  test('private data initialization returns async canonical identity: ' + (existing ? 'existing' : 'new'), async t => {
+    const root = await mkdtemp(join(tmpdir(), 'marginalia private dir '));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const dataDir = join(root, 'data');
+    if (existing) assert.equal(ensurePrivateDataDirectory(dataDir), undefined);
+    const canonical = await preparePrivateDataDirectory(dataDir);
+    assert.equal(canonical, await realpath(dataDir));
+    assert.ok((await stat(canonical)).isDirectory());
+    if (process.platform !== 'win32') assert.equal((await stat(canonical)).mode & 0o777, 0o700);
+  });
+}
+
+test('private data initialization rejects a file and a child beneath a file', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'marginalia-private-invalid-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'file');
+  await writeFile(file, 'not a directory');
+  await assert.rejects(preparePrivateDataDirectory(file));
+  await assert.rejects(preparePrivateDataDirectory(join(file, 'child')));
 });

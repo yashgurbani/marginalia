@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { preparePrivateDataDirectory } from '../daemon/shutdown.ts';
 import { startServer } from '../daemon/server.ts';
 import { createAuthorizedRuntime } from '../daemon/reader-authorized-runtime.ts';
 import { createDedicatedHostEvidenceSource } from '../daemon/consent/evidence-host.ts';
@@ -71,20 +73,55 @@ class FakeTransport implements RpcTransport {
   close() { this.disconnects.forEach(listener => listener()); }
 }
 
-for (const scenario of ['stock', 'no-env', 'old-variables', 'invalid-executable', 'invalid-home', 'excluded', 'denied'] as const) {
-  test(`D2 configured stock factory with fake transport: ${scenario}`, async t => {
-    // Production main canonicalizes its data directory before planning job policies.
-    const root = await realpath(await mkdtemp(join(tmpdir(), 'readiness-d2-')));
-    t.after(() => rm(root, { recursive: true, force: true }));
-    const userHome = join(root, 'reader'), ordinaryHome = join(userHome, '.codex');
-    const executable = join(root, process.platform === 'win32' ? 'codex.exe' : 'codex');
-    const home = scenario === 'no-env' ? ordinaryHome : join(root, 'dedicated');
+const scenarios = ['stock', 'no-env', 'old-variables', 'invalid-executable', 'invalid-home', 'excluded', 'denied'] as const;
+const fixtures = [
+  ...scenarios.map(scenario => ({ scenario, spelling: 'long' as const })),
+  ...(['stock', 'no-env', 'old-variables'] as const).flatMap(scenario =>
+    (['short-alias', 'junction'] as const).map(spelling => ({ scenario, spelling }))),
+];
+for (const { scenario, spelling } of fixtures) {
+  test(`D2 configured stock factory with fake transport: ${scenario} (${spelling})`, async t => {
+    if (spelling === 'short-alias' && process.platform !== 'win32') {
+      t.skip('Windows 8.3 regression requires Windows; long and junction cases remain active.'); return;
+    }
+    // Windows cannot create a child through this junction when its alias parent is under SystemTemp.
+    const fixtureParent = process.platform === 'win32' && spelling === 'junction' ? process.cwd() : tmpdir();
+    const fixturePrefix = process.platform === 'win32' && spelling === 'junction' ? '.readiness-d2-junction-' : 'readiness d2 ';
+    const temporary = await mkdtemp(join(fixtureParent, fixturePrefix));
+    t.after(() => rm(temporary, { recursive: true, force: true }));
+    const longRoot = await realpath(temporary);
+    let configuredRoot = join(longRoot, 'private data');
+    if (spelling === 'short-alias') {
+      // Ask Windows for the real alias; never invent a ~1 spelling or echo initializer output.
+      const shortRoot = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+        "$fso = New-Object -ComObject Scripting.FileSystemObject; $fso.GetFolder($env:MARGINALIA_TEST_ALIAS_PATH).ShortPath"],
+      { env: { ...process.env, MARGINALIA_TEST_ALIAS_PATH: longRoot }, encoding: 'utf8' }).trim();
+      const longIdentity = await stat(longRoot), shortIdentity = await stat(shortRoot);
+      assert.equal(shortIdentity.dev, longIdentity.dev); assert.equal(shortIdentity.ino, longIdentity.ino);
+      assert.equal(await realpath(shortRoot), longRoot);
+      if (shortRoot.toLowerCase() === longRoot.toLowerCase() || realpathSync(shortRoot) === longRoot) {
+        t.skip('8.3 sync/async spelling discrepancy unavailable on this volume; regression NOT exercised.'); return;
+      }
+      t.diagnostic('Verified distinct Windows short/long spellings, equal dev/ino and async identity, differing sync identity.');
+      configuredRoot = join(shortRoot, 'private data');
+    } else if (spelling === 'junction') {
+      const target = join(longRoot, 'target'); await mkdir(target);
+      const alias = join(longRoot, 'alias'); await symlink(target, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      configuredRoot = join(alias, 'private data');
+    }
+    const root = await preparePrivateDataDirectory(configuredRoot);
+    const expectedRoot = await realpath(configuredRoot);
+    const expectedWorkspace = join(expectedRoot, 'jobs', 'job-d2');
+    const plannedWorkspaces: string[] = [], launchedWorkspaces: string[] = [];
+    const userHome = join(longRoot, 'reader'), ordinaryHome = join(userHome, '.codex');
+    const executable = join(longRoot, process.platform === 'win32' ? 'codex.exe' : 'codex');
+    const home = scenario === 'no-env' ? ordinaryHome : join(longRoot, 'dedicated');
     await writeFile(executable, 'Fixture bytes. This file is never executed.');
     await mkdir(ordinaryHome, { recursive: true });
     if (home !== ordinaryHome) await mkdir(home);
     // Match the runtime identity convention even when the temp path is an alias.
     const expectedExecutable = realpathSync(executable), expectedHome = realpathSync(home);
-    const env: NodeJS.ProcessEnv = { PATH: root, CODEX_HOME: join(root, 'ignored-agent-home') };
+    const env: NodeJS.ProcessEnv = { PATH: longRoot, CODEX_HOME: join(longRoot, 'ignored-agent-home') };
     if (scenario === 'old-variables') {
       env.MARGINALIA_AUTHORIZED_RUNTIME_MODULE = join(root, 'must-not-load.mjs');
       env.MARGINALIA_READER_AUTHORIZED_UNCONFINED = 'not-an-acknowledgement';
@@ -95,30 +132,42 @@ for (const scenario of ['stock', 'no-env', 'old-variables', 'invalid-executable'
     }
     const transports: FakeTransport[] = [];
     const server = await startServer({ database: ':memory:', port: 0, jobWorkspaceRoot: join(root, 'jobs'),
-      runtimeFactoryBuilder: async input => createAuthorizedRuntime({ ...input, dataDir: root }, {
-        discovery: { env, userHome },
-        launch: async (provider, options) => {
-          assert.equal(options.executable, expectedExecutable);
-          assert.equal(options.codexHome, expectedHome);
-          assert.equal(options.homeMode, scenario === 'no-env' ? 'ordinary' : undefined);
-          if (scenario === 'no-env') {
-            assert.deepEqual(options.configOverrides, {});
-            const source = { PATH: root, CODEX_HOME: 'managed-home', OPENAI_API_KEY: 'synthetic-api-value',
-              READER_TOOL_KEY: 'synthetic-tool-value', HTTPS_PROXY: 'http://proxy.example.test' };
-            const inherited = providerEnvironment(options.codexHome, source, options.homeMode);
-            assert.equal(inherited.READER_TOOL_KEY, source.READER_TOOL_KEY);
-            assert.equal(inherited.OPENAI_API_KEY, source.OPENAI_API_KEY);
-            assert.equal(inherited.HTTPS_PROXY, source.HTTPS_PROXY);
-            assert.equal(inherited.CODEX_HOME, expectedHome);
-          }
-          const rpc = new FakeTransport(expectedHome, scenario === 'no-env'); transports.push(rpc);
-          const file = fileIdentity(expectedExecutable);
-          recordLaunch(rpc, { provider, executable: file, executableSha256: await executableDigest(file),
-            version: 'codex-cli 0.153.4', workspace: options.workspace, codexHome: expectedHome,
-            inheritedEnvironmentKeys: [], environmentValueDigests: {}, windowsKeyCasingReviewed: true, observedAt: new Date().toISOString() });
-          return rpc;
-        },
-      }) });
+      runtimeFactoryBuilder: async input => {
+        const factory = createAuthorizedRuntime({ ...input, dataDir: root }, {
+          discovery: { env, userHome },
+          launch: async (provider, options) => {
+            const observedWorkspace = await realpath(expectedWorkspace);
+            assert.equal(observedWorkspace, expectedWorkspace);
+            assert.equal(options.workspace, observedWorkspace);
+            assert.ok((await stat(observedWorkspace)).isDirectory());
+            assert.ok(await readFile(join(observedWorkspace, 'packet.json'), 'utf8'));
+            launchedWorkspaces.push(observedWorkspace);
+            assert.equal(options.executable, expectedExecutable);
+            assert.equal(options.codexHome, expectedHome);
+            assert.equal(options.homeMode, scenario === 'no-env' ? 'ordinary' : undefined);
+            if (scenario === 'no-env') {
+              assert.deepEqual(options.configOverrides, {});
+              const source = { PATH: root, CODEX_HOME: 'managed-home', OPENAI_API_KEY: 'synthetic-api-value',
+                READER_TOOL_KEY: 'synthetic-tool-value', HTTPS_PROXY: 'http://proxy.example.test' };
+              const inherited = providerEnvironment(options.codexHome, source, options.homeMode);
+              assert.equal(inherited.READER_TOOL_KEY, source.READER_TOOL_KEY);
+              assert.equal(inherited.OPENAI_API_KEY, source.OPENAI_API_KEY);
+              assert.equal(inherited.HTTPS_PROXY, source.HTTPS_PROXY);
+              assert.equal(inherited.CODEX_HOME, expectedHome);
+            }
+            const rpc = new FakeTransport(expectedHome, scenario === 'no-env'); transports.push(rpc);
+            const file = fileIdentity(expectedExecutable);
+            recordLaunch(rpc, { provider, executable: file, executableSha256: await executableDigest(file),
+              version: 'codex-cli 0.153.4', workspace: observedWorkspace, codexHome: await realpath(home),
+              inheritedEnvironmentKeys: [], environmentValueDigests: {}, windowsKeyCasingReviewed: true, observedAt: new Date().toISOString() });
+            return rpc;
+          },
+        });
+        const policyFor = factory.jobDefaults!.policyFor!;
+        return { ...factory, jobDefaults: { ...factory.jobDefaults!, policyFor: (...args) => {
+          plannedWorkspaces.push(args[0]); return policyFor(...args);
+        } } };
+      } });
     t.after(() => server.close());
     const paired = await fetch(server.origin + '/pair', { method: 'POST', headers: { Origin: server.origin, 'Content-Type': 'application/json' },
       body: JSON.stringify({ challenge: server.challenge }) });
@@ -151,10 +200,20 @@ for (const scenario of ['stock', 'no-env', 'old-variables', 'invalid-executable'
     const deadline = Date.now() + 5000;
     while (!['succeeded', 'failed', 'outcome_unknown'].includes(server.jobs.get('job-d2')!.state) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
     const job = server.jobs.get('job-d2')!;
+    if (spelling === 'short-alias') t.diagnostic(JSON.stringify({ scenario, state: job.state,
+      canonicalRootMatches: root === expectedRoot,
+      plannedWorkspaceMatches: plannedWorkspaces.every(path => path === expectedWorkspace),
+      observedWorkspaceMatches: launchedWorkspaces.length === 1 && launchedWorkspaces[0] === expectedWorkspace,
+      turns: transports.flatMap(rpc => rpc.calls).filter(method => method === 'turn/start').length }));
     if (scenario === 'excluded' || scenario === 'denied') {
       assert.equal(job.state, 'failed'); assert.equal(transports.length, 0);
     } else {
       assert.equal(job.state, 'succeeded', job.reason); assert.ok(job.replyVersionId);
+      assert.equal(root, expectedRoot);
+      assert.ok(plannedWorkspaces.length > 0);
+      assert.deepEqual([...new Set(plannedWorkspaces)], [expectedWorkspace]);
+      assert.deepEqual(launchedWorkspaces, [expectedWorkspace]);
+      assert.equal(job.attempts[0]!.providerHandle!.workspace, expectedWorkspace);
       assert.equal(server.store.reply(job.replyVersionId!)!.reply.title, reply.title);
       assert.equal(job.attempts[0]!.providerHandle!.output, JSON.stringify({ replyJson: JSON.stringify(reply) }));
       const schema = transports[0]!.schemas[0] as { properties: { replyJson: { type: string } }; additionalProperties: boolean };
@@ -168,6 +227,9 @@ test('D2 production entry uses the stock factory and keeps solver transport inde
   const main = await readFile(new URL('../daemon/main.ts', import.meta.url), 'utf8');
   const runtime = await readFile(new URL('../daemon/reader-authorized-runtime.ts', import.meta.url), 'utf8');
   for (const variable of oldVariables) { assert.ok(!main.includes(variable)); assert.ok(!runtime.includes(variable)); }
+  assert.match(main, /const canonicalDataDir = await preparePrivateDataDirectory\(dataDir\)/);
+  assert.ok(main.indexOf('if (!isAbsolute(dataDir))') < main.indexOf('await preparePrivateDataDirectory(dataDir)'));
+  assert.ok(main.indexOf('await preparePrivateDataDirectory(dataDir)') < main.indexOf('const solverProbeRoot'));
   assert.match(main, /createAuthorizedRuntime\(\{ \.\.\.input/);
   assert.match(main, /const solverTransport = runtimeIdentity \? createLazySolverTransport/);
 });
